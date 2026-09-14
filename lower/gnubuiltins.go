@@ -156,9 +156,17 @@ func (fl *fn) gnuBuiltinCall(name string, e *ast.CallExpr) (ir.Value, bool) {
 		// form, whose answer at run time is always no.
 		return b.I32.Const(0), true
 
-	case "trap", "verbose_trap":
+	case "trap", "verbose_trap", "unreachable":
 		b.Trap()
+		// A trap ends its block, but it is an expression and what follows
+		// it in the source is still lowered. That goes into a block nothing
+		// branches to, which is what code after a call that cannot return
+		// is.
+		fl.blk = fl.block("after_trap")
 		return nil, true
+
+	case "atomic_load", "atomic_store", "atomic_add", "atomic_sub", "atomic_xchg", "atomic_cas":
+		return fl.atomic(base, e), true
 
 	case "launder", "assume_aligned":
 		if len(e.Args) == 0 {
@@ -307,4 +315,81 @@ func (fl *fn) overflow(base string, e *ast.CallExpr) ir.Value {
 	}
 	fl.store(dst, r, t)
 	return flag
+}
+
+// atomic is vcx's atomic builtins: load, store, and the read-modify-writes
+// that answer with the value the object held before them. They are the
+// instructions VIR has, at sequential consistency, which is the ordering
+// std::atomic promises and the one that needs no argument about which
+// weaker one a caller could have got away with.
+//
+// The object is a 32- or 64-bit integer or a pointer; a pointer is
+// operated on as the 64-bit integer of its address, which is the width
+// every target this compiler has gives one.
+func (fl *fn) atomic(base string, e *ast.CallExpr) ir.Value {
+	b := fl.blk
+	pt, isPtr := types.Unqualify(types.RemoveReference(fl.typeOf(e.Args[0]))).(*types.Pointer)
+	if !isPtr {
+		return nil
+	}
+	t := types.Unqualify(pt.Elem)
+	dst, _ := fl.expr(e.Args[0]).(ir.Ptr)
+	arg := func(i int) ir.Value {
+		return fl.convert(fl.expr(e.Args[i]), fl.typeOf(e.Args[i]), t)
+	}
+	const o = ir.SeqCst
+	_, isPointer := t.(*types.Pointer)
+	size, _ := fl.u.sizeAlign(t)
+	switch {
+	case isPointer || size == 8:
+		i64 := func(v ir.Value) ir.I64 {
+			switch x := v.(type) {
+			case ir.I64:
+				return x
+			case ir.Ptr:
+				return b.I64.FromPtr(x)
+			}
+			return b.I64.Const(0)
+		}
+		back := func(v ir.I64) ir.Value {
+			if isPointer {
+				return b.Ptr.FromI64(v)
+			}
+			return v
+		}
+		switch base {
+		case "atomic_load":
+			return back(b.I64.AtomicLoad(dst, o))
+		case "atomic_store":
+			b.I64.AtomicStore(i64(arg(1)), dst, o)
+			return nil
+		case "atomic_add":
+			return back(b.I64.AtomicRmwAdd(i64(arg(1)), dst, o))
+		case "atomic_sub":
+			return back(b.I64.AtomicRmwSub(i64(arg(1)), dst, o))
+		case "atomic_xchg":
+			return back(b.I64.AtomicRmwXchg(i64(arg(1)), dst, o))
+		case "atomic_cas":
+			return back(b.I64.AtomicCas(i64(arg(1)), i64(arg(2)), dst, o, o))
+		}
+	case size == 4:
+		i32 := func(v ir.Value) ir.I32 { x, _ := v.(ir.I32); return x }
+		switch base {
+		case "atomic_load":
+			return b.I32.AtomicLoad(dst, o)
+		case "atomic_store":
+			b.I32.AtomicStore(i32(arg(1)), dst, o)
+			return nil
+		case "atomic_add":
+			return b.I32.AtomicRmwAdd(i32(arg(1)), dst, o)
+		case "atomic_sub":
+			return b.I32.AtomicRmwSub(i32(arg(1)), dst, o)
+		case "atomic_xchg":
+			return b.I32.AtomicRmwXchg(i32(arg(1)), dst, o)
+		case "atomic_cas":
+			return b.I32.AtomicCas(i32(arg(1)), i32(arg(2)), dst, o, o)
+		}
+	}
+	fl.u.errorf(e.Pos(), "lowering: __builtin_%s on this type is not handled", base)
+	return nil
 }

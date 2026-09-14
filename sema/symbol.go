@@ -112,11 +112,14 @@ type FuncSymbol struct {
 	Virtual     bool
 	PureVirtual bool
 	Static      bool
-	Defaulted   bool
-	Deleted     bool
-	Explicit    bool
-	Friend      bool
-	InClass     *types.Record
+	// Internal is a function declared `static` at namespace scope, which
+	// has internal linkage ([basic.link]/3.1). Static is for members.
+	Internal  bool
+	Defaulted bool
+	Deleted   bool
+	Explicit  bool
+	Friend    bool
+	InClass   *types.Record
 
 	// Access is the member's access when InClass is set.
 	Access types.Access

@@ -73,6 +73,11 @@ type Info struct {
 	// Conversions maps argument expressions to converting constructors.
 	Conversions map[ast.Expr]*FuncSymbol
 
+	// Braced maps a braced-init-list whose braces were elided
+	// ([dcl.init.aggr]/16) to the same list written with every brace: the
+	// form lowering walks, one list per subaggregate.
+	Braced map[*ast.InitList]*ast.InitList
+
 	// MemInits maps member initializers to resolved constructors.
 	MemInits map[*ast.MemInit]*FuncSymbol
 
@@ -119,6 +124,7 @@ func newInfo() *Info {
 		Deletes:      map[*ast.DeleteExpr]*FuncSymbol{},
 		Casts:        map[*ast.FunctionalCastExpr]*FuncSymbol{},
 		Conversions:  map[ast.Expr]*FuncSymbol{},
+		Braced:       map[*ast.InitList]*ast.InitList{},
 		MemInits:     map[*ast.MemInit]*FuncSymbol{},
 		Rewrites:     map[ast.Expr]ast.Expr{},
 		Arrows:       map[*ast.MemberExpr][]*FuncSymbol{},

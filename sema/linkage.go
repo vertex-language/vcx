@@ -1,5 +1,7 @@
 package sema
 
+import "sort"
+
 import "github.com/vertex-language/vcx/types"
 
 // HasExternalLinkage reports whether a namespace-scope variable has external linkage.
@@ -35,14 +37,16 @@ func StaticMembers(res *Result) []*VarSymbol {
 	if res.GlobalScope == nil {
 		return nil
 	}
-	for _, syms := range res.GlobalScope.Symbols {
-		for _, sym := range syms {
+	// In name order: both scopes are maps, and a module built from the
+	// same source should come out the same.
+	for _, name := range sortedNames(res.GlobalScope.Symbols) {
+		for _, sym := range res.GlobalScope.Symbols[name] {
 			rs, ok := sym.(*RecordSymbol)
 			if !ok || rs.ClassScope == nil {
 				continue
 			}
-			for _, members := range rs.ClassScope.Symbols {
-				for _, m := range members {
+			for _, member := range sortedNames(rs.ClassScope.Symbols) {
+				for _, m := range rs.ClassScope.Symbols[member] {
 					if v, isVar := m.(*VarSymbol); isVar && v.InClass != nil && v.Defined {
 						out = append(out, v)
 					}
@@ -103,4 +107,14 @@ func MethodOf(res *Result, definer *types.Record, slot types.VSlot) *FuncSymbol 
 		}
 	}
 	return nil
+}
+
+// sortedNames is a scope's names in order.
+func sortedNames(symbols map[string][]Symbol) []string {
+	names := make([]string, 0, len(symbols))
+	for name := range symbols {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

@@ -422,6 +422,11 @@ func (fl *fn) truth(e ast.Expr) *ir.I1 {
 	if v == nil {
 		return nil
 	}
+	return fl.truthOf(v, e.Pos())
+}
+
+// truthOf is a scalar's conversion to bool: nonzero is true.
+func (fl *fn) truthOf(v ir.Value, at ast.Tok) *ir.I1 {
 	b := fl.blk
 	switch val := v.(type) {
 	case ir.I1:
@@ -442,7 +447,7 @@ func (fl *fn) truth(e ast.Expr) *ir.I1 {
 		c := b.Ptr.Ne(val, b.Ptr.Const())
 		return &c
 	}
-	fl.u.errorf(e.Pos(), "lowering cannot use this value as a condition")
+	fl.u.errorf(at, "lowering cannot use this value as a condition")
 	return nil
 }
 
@@ -470,6 +475,35 @@ func (fl *fn) assign(e *ast.AssignExpr) ir.Value {
 	slot, t, ok := fl.lvalue(e.Lhs)
 	if !ok {
 		return nil
+	}
+	// `x = {...}`: the braces build a temporary of x's type, which is then
+	// assigned the way any other value of that type is.
+	if list, isList := e.Rhs.(*ast.InitList); isList && e.Op == token.ASSIGN {
+		if rec := classOf(t); rec != nil {
+			temp := fl.alloc(t, "braced")
+			fl.initList(temp, t, list)
+			fl.temporary(temp, rec)
+			if !fl.assignObject(slot, temp, rec, e.Pos()) {
+				return nil
+			}
+			return slot
+		}
+		if len(list.Items) == 0 {
+			v := fl.zeroOf(t)
+			fl.store(slot, v, t)
+			return v
+		}
+		item, isExpr := list.Items[0].(ast.Expr)
+		if !isExpr {
+			return nil
+		}
+		v := fl.expr(item)
+		if v == nil {
+			return nil
+		}
+		v = fl.convert(v, fl.typeOf(item), t)
+		fl.store(slot, v, t)
+		return v
 	}
 	if rec := classOf(t); rec != nil && e.Op == token.ASSIGN {
 		// Copy assignment via user-defined or implicit copy assignment operator.

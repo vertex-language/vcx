@@ -252,6 +252,24 @@ func (fl *fn) declareStaticLocal(init *ast.InitDeclarator, sym *sema.VarSymbol) 
 			return
 		}
 	}
+	// An aggregate, a string for a character array, or an address, all of
+	// constants, is an image too: [stmt.dcl]/3 initializes it before the
+	// function is ever entered, and there is nothing to guard.
+	if !isReference(sym.SymType) && u.res.Info.Ctors[init] == nil {
+		var src ast.Node
+		switch {
+		case init.Braced != nil:
+			src = init.Braced
+		case init.Value != nil:
+			src = init.Value
+		}
+		if src != nil {
+			if image, ok := u.constantInit(sym.SymType, src); ok {
+				g.Init(image)
+				return
+			}
+		}
+	}
 
 	guard := u.mod.Global(u.symbolName(base+"guard"), ir.RW, ir.StoreI8.FType())
 	guard.Internal()
@@ -419,6 +437,10 @@ func (fl *fn) constructWith(obj ir.Ptr, ctor *sema.FuncSymbol, argExprs []ast.Ex
 
 // initList writes a braced-init-list into storage. Trailing elements are value-initialized.
 func (fl *fn) initList(dst ir.Ptr, t types.Type, list *ast.InitList) {
+	// A list whose braces were elided is lowered as the one with them.
+	if braced := fl.u.res.Info.Braced[list]; braced != nil {
+		list = braced
+	}
 	if rec := classOf(t); rec != nil {
 		// Aggregate initialization of bases and members in declaration order.
 		fieldOffs := make([]int64, len(rec.Fields))
@@ -598,9 +620,30 @@ func (fl *fn) ifStmt(s *ast.IfStmt) {
 		}
 	}
 
+	// A condition that declares a variable is that declaration, and the
+	// variable's value is what is tested.
+	if d, isDecl := s.Cond.(*ast.SimpleDecl); isDecl && len(d.Inits) == 1 {
+		init := d.Inits[0]
+		fl.declareLocal(init)
+		sym := fl.localSymbol(init)
+		if fl.blk == nil || sym == nil {
+			return
+		}
+		slot, has := fl.slots[sym]
+		if !has {
+			fl.u.errorf(s.Pos(), "lowering found no storage for the condition's variable")
+			return
+		}
+		c := fl.truthOf(fl.load(slot, types.RemoveReference(sym.SymType)), s.Pos())
+		if c == nil {
+			return
+		}
+		fl.branch(s, *c)
+		return
+	}
 	cond, ok := s.Cond.(ast.Expr)
 	if !ok {
-		fl.u.errorf(s.Pos(), "lowering does not handle a declaration as a condition yet")
+		fl.u.errorf(s.Pos(), "lowering does not handle this declaration as a condition yet")
 		return
 	}
 	if s.Constexpr.IsValid() {
@@ -622,7 +665,11 @@ func (fl *fn) ifStmt(s *ast.IfStmt) {
 		return
 	}
 	fl.endFullExpr()
+	fl.branch(s, *c)
+}
 
+// branch is an if statement's two arms, once its condition is a bit.
+func (fl *fn) branch(s *ast.IfStmt, c ir.I1) {
 	then := fl.block("if_then")
 	join := fl.block("if_join")
 	els := join
@@ -630,7 +677,7 @@ func (fl *fn) ifStmt(s *ast.IfStmt) {
 		els = fl.block("if_else")
 	}
 
-	fl.blk.BrIf(*c, then.To(), els.To())
+	fl.blk.BrIf(c, then.To(), els.To())
 
 	fl.blk = then
 	fl.stmt(s.Then)

@@ -54,6 +54,13 @@ func (u *unit) noteDynamicInit(v *sema.VarSymbol, g *ir.Global) {
 		// when that does anything (a table pointer, a member initializer),
 		// or copied from its initializer.
 		needsCode = u.needsConstruction(rec) || decl.Value != nil
+	case v.Init != nil && types.IsPointer(types.Unqualify(v.SymType)):
+		// An address constant, or null, is data.
+		if image, ok := u.constantInit(v.SymType, v.Init); ok {
+			g.Init(image)
+		} else {
+			needsCode = true
+		}
 	case v.Init != nil:
 		_, err := u.evalInt(v.Init)
 		needsCode = err != nil

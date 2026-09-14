@@ -227,8 +227,32 @@ func (a *Analyzer) gnuBuiltinCall(name string, c *ast.CallExpr) (ExprInfo, bool)
 	case builtinConstantP:
 		want(1)
 		return prv(types.Typ(types.Int)), true
-	case builtinTrap:
+	case builtinTrap, builtinUnreachable:
 		return prv(types.Typ(types.Void)), true
+	case builtinAtomic:
+		// vcx's own: the atomic operations VIR has, on an integer or
+		// pointer object named by address. Every one but load and store
+		// answers with the value the object held before it ran, which is
+		// what the instruction yields and what a refcount wants.
+		n := 2
+		switch base {
+		case "atomic_load":
+			n = 1
+		case "atomic_cas":
+			n = 3
+		}
+		if !want(n) {
+			return prv(types.Typ(types.Void)), true
+		}
+		pt, isPtr := types.Unqualify(types.RemoveReference(infos[0].Type)).(*types.Pointer)
+		if !isPtr {
+			a.errorAt(c.Pos(), name+" takes a pointer to the object it operates on")
+			return prv(types.Typ(types.Void)), true
+		}
+		if base == "atomic_store" {
+			return prv(types.Typ(types.Void)), true
+		}
+		return prv(types.Unqualify(pt.Elem)), true
 	case builtinIdentity:
 		if len(infos) == 0 {
 			a.errorAt(c.Pos(), name+" takes an argument")
@@ -282,6 +306,8 @@ const (
 	builtinTrap                               // trap(), verbose_trap(category, message)
 	builtinIdentity                           // launder(p), assume_aligned(p, n)
 	builtinOperatorNew                        // operator_new(args...), operator_delete(args...)
+	builtinAtomic                             // atomic_add(p, v) and its kin
+	builtinUnreachable                        // unreachable()
 )
 
 // builtinKinds are the expression builtins, by name without __builtin_.
@@ -306,6 +332,9 @@ var builtinKinds = map[string]builtinKind{
 	"constant_p": builtinConstantP,
 	"trap":       builtinTrap, "verbose_trap": builtinTrap,
 	"launder": builtinIdentity, "assume_aligned": builtinIdentity,
+	"unreachable": builtinUnreachable,
+	"atomic_load": builtinAtomic, "atomic_store": builtinAtomic, "atomic_add": builtinAtomic,
+	"atomic_sub": builtinAtomic, "atomic_xchg": builtinAtomic, "atomic_cas": builtinAtomic,
 	"operator_new": builtinOperatorNew, "operator_delete": builtinOperatorNew,
 }
 

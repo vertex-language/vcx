@@ -331,6 +331,13 @@ func substituteAuto(declared, deduced types.Type) types.Type {
 	}
 	switch t := declared.(type) {
 	case *types.Pointer:
+		// [dcl.type.auto.deduct] is template argument deduction: `auto* p =
+		// q` matches P = auto* against A = S*, so the pointer the declarator
+		// wrote is matched by the pointer in the initializer's type and
+		// auto is what is left, S. Substituting all of A would say S**.
+		if dp, ok := types.Unqualify(deduced).(*types.Pointer); ok {
+			return &types.Pointer{Elem: substituteAuto(t.Elem, dp.Elem)}
+		}
 		return &types.Pointer{Elem: substituteAuto(t.Elem, deduced)}
 	}
 	if types.IsLValueReference(declared) {
@@ -504,6 +511,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 				Consteval: declInfo.Consteval,
 				Virtual:   virtual,
 				Static:    declInfo.Storage == StorageStatic && a.curRecord != nil,
+				Internal:  declInfo.Storage == StorageStatic && a.curRecord == nil,
 				Explicit:  declInfo.Explicit,
 				Friend:    declInfo.Friend,
 				InClass:   a.curRecord,
@@ -1151,6 +1159,7 @@ func (a *Analyzer) checkFuncDecl(d *ast.FuncDecl) {
 		Consteval: declInfo.Consteval,
 		Virtual:   declInfo.Virtual,
 		Static:    declInfo.Storage == StorageStatic && a.curRecord != nil,
+		Internal:  declInfo.Storage == StorageStatic && a.curRecord == nil,
 		Explicit:  declInfo.Explicit,
 		Friend:    declInfo.Friend,
 		Defaulted: d.Defaulted.IsValid(),

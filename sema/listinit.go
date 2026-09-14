@@ -20,6 +20,13 @@ func (a *Analyzer) checkListInit(list *ast.InitList, target types.Type) {
 		}
 		return
 	}
+	if braced := a.brace(list, target); braced != list {
+		if a.info != nil {
+			a.info.Braced[list] = braced
+			a.info.Types[braced] = target
+		}
+		list = braced
+	}
 
 	if arr, isArr := bare.(*types.Array); isArr {
 		if arr.Incomplete {
@@ -123,4 +130,129 @@ func (a *Analyzer) chooseConstructor(rec *types.Record, args []Argument) (*FuncS
 		return nil, fmt.Errorf("%s has no constructor", rec.Name)
 	}
 	return a.resolveAmong(ctors, nil, args, ast.NoTok)
+}
+
+// brace is list with the braces [dcl.init.aggr]/16 lets a program leave
+// out put back: where an item lands on a subaggregate -- an array, or a
+// class initialized as an aggregate -- and is not itself a braced list or
+// a value of that subaggregate's type, the subaggregate takes as many of
+// the following items as it has elements. `{ {kind}, nullptr }` and
+// `{ kind, nullptr }` are the same initialization of a struct whose first
+// base holds kind.
+//
+// The answer is list itself where nothing was elided.
+func (a *Analyzer) brace(list *ast.InitList, target types.Type) *ast.InitList {
+	if !isAggregateType(target) {
+		return list
+	}
+	i := 0
+	elided := false
+	out := a.braceInto(target, list.Items, &i, list, &elided)
+	if !elided {
+		return list
+	}
+	// Items past the end are left for the caller to report as too many.
+	out.Items = append(out.Items, list.Items[i:]...)
+	return out
+}
+
+// braceInto builds the list for one aggregate of type t out of items
+// from *i on.
+func (a *Analyzer) braceInto(t types.Type, items []ast.Expr, i *int, at *ast.InitList, elided *bool) *ast.InitList {
+	out := &ast.InitList{Span: at.Span, Lbrace: at.Lbrace, Rbrace: at.Rbrace}
+	if *i < len(items) {
+		out.Span = ast.Span{Lo: items[*i].Pos(), Hi: items[*i].End()}
+	}
+	switch bare := types.Unqualify(t).(type) {
+	case *types.Array:
+		for k := int64(0); *i < len(items) && (bare.Incomplete || k < bare.Len); k++ {
+			out.Items = append(out.Items, a.braceItem(bare.Elem, items, i, at, elided))
+		}
+	default:
+		rec := types.AsRecord(bare)
+		if rec == nil {
+			break
+		}
+		for _, f := range aggregateFields(rec) {
+			if *i >= len(items) {
+				break
+			}
+			out.Items = append(out.Items, a.braceItem(f.Type, items, i, at, elided))
+		}
+	}
+	if len(out.Items) > 0 {
+		out.Span.Hi = out.Items[len(out.Items)-1].End()
+	}
+	return out
+}
+
+// braceItem is what initializes one element or member: the next item, or
+// a list of the items a subaggregate takes.
+func (a *Analyzer) braceItem(t types.Type, items []ast.Expr, i *int, at *ast.InitList, elided *bool) ast.Expr {
+	item := items[*i]
+	switch item.(type) {
+	case *ast.InitList, *ast.DesignatedInit:
+		*i++
+		return item
+	}
+	if !isAggregateType(t) || a.initializesWhole(item, t) {
+		*i++
+		return item
+	}
+	*elided = true
+	return a.braceInto(t, items, i, at, elided)
+}
+
+// initializesWhole reports whether an item initializes a subaggregate of
+// type t by itself: a value of that class or one derived from it, or a
+// string literal for an array of characters. The check it makes is kept,
+// so the item is not checked a second time when its turn comes.
+func (a *Analyzer) initializesWhole(item ast.Expr, t types.Type) bool {
+	bare := types.Unqualify(t)
+	if arr, isArr := bare.(*types.Array); isArr {
+		if _, isStr := item.(*ast.StringLit); isStr {
+			return isCharacterType(arr.Elem)
+		}
+		return false
+	}
+	info, done := a.prechecked[item]
+	if !done {
+		info = a.CheckExpr(item)
+		if a.prechecked == nil {
+			a.prechecked = map[ast.Expr]ExprInfo{}
+		}
+		a.prechecked[item] = info
+	}
+	if isDependentExpr(info) {
+		return true
+	}
+	want := types.AsRecord(bare)
+	have := types.AsRecord(types.Unqualify(types.RemoveReference(info.Type)))
+	return want != nil && have != nil && (have == want || types.IsBaseOf(want, have))
+}
+
+// isAggregateType reports whether t is initialized from a braced list
+// element by element: an array, or a class with no user-declared
+// constructor.
+func isAggregateType(t types.Type) bool {
+	bare := types.Unqualify(t)
+	if _, isArr := bare.(*types.Array); isArr {
+		return true
+	}
+	rec := types.AsRecord(bare)
+	return rec != nil && !hasUserConstructor(rec)
+}
+
+// isCharacterType reports whether t is one a string literal initializes
+// an array of.
+func isCharacterType(t types.Type) bool {
+	b, ok := types.Unqualify(t).(*types.Basic)
+	if !ok {
+		return false
+	}
+	switch b.K {
+	case types.Char, types.SChar, types.UChar, types.WChar, types.Char8, types.Char16, types.Char32:
+		return true
+	}
+	return false
 }

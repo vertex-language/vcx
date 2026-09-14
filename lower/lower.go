@@ -4,6 +4,7 @@ package lower
 import (
 	"fmt"
 	"math/big"
+	"sort"
 
 	"github.com/vertex-language/ir"
 
@@ -80,6 +81,9 @@ type unit struct {
 	// globals maps namespace-scope variables to their IR globals, or to
 	// the imports that stand for ones another unit defines.
 	globals map[*sema.VarSymbol]ir.Symbol
+	// declaredOrder is the globals in the order they were declared, which
+	// is the order their initializers are looked at.
+	declaredOrder []*sema.VarSymbol
 
 	// pendingFuncs tracks inline functions awaiting body generation.
 	pendingFuncs []*sema.FuncSymbol
@@ -214,7 +218,6 @@ func (u *unit) declare() {
 	u.recordTypes = map[*types.Record]*ir.Type{}
 	u.srets = map[*sema.FuncSymbol]ir.Ptr{}
 
-	u.declareGlobals()
 	for _, fn := range u.res.Functions {
 		if fn.Body == nil {
 			continue
@@ -225,6 +228,9 @@ func (u *unit) declare() {
 		}
 		u.funcs[fn] = u.declareFunc(fn)
 	}
+	// Globals after functions: a global's initializer may be a function's
+	// address, which names the function this unit already declared.
+	u.declareGlobals()
 }
 
 // callee is the symbol a call to fn reaches: the definition when this unit
@@ -370,6 +376,12 @@ func (u *unit) declareFunc(fn *sema.FuncSymbol) *ir.Func {
 		// Closure types have internal linkage.
 		f.Internal()
 	}
+	// [basic.link]/3.1 -- a function declared `static` at namespace scope
+	// has internal linkage: it is this unit's, and another unit's function
+	// of the same name is a different function.
+	if fn.InClass == nil && fn.Internal {
+		f.Internal()
+	}
 
 	// A class returned by value comes back through storage the caller
 	// supplies. Where the class is plain the parameter says `sret` and the
@@ -498,6 +510,12 @@ func (u *unit) declareGlobals() {
 	u.declareGlobalsIn(u.res.GlobalScope, map[*sema.Scope]bool{})
 	for _, v := range sema.StaticMembers(u.res) {
 		u.globals[v] = u.declareGlobal(v)
+		u.declaredOrder = append(u.declaredOrder, v)
+	}
+	for _, v := range u.declaredOrder {
+		if g, ok := u.globals[v].(*ir.Global); ok {
+			u.initializeGlobal(v, g)
+		}
 	}
 }
 
@@ -509,8 +527,16 @@ func (u *unit) declareGlobalsIn(scope *sema.Scope, seen map[*sema.Scope]bool) {
 		return
 	}
 	seen[scope] = true
-	for _, syms := range scope.Symbols {
-		for _, sym := range syms {
+	// In name order, so that the same source is the same module every
+	// time: a scope's symbols are a map, and what comes out of an object
+	// file should not depend on how one was iterated.
+	names := make([]string, 0, len(scope.Symbols))
+	for name := range scope.Symbols {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for _, sym := range scope.Symbols[name] {
 			switch s := sym.(type) {
 			case *sema.NamespaceSymbol:
 				u.declareGlobalsIn(s.InnerScope, seen)
@@ -529,6 +555,7 @@ func (u *unit) declareGlobalsIn(scope *sema.Scope, seen map[*sema.Scope]bool) {
 					continue
 				}
 				u.globals[s] = u.declareGlobal(s)
+				u.declaredOrder = append(u.declaredOrder, s)
 			}
 		}
 	}
@@ -585,13 +612,20 @@ func (u *unit) declareGlobal(v *sema.VarSymbol) *ir.Global {
 	}
 	g.Align(uint64(align))
 
+	return g
+}
+
+// initializeGlobal gives a declared global its initial image, or notes
+// the code that has to run before main to give it one. It runs once every
+// global has a symbol, so that one initializer can name another global's
+// address whatever order the two were declared in.
+func (u *unit) initializeGlobal(v *sema.VarSymbol, g *ir.Global) {
 	if v.Init != nil && classOf(v.SymType) == nil {
 		if n, err := u.evalInt(v.Init); err == nil {
 			g.Init(ir.Lit(ir.Int(n)))
 		}
 	}
 	u.noteDynamicInit(v, g)
-	return g
 }
 
 // ftype is the storage shape a global declares.
@@ -627,6 +661,73 @@ func (u *unit) evalInt(e ast.Expr) (int64, error) {
 	if u.res.Info != nil {
 		if n, ok := u.res.Info.Consts[e]; ok {
 			return n, nil
+		}
+	}
+	// An operator over constants the analysis knew is a constant too:
+	// `7 | flag` where flag is a constexpr variable, whose value the
+	// evaluator below has no scope to look up.
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return u.evalInt(x.X)
+	// A size or an alignment is the layout's, which the evaluator below
+	// does not have: it answers zero for a class.
+	case *ast.SizeofExpr:
+		if !x.Ellipsis.IsValid() {
+			var t types.Type
+			if x.Type != nil {
+				t = u.typeOfTypeId(x.Type)
+			} else if x.X != nil {
+				t = u.res.Info.Types[x.X]
+			}
+			if t != nil {
+				size, _ := u.sizeAlign(types.RemoveReference(t))
+				return size, nil
+			}
+		}
+	case *ast.AlignofExpr:
+		if t := u.typeOfTypeId(x.Type); t != nil {
+			_, align := u.sizeAlign(t)
+			return align, nil
+		}
+	case *ast.BinaryExpr:
+		l, errL := u.evalInt(x.X)
+		r, errR := u.evalInt(x.Y)
+		if errL == nil && errR == nil {
+			switch x.Op {
+			case token.ADD:
+				return l + r, nil
+			case token.SUB:
+				return l - r, nil
+			case token.MUL:
+				return l * r, nil
+			case token.AND:
+				return l & r, nil
+			case token.OR:
+				return l | r, nil
+			case token.XOR:
+				return l ^ r, nil
+			case token.SHL:
+				if r >= 0 && r < 64 {
+					return l << uint(r), nil
+				}
+			case token.QUO:
+				if r != 0 {
+					return l / r, nil
+				}
+			case token.REM:
+				if r != 0 {
+					return l % r, nil
+				}
+			}
+		}
+	case *ast.UnaryExpr:
+		if n, err := u.evalInt(x.X); err == nil {
+			switch x.Op {
+			case token.SUB:
+				return -n, nil
+			case token.ADD:
+				return n, nil
+			}
 		}
 	}
 	ctx := constexpr.NewContext(u.unit, u.model)

@@ -55,6 +55,11 @@ type Compiler struct {
 	Undefs       []string
 	Freestanding bool
 	FS           fs.FS
+
+	// IncludeFS are include directories that are filesystems rather than
+	// paths, searched after IncludeDirs and before the system's: headers
+	// a caller carries in an embed.FS, which no -I can name.
+	IncludeFS []SystemInclude
 }
 
 func (c *Compiler) target() (Target, error) {
@@ -75,6 +80,9 @@ func (c *Compiler) preprocessorConfig(in Input) preprocessor.Config {
 			Name: inc,
 			FS:   os.DirFS(inc),
 		})
+	}
+	for _, inc := range c.IncludeFS {
+		cfg.Search = append(cfg.Search, preprocessor.Mount{Name: inc.Name, FS: inc.FS})
 	}
 	for _, sys := range c.SystemIncludes() {
 		cfg.Search = append(cfg.Search, preprocessor.Mount{Name: sys.Name, FS: sys.FS, System: true})
@@ -271,16 +279,31 @@ func (c *Compiler) Layout(in Input) ([]RecordLayout, []Diagnostic, error) {
 
 	var out []RecordLayout
 	seen := map[*types.Record]bool{}
-	for _, syms := range res.GlobalScope.Symbols {
-		for _, sym := range syms {
-			rs, ok := sym.(*sema.RecordSymbol)
-			if !ok || rs.Record == nil || seen[rs.Record] || !rs.Record.Complete {
-				continue
+	visited := map[*sema.Scope]bool{}
+	// Every namespace, not only the global one: a record declared inside
+	// `namespace vertex` has a layout like any other.
+	var walk func(scope *sema.Scope)
+	walk = func(scope *sema.Scope) {
+		if scope == nil || visited[scope] {
+			return
+		}
+		visited[scope] = true
+		for _, syms := range scope.Symbols {
+			for _, sym := range syms {
+				switch rs := sym.(type) {
+				case *sema.NamespaceSymbol:
+					walk(rs.InnerScope)
+				case *sema.RecordSymbol:
+					if rs.Record == nil || seen[rs.Record] || !rs.Record.Complete {
+						continue
+					}
+					seen[rs.Record] = true
+					out = append(out, recordLayout(model, rs.Record))
+				}
 			}
-			seen[rs.Record] = true
-			out = append(out, recordLayout(model, rs.Record))
 		}
 	}
+	walk(res.GlobalScope)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, diags, nil
 }

@@ -227,6 +227,14 @@ func (s *Scope) insert(sym Symbol) (Symbol, error) {
 			}
 			// Definition following a declaration fills in the existing symbol.
 			if exFn.Body == nil && fn.Body != nil {
+				// [dcl.fct]/8 -- parameter names are not part of the type,
+				// and the body sees the definition's: `int f(int);` then
+				// `int f(int b) { return b; }` declares b.
+				for i := range exFn.FuncType.Params {
+					if i < len(fn.FuncType.Params) {
+						exFn.FuncType.Params[i].Name = fn.FuncType.Params[i].Name
+					}
+				}
 				exFn.Body = fn.Body
 				exFn.Decl = fn.Decl
 				exFn.Params = fn.Params

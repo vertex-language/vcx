@@ -160,8 +160,22 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 		a.curScope = oldScope
 
 	case *ast.IfStmt:
+		// [stmt.select]/3 -- the init-statement and a condition that
+		// declares are in a scope that covers both branches and no more.
+		oldScope := a.curScope
+		a.curScope = NewScope(oldScope, BlockScope, nil)
+		defer func() { a.curScope = oldScope }()
 		if s.Init != nil {
 			a.CheckStmt(s.Init)
+		}
+		if d, ok := s.Cond.(*ast.SimpleDecl); ok {
+			a.CheckDecl(d)
+			for _, init := range d.Inits {
+				if v, isVar := a.info.Defs[init].(*VarSymbol); isVar && v.SymType != nil &&
+					!isDependentType(v.SymType) && !contextuallyConvertibleToBool(v.SymType) {
+					a.errorAt(init.Pos(), "condition must be convertible to bool")
+				}
+			}
 		}
 		if s.Constexpr.IsValid() {
 			if condExpr, ok := s.Cond.(ast.Expr); ok {

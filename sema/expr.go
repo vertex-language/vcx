@@ -278,18 +278,31 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 			a.errorAt(e.Pos(), "sizeof... of something that is not a parameter pack")
 			return ExprInfo{Type: a.sizeT(), ValCat: PrValue}
 		}
+		var of types.Type
 		if e.Type != nil {
-			a.noteTypeId(e.Type)
+			of = a.noteTypeId(e.Type)
 		} else if e.X != nil {
 			a.unevaluated++
-			a.CheckExpr(e.X)
+			of = a.CheckExpr(e.X).Type
 			a.unevaluated--
 		}
-		return ExprInfo{Type: a.sizeT(), ValCat: PrValue, IsConst: true}
+		// The value is the layout's, where the layout is known: a
+		// constant whose value was never computed is recorded as zero, and
+		// read back as zero by whatever folds it.
+		if of != nil && !isDependentType(of) {
+			if n, ok := a.model.Sizeof(types.RemoveReference(of)); ok {
+				return ExprInfo{Type: a.sizeT(), ValCat: PrValue, IsConst: true, ConstVal: n}
+			}
+		}
+		return ExprInfo{Type: a.sizeT(), ValCat: PrValue}
 
 	case *ast.AlignofExpr:
-		a.noteTypeId(e.Type)
-		return ExprInfo{Type: a.sizeT(), ValCat: PrValue, IsConst: true}
+		if of := a.noteTypeId(e.Type); of != nil && !isDependentType(of) {
+			if n, ok := a.model.Alignof(of); ok {
+				return ExprInfo{Type: a.sizeT(), ValCat: PrValue, IsConst: true, ConstVal: n}
+			}
+		}
+		return ExprInfo{Type: a.sizeT(), ValCat: PrValue}
 
 	case *ast.LambdaExpr:
 		return a.checkLambdaExpr(e)
@@ -826,6 +839,25 @@ func (a *Analyzer) checkBinaryExpr(b *ast.BinaryExpr) ExprInfo {
 
 func (a *Analyzer) checkAssignExpr(as *ast.AssignExpr) ExprInfo {
 	left := a.CheckExpr(as.Lhs)
+	// [expr.assign]/9 -- `x = {...}` is `x = T{...}` for a class, and for a
+	// scalar the one value in the braces.
+	if list, isList := as.Rhs.(*ast.InitList); isList && as.Op == token.ASSIGN && !isDependentExpr(left) {
+		target := types.Unqualify(types.RemoveReference(left.Type))
+		a.checkListInit(list, target)
+		right := ExprInfo{Type: target, ValCat: PrValue}
+		if a.info != nil {
+			a.info.Types[list] = target
+		}
+		if rec := types.AsRecord(target); rec != nil {
+			if info, resolved := a.resolveOperator(as, assignSpelling(as.Op), []ExprInfo{left, right}, as.Pos()); resolved {
+				return info
+			}
+		}
+		if left.ValCat != LValue {
+			a.errorAt(as.Lhs.Pos(), "left-hand side of assignment must be an lvalue")
+		}
+		return ExprInfo{Type: left.Type, ValCat: LValue}
+	}
 	right := a.CheckExpr(as.Rhs)
 
 	// Assignment is to the dereferenced object type.
