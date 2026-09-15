@@ -2,6 +2,7 @@ package sema
 
 import (
 	"github.com/vertex-language/vcx/types"
+	"strings"
 )
 
 // CheckAccess reports whether a member of record, declared with the given
@@ -65,7 +66,10 @@ func isFriendOf(record *types.Record, currentScope *Scope) bool {
 	// question is which class the naming context is in, not which function.
 	if cur := currentScope.InnermostRecord(); cur != nil && cur != record {
 		for _, name := range record.FriendClasses {
-			if name == cur.Name {
+			// `friend typename _Cp::__self;` in a template as written names
+			// its class through a type not yet known: it befriends whatever
+			// that turns out to be, which the instantiation settles.
+			if name == cur.Name || strings.Contains(name, "::") {
 				return true
 			}
 		}

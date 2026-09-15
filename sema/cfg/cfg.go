@@ -51,6 +51,10 @@ type BasicBlock struct {
 	Terminator    ast.Stmt
 	TerminatorPos ast.Tok
 	Locals        []any
+
+	// NoReturn marks a block with a call that does not return: no path to
+	// the function's end goes through it.
+	NoReturn bool
 }
 
 // CFG represents the control-flow graph for a function body.
@@ -71,14 +75,24 @@ type Builder struct {
 
 	// labels maps label identifiers to their target blocks.
 	labels map[string]*BasicBlock
+
+	// noReturn reports a call that does not return, when set.
+	noReturn func(*ast.CallExpr) bool
 }
 
 // Build constructs a CFG from a function's compound statement body.
 func Build(body *ast.CompoundStmt, u ast.Unit) *CFG {
+	return BuildWith(body, u, nil)
+}
+
+// BuildWith is Build with a way to tell calls that do not return: a
+// statement calling `[[noreturn]] __libcpp_unreachable()` ends its path.
+func BuildWith(body *ast.CompoundStmt, u ast.Unit, noReturn func(*ast.CallExpr) bool) *CFG {
 	b := &Builder{
-		cfg:    &CFG{},
-		unit:   u,
-		labels: make(map[string]*BasicBlock),
+		cfg:      &CFG{},
+		unit:     u,
+		labels:   make(map[string]*BasicBlock),
+		noReturn: noReturn,
 	}
 	b.cfg.Entry = b.newBlock()
 	b.cfg.Exit = b.newBlock()
@@ -151,6 +165,22 @@ func (b *Builder) addStmt(stmt ast.Stmt) {
 
 	case *ast.ExprStmt, *ast.DeclStmt:
 		b.curBlock.Stmts = append(b.curBlock.Stmts, s)
+		if es, isExpr := s.(*ast.ExprStmt); isExpr && b.noReturn != nil {
+			x := es.X
+			for {
+				p, isParen := x.(*ast.ParenExpr)
+				if !isParen {
+					break
+				}
+				x = p.X
+			}
+			if call, isCall := x.(*ast.CallExpr); isCall && b.noReturn(call) {
+				// No path continues past the call. What is written after it
+				// stays in the block -- `never_returns(); return 0;` is not
+				// unreachable code to report -- and CheckReturns stops here.
+				b.curBlock.NoReturn = true
+			}
+		}
 
 	case *ast.CompoundStmt:
 		for _, child := range s.Stmts {

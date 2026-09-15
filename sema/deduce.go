@@ -94,6 +94,17 @@ func deduce(param, arg types.Type, out Binding) bool {
 	case *types.Pointer:
 		bare := types.Unqualify(types.RemoveReference(arg))
 		if a, ok := bare.(*types.Pointer); ok {
+			// Under a pointer the pointee's cv-qualifiers are part of what T
+			// is: `_Tp* __to_address(_Tp*)` called with a const char* deduces
+			// _Tp = const char. Only a top-level qualifier is dropped, and
+			// that happened to the pointer above.
+			if tp, isParam := p.Elem.(*types.TemplateParam); isParam && tp.IsType && tp.Name != "" {
+				if prev, seen := out[tp.Name]; seen {
+					return prev != nil && prev.Equal(a.Elem)
+				}
+				out[tp.Name] = a.Elem
+				return true
+			}
 			return deduce(p.Elem, a.Elem, out)
 		}
 		// Array argument decays to element pointer.
@@ -123,6 +134,16 @@ func deduce(param, arg types.Type, out Binding) bool {
 			}
 		} else if a.Incomplete != p.Incomplete || !p.Incomplete && a.Len != p.Len {
 			return false
+		}
+		// The element's cv-qualifiers are part of what T is: ranges::begin's
+		// `_Tp (&__t)[_Np]` called with a `const unsigned[3]` deduces _Tp =
+		// const unsigned, as a pointer's pointee does.
+		if tp, isParam := p.Elem.(*types.TemplateParam); isParam && tp.IsType && tp.Name != "" {
+			if prev, seen := out[tp.Name]; seen {
+				return prev != nil && prev.Equal(a.Elem)
+			}
+			out[tp.Name] = a.Elem
+			return true
 		}
 		return deduce(p.Elem, a.Elem, out)
 
@@ -300,6 +321,10 @@ func specializeNamed(fn *types.Func, paramNames []string, explicit []types.Type,
 	if !isDependent(fn) {
 		return fn, b, true
 	}
+	explicitOnly := Binding{}
+	for k, v := range b {
+		explicitOnly[k] = v
+	}
 
 	n := len(fn.Params)
 	if n > 0 && fn.Params[n-1].Pack {
@@ -332,6 +357,12 @@ func specializeNamed(fn *types.Func, paramNames []string, explicit []types.Type,
 		n = len(args)
 	}
 	for i := 0; i < n; i++ {
+		if len(explicitOnly) > 0 && !isDependent(substitute(fn.Params[i].Type, explicitOnly)) {
+			// [temp.arg.explicit]/6: a parameter the explicit arguments leave
+			// with nothing to deduce takes its argument by conversion --
+			// `std::max<size_type>(2 * __cap, 1)` passes an int.
+			continue
+		}
 		if !deduceArg(fn.Params[i].Type, args[i], b) {
 			return fn, nil, false
 		}
@@ -432,6 +463,13 @@ func isDependentType(t types.Type) bool {
 
 // deduceArg performs argument deduction considering value categories and forwarding references.
 func deduceArg(param types.Type, arg Argument, out Binding) bool {
+	// [temp.deduct.call]/2: a parameter that is not a reference takes the
+	// argument as a by-value copy would, so an array argument deduces its
+	// element pointer and a function its pointer. `each(I first, S last)`
+	// called with an int[3] deduces I = int*.
+	if !types.IsReference(param) {
+		arg.Type = decayed(arg.Type)
+	}
 	if rr, isRRef := param.(*types.RValueReference); isRRef && arg.IsLValue {
 		if tp, isParam := rr.Elem.(*types.TemplateParam); isParam && tp.IsType && tp.Name != "" {
 			bound := types.AddLValueReference(arg.Type)

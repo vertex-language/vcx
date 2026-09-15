@@ -13,12 +13,12 @@ func CheckReturns(cfg *CFG, funcName string, retType types.Type) []string {
 		return nil
 	}
 
-	reachable := computeReachable(cfg)
+	reachable := computeLiveReachable(cfg)
 
 	// Check each predecessor of the Exit block
 	var diags []string
 	for _, edge := range cfg.Exit.Preds {
-		if !reachable[edge.From] {
+		if !reachable[edge.From] || edge.From.NoReturn {
 			continue
 		}
 		if edge.Kind == EdgeFallthrough {
@@ -74,6 +74,32 @@ func DestructionOrder(cfg *CFG) map[*Edge][]any {
 	}
 
 	return orders
+}
+
+// computeLiveReachable is computeReachable for paths that can still reach
+// the function's end: it does not continue past a block whose call does not
+// return.
+func computeLiveReachable(cfg *CFG) map[*BasicBlock]bool {
+	reachable := make(map[*BasicBlock]bool)
+	if cfg == nil || cfg.Entry == nil {
+		return reachable
+	}
+	queue := []*BasicBlock{cfg.Entry}
+	reachable[cfg.Entry] = true
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.NoReturn {
+			continue
+		}
+		for _, edge := range cur.Succs {
+			if !reachable[edge.To] {
+				reachable[edge.To] = true
+				queue = append(queue, edge.To)
+			}
+		}
+	}
+	return reachable
 }
 
 func computeReachable(cfg *CFG) map[*BasicBlock]bool {

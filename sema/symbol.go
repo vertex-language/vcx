@@ -136,6 +136,10 @@ type FuncSymbol struct {
 	// file's symbol exactly, prefix and all.
 	AsmLabel string
 
+	// NoReturn is a function declared [[noreturn]]: a call to it ends the
+	// path through the caller ([dcl.attr.noreturn]).
+	NoReturn bool
+
 	// Constraints are the function's requires-clauses that must hold for
 	// the function to be a candidate. ConstraintScope is the evaluation scope.
 	Constraints     []ast.Expr
@@ -288,6 +292,11 @@ type TemplateParamSymbol struct {
 	// Decl is a non-type parameter's declaration, used when rebuilding
 	// types dependent on preceding parameters.
 	Decl *ast.ParamDecl
+
+	// TypeConstraint is a constrained type parameter's constraint as the
+	// concept-id it stands for: `sentinel_for<_Ip> _Sp` is
+	// `sentinel_for<_Sp, _Ip>` ([temp.param]/4).
+	TypeConstraint ast.Expr
 }
 
 func (tp *TemplateParamSymbol) Name() string     { return tp.SymName }

@@ -3,6 +3,8 @@ package sema
 import (
 	"fmt"
 	"github.com/vertex-language/vcx/ast"
+	"os"
+	"strings"
 
 	"github.com/vertex-language/vcx/types"
 )
@@ -54,7 +56,7 @@ type Scope struct {
 
 	// AnonRecords maps unnamed class-specifiers to their types on the root scope.
 	AnonRecords map[*ast.ClassSpec]*types.Record
-	UsingDecls      map[string][]Symbol
+	UsingDecls  map[string][]Symbol
 
 	// Decltype evaluates decltype(e) within this scope.
 	Decltype func(e ast.Expr, scope *Scope) types.Type
@@ -193,6 +195,22 @@ func (s *Scope) insert(sym Symbol) (Symbol, error) {
 			if !sameConstraints(exFn, fn) {
 				continue
 			}
+			// And function templates by their template-heads: basic_string's
+			// __init from an input and from a forward iterator pair have one
+			// signature and two heads, each with its own enable_if.
+			if !sameTemplateParams(exFn, fn) {
+				continue
+			}
+			if os.Getenv("VCX_DEBUG_INSERT") != "" {
+				ek, nk := "<none>", "<none>"
+				if exFn.Template != nil {
+					ek = exFn.Template.HeadKey
+				}
+				if fn.Template != nil {
+					nk = fn.Template.HeadKey
+				}
+				fmt.Fprintf(os.Stderr, "merge %s: existing head %q, new head %q\n", name, ek, nk)
+			}
 			if len(fn.Defaults) > 0 {
 				if len(exFn.Defaults) < len(fn.Defaults) {
 					newDef := make([]ast.Expr, len(fn.Defaults))
@@ -255,6 +273,17 @@ func (s *Scope) insert(sym Symbol) (Symbol, error) {
 		}
 		s.Symbols[name] = append(existing, sym)
 		return sym, nil
+	}
+
+	// [class.mem]: a non-static data member may share its class's name when
+	// the class declares no constructor, as Darwin's
+	// `struct ip_opts { char ip_opts[40]; }` does. The member hides the
+	// injected-class-name for ordinary lookup, so it goes first.
+	if v, isVar := sym.(*VarSymbol); isVar && s.Kind == ClassScope && len(existing) == 1 {
+		if rs, isRec := existing[0].(*RecordSymbol); isRec && rs.Record != nil && rs.Record == s.Entity {
+			s.Symbols[name] = []Symbol{v, rs}
+			return v, nil
+		}
 	}
 
 	// Non-function symbols cannot be redefined in the same scope
@@ -464,4 +493,74 @@ func sameConstraints(x, y *FuncSymbol) bool {
 		}
 	}
 	return true
+}
+
+// sameTemplateParams reports whether two function declarations have
+// equivalent template-heads: the same kinds of parameter, and non-type
+// parameters of the same type once each parameter is read by its position.
+// Parameter names do not count -- `template <class T> void swap(T&, T&);`
+// and `template <class _Tp> void swap(_Tp&, _Tp&) {}` are one template --
+// but what a non-type parameter's type says does: basic_string's __init from
+// an input and from a forward iterator pair differ only in the enable_if
+// condition their second parameter spells.
+func sameTemplateParams(a, b *FuncSymbol) bool {
+	// A declaration whose template-head was not recorded when it was
+	// inserted -- a function template declared ahead of its definition in
+	// another header -- says nothing against the merge.
+	if a.Template == nil || b.Template == nil {
+		return true
+	}
+	if len(a.Template.Params) != len(b.Template.Params) {
+		return false
+	}
+	// The head as written decides when both declarations recorded it: the
+	// types a dependent non-type parameter resolves to all look alike.
+	if a.Template.HeadKey != "" && b.Template.HeadKey != "" {
+		return a.Template.HeadKey == b.Template.HeadKey
+	}
+	for i, p := range a.Template.Params {
+		q := b.Template.Params[i]
+		if p.IsType != q.IsType || p.IsPack != q.IsPack || p.IsTemplate != q.IsTemplate {
+			return false
+		}
+		if !p.IsType && canonicalParamType(p.SymType, a.Template.Params) != canonicalParamType(q.SymType, b.Template.Params) {
+			return false
+		}
+	}
+	return true
+}
+
+// canonicalParamType spells a non-type template parameter's type with every
+// parameter of its head replaced by that parameter's position.
+func canonicalParamType(t types.Type, head []*TemplateParamSymbol) string {
+	if t == nil {
+		return ""
+	}
+	text := t.String()
+	for i, p := range head {
+		if p.SymName == "" {
+			continue
+		}
+		text = replaceIdentifier(text, p.SymName, fmt.Sprintf("$%d", i))
+	}
+	return text
+}
+
+// replaceIdentifier replaces whole-identifier occurrences of name in text.
+func replaceIdentifier(text, name, with string) string {
+	isIdent := func(c byte) bool {
+		return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	var out []byte
+	for i := 0; i < len(text); {
+		if strings.HasPrefix(text[i:], name) && (i == 0 || !isIdent(text[i-1])) &&
+			(i+len(name) == len(text) || !isIdent(text[i+len(name)])) {
+			out = append(out, with...)
+			i += len(name)
+			continue
+		}
+		out = append(out, text[i])
+		i++
+	}
+	return string(out)
 }

@@ -601,6 +601,20 @@ func (m Model) layoutItanium(r *Record) (recordInfo, bool) {
 			align = fa
 		}
 		off := roundUp((bits+7)/8, fa)
+		// [[no_unique_address]] on a member of empty class type: the member
+		// is placed as an empty base would be -- at an offset where no other
+		// subobject of its type already is -- and takes no data storage, so
+		// what follows can share its address. libc++'s basic_string::__short
+		// spends no byte on its __padding<0>.
+		if at, isRec := Unqualify(f.Type).(*Record); isRec && f.NoUniqueAddress && itaniumEmpty(at) {
+			for empties.conflicts(m, at, off, false) {
+				off += fa
+			}
+			empties.add(m, at, off, false)
+			info.fieldOffsets[i] = off
+			grow(off + fs)
+			continue
+		}
 		if fr := recordElem(f.Type); fr != nil {
 			for empties.conflicts(m, fr, off, false) {
 				off += fa

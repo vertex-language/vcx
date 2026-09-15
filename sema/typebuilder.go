@@ -156,6 +156,23 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 				nameStr := NameString(name, u)
 				syms = LookupUnqualified(scope, nameStr)
 			}
+			if qn, qualified := name.(*ast.QualifiedName); qualified && len(syms) == 0 {
+				// A qualifier that is a complete class with every member known
+				// answers the lookup itself -- `iterator_traits<iterator_type>::
+				// value_type` in __wrap_iter<int*> is the partial
+				// specialization's -- and a member it does not have is no
+				// type at all: `typename iterator_traits<int*>::
+				// __primary_template`, which __is_primary_template's
+				// substitution is asking about.
+				if found, complete := membersOfCompleteClass(qn, scope, u); complete {
+					if len(found) > 0 {
+						syms = found
+					} else if info.Unresolved == "" {
+						info.Unresolved = NameString(name, u)
+						info.UnresolvedPos = name.Pos()
+					}
+				}
+			}
 			if len(syms) == 0 {
 				if _, qualified := name.(*ast.QualifiedName); !qualified && info.Unresolved == "" {
 					info.Unresolved = NameString(name, u)
@@ -191,6 +208,11 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 								if inst := scope.root().AliasInstantiate; inst != nil {
 									if t := inst(ts, args, tmplName.Pos()); t != nil {
 										customType, instantiated = t, true
+										if t == substitutionFailure && info.Unresolved == "" {
+											// The alias names nothing under these arguments.
+											info.Unresolved = NameString(tmplName, u)
+											info.UnresolvedPos = tmplName.Pos()
+										}
 									}
 								}
 							}
@@ -478,12 +500,19 @@ func BuildDeclarator(d ast.Declarator, baseType types.Type, scope *Scope, u ast.
 		ret := baseType
 		var params []types.Param
 		var emptyPacks []string
+		// [basic.scope.param]: a parameter is in scope from its declarator
+		// on, so a later parameter can say `decltype(f(earlier))`, as
+		// libc++'s __unwrap_range_impl::__rewrap does.
+		paramScope := NewScope(scope, BlockScope, nil)
 		for _, p := range decl.Params {
-			pInfo := BuildDeclSpecs(p.Specs, scope, u)
-			pType := BuildDeclarator(p.Decl, pInfo.Type, scope, u)
+			pInfo := BuildDeclSpecs(p.Specs, paramScope, u)
+			pType := BuildDeclarator(p.Decl, pInfo.Type, paramScope, u)
 			name := ""
 			if p.Decl != nil && p.Decl.DeclName() != nil {
 				name = NameString(p.Decl.DeclName(), u)
+			}
+			if name != "" && pType != nil {
+				paramScope.Insert(&VarSymbol{SymName: name, SymType: pType, SymScope: paramScope, IsParam: true})
 			}
 			if isPackParamDecl(p) {
 				// Pack expansion parameter: one parameter per element of bound pack.
@@ -614,6 +643,12 @@ func NameString(name ast.Name, u ast.Unit) string {
 
 	case *ast.DestructorName:
 		return "~" + NameString(n.Name, u)
+	case *ast.DecltypeName:
+		s := ""
+		for t := n.Pos(); t < n.End(); t++ {
+			s += u.Text(t)
+		}
+		return s
 	case *ast.ConversionName:
 		// A conversion function is named for the type it converts to (e.g. operator bool).
 		name := "operator"
@@ -655,6 +690,12 @@ func templateArgs(tn *ast.TemplateName, scope *Scope, u ast.Unit) []types.Templa
 	for _, argNode := range tn.Args {
 		switch arg := argNode.(type) {
 		case *ast.TypeId:
+			// `iter_reference_t<_Its>...`, `Is*...`: a pattern expanded over
+			// the packs it names, one argument per element.
+			if elems, ok := expandTypePattern(arg, scope, u); ok {
+				args = append(args, elems...)
+				continue
+			}
 			// When a type-id argument resolves to a value, treat it as a value argument.
 			if name := bareTypeName(arg); name != nil {
 				if pn, isPack := name.(*ast.PackName); isPack {
@@ -665,6 +706,30 @@ func templateArgs(tn *ast.TemplateName, scope *Scope, u ast.Unit) []types.Templa
 					args = append(args, value(e))
 					continue
 				}
+				// A template-id whose template is a concept or a variable
+				// template is an expression: `_If<random_access_iterator<_Iter>,
+				// ...>` passes the concept's answer, not a type.
+				if e, isExpr := name.(ast.Expr); isExpr && namesValueTemplate(name, scope, u) {
+					args = append(args, value(e))
+					continue
+				}
+				// `__has_random_access_iterator_category<_Iter>::value` in a
+				// template as written: whether the name is a type or a value
+				// waits on the parameters. Building a type out of it would
+				// settle that wrongly; the argument is dependent.
+				if namesSomethingDependent(lookupName(name, scope, u)) {
+					args = append(args, types.TemplateArg{IsType: true, Type: &types.DependentType{Name: NameString(name, u)}})
+					continue
+				}
+				// An alias template named without arguments can only be a
+				// template template argument; reading it as a type would give
+				// its pattern, which depends on its own parameters.
+				if namesTemplateItself(name) {
+					if ref := aliasTemplateRef(lookupName(name, scope, u)); ref != nil {
+						args = append(args, types.TemplateArg{IsType: true, Type: ref})
+						continue
+					}
+				}
 			}
 			argT := BuildDeclarator(arg.Decl, BuildDeclSpecs(arg.Specs, scope, u).Type, scope, u)
 			args = append(args, types.TemplateArg{IsType: true, Type: argT})
@@ -673,6 +738,12 @@ func templateArgs(tn *ast.TemplateName, scope *Scope, u ast.Unit) []types.Templa
 			if rs, isRec := firstTypeSymbol(lookupName(arg, scope, u)).(*RecordSymbol); isRec && rs.ClassTemplate != nil && rs.Record != nil && rs.TemplateOf == nil {
 				args = append(args, types.TemplateArg{IsType: true, Type: &types.TemplateRef{Name: rs.Record.Name, Primary: rs.Record}})
 				continue
+			}
+			if namesTemplateItself(arg) {
+				if ref := aliasTemplateRef(lookupName(arg, scope, u)); ref != nil {
+					args = append(args, types.TemplateArg{IsType: true, Type: ref})
+					continue
+				}
 			}
 			if sym := firstTypeSymbol(lookupName(arg, scope, u)); sym != nil && sym.Type() != nil {
 				if _, isType := sym.(*TypeSymbol); isType || isTypeLike(sym) {
@@ -716,6 +787,87 @@ func isTypeLike(sym Symbol) bool {
 
 // concrete reports whether every argument is settled: a type that is not
 // dependent, or a value.
+// membersOfCompleteClass looks up the last component of a qualified name in
+// its qualifier, when the qualifier is a complete class none of whose members
+// waits on a template argument; complete reports whether it is one.
+func membersOfCompleteClass(qn *ast.QualifiedName, scope *Scope, u ast.Unit) (found []Symbol, complete bool) {
+	n := len(qn.Qual)
+	if n == 0 {
+		return nil, false
+	}
+	var qualifier types.Type
+	if n == 1 && !qn.Global.IsValid() {
+		ts := &ast.DeclSpecs{Span: qn.Span, List: []ast.DeclSpec{&ast.NamedTypeSpec{Span: qn.Span, Typename: ast.NoTok, Name: qn.Qual[0]}}}
+		qualifier = BuildDeclSpecs(ts, scope, u).Type
+	} else {
+		prefix := &ast.QualifiedName{Span: qn.Span, Global: qn.Global, Qual: qn.Qual[:n-1], Name: qn.Qual[n-1]}
+		if len(qn.Colons) > 0 {
+			prefix.Colons = qn.Colons[:len(qn.Colons)-1]
+		}
+		for _, sym := range ResolveQualifiedName(prefix, scope, nil, u) {
+			switch sym.(type) {
+			case *RecordSymbol, *TypeSymbol:
+				qualifier = sym.Type()
+			}
+			if qualifier != nil {
+				break
+			}
+		}
+	}
+	rec := types.AsRecord(types.Unqualify(qualifier))
+	if rec == nil || !rec.Complete || argsDependent(rec.TemplateArgs) || argsSpelled(rec.TemplateArgs) || hasDependentBase(rec) {
+		return nil, false
+	}
+	rs := scope.recordSymbol(rec)
+	if rs == nil || rs.ClassTemplate != nil && rec.TemplateArgs == nil {
+		return nil, false
+	}
+	member := qn.Name
+	if tn, isTemplate := member.(*ast.TemplateName); isTemplate {
+		member = tn.Name
+	}
+	found = LookupQualified(rs, NameString(member, u))
+	return found, true
+}
+
+// argsSpelled reports whether template arguments still carry a template-id
+// as spelled rather than the type it names -- `iterator_traits<_Op<allocator<
+// int>>>`, made where a template template parameter was not yet expanded --
+// at any depth. Such a class's members say nothing about the program.
+func argsSpelled(args []types.TemplateArg) bool {
+	for _, arg := range args {
+		if arg.IsType && typeSpelled(arg.Type, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func typeSpelled(t types.Type, depth int) bool {
+	if t == nil || depth > 16 {
+		return false
+	}
+	switch x := types.Unqualify(t).(type) {
+	case *types.TemplateSpecialization:
+		return true
+	case *types.Pointer:
+		return typeSpelled(x.Elem, depth+1)
+	case *types.LValueReference:
+		return typeSpelled(x.Elem, depth+1)
+	case *types.RValueReference:
+		return typeSpelled(x.Elem, depth+1)
+	case *types.Array:
+		return typeSpelled(x.Elem, depth+1)
+	case *types.Record:
+		for _, arg := range x.TemplateArgs {
+			if arg.IsType && typeSpelled(arg.Type, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func concrete(args []types.TemplateArg) bool {
 	for _, a := range args {
 		if a.IsType && (a.Type == nil || isDependentType(a.Type)) {
@@ -782,6 +934,115 @@ func namesAValue(syms []Symbol) bool {
 	return false
 }
 
+// expandTypePattern expands a template argument that is the pack expansion of
+// a pattern -- `Is*...`, or `iter_reference_t<_Its>...` in indirect_result_t --
+// into one argument per element of the bound packs the pattern names. A bare
+// `Is...` is packArgs'; a pattern whose packs are still open is left as it is.
+func expandTypePattern(arg *ast.TypeId, scope *Scope, u ast.Unit) ([]types.TemplateArg, bool) {
+	specs, decl := arg.Specs, arg.Decl
+	expanded := false
+	if specs != nil && len(specs.List) == 1 {
+		if ns, isNamed := specs.List[0].(*ast.NamedTypeSpec); isNamed {
+			if pn, isPack := ns.Name.(*ast.PackName); isPack {
+				if _, plain := pn.Name.(*ast.Ident); plain && !hasPackDeclarator(decl) {
+					return nil, false
+				}
+				inner := *ns
+				inner.Name = pn.Name
+				specs = &ast.DeclSpecs{Span: specs.Span, List: []ast.DeclSpec{&inner}, Aligns: specs.Aligns}
+				expanded = true
+			}
+		}
+	}
+	if stripped, had := stripPackDeclarator(decl); had {
+		decl, expanded = stripped, true
+	}
+	if !expanded || specs == nil {
+		return nil, false
+	}
+	type boundPack struct {
+		name string
+		pack *types.Pack
+	}
+	var packs []boundPack
+	seen := map[string]bool{}
+	ast.Inspect(specs, func(n ast.Node) bool {
+		id, isIdent := n.(*ast.Ident)
+		if !isIdent {
+			return true
+		}
+		name := id.Text(u)
+		if seen[name] {
+			return true
+		}
+		for _, sym := range LookupUnqualified(scope, name) {
+			if ts, isType := sym.(*TypeSymbol); isType {
+				if p, isPack := ts.SymType.(*types.Pack); isPack {
+					seen[name] = true
+					packs = append(packs, boundPack{name, p})
+				}
+			}
+			break
+		}
+		return true
+	})
+	if len(packs) == 0 {
+		return nil, false
+	}
+	n := len(packs[0].pack.Elems)
+	for _, p := range packs[1:] {
+		if len(p.pack.Elems) != n {
+			return nil, false
+		}
+	}
+	out := make([]types.TemplateArg, 0, n)
+	for i := 0; i < n; i++ {
+		child := NewScope(scope, BlockScope, nil)
+		for _, p := range packs {
+			elem := p.pack.Elems[i]
+			if !elem.IsType {
+				return nil, false
+			}
+			child.Insert(&TypeSymbol{SymName: p.name, SymType: elem.Type, SymScope: child})
+		}
+		d := decl
+		if d != nil {
+			d = ast.Clone(d)
+		}
+		t := BuildDeclarator(d, BuildDeclSpecs(ast.Clone(specs), child, u).Type, child, u)
+		out = append(out, types.TemplateArg{IsType: true, Type: t})
+	}
+	return out, true
+}
+
+// hasPackDeclarator reports whether a declarator carries a pack expansion.
+func hasPackDeclarator(d ast.Declarator) bool {
+	_, had := stripPackDeclarator(d)
+	return had
+}
+
+// stripPackDeclarator is a declarator without its pack expansion, and whether
+// it had one: `*...` in `Is*...` is the pointer.
+func stripPackDeclarator(d ast.Declarator) (ast.Declarator, bool) {
+	switch x := d.(type) {
+	case *ast.PackDeclarator:
+		return x.Inner, true
+	case *ast.PointerDeclarator:
+		if inner, had := stripPackDeclarator(x.Inner); had {
+			c := *x
+			c.Inner = inner
+			return &c, true
+		}
+	case *ast.ParenDeclarator:
+		if inner, had := stripPackDeclarator(x.Inner); had {
+			c := *x
+			c.Inner = inner
+			return &c, true
+		}
+	}
+	return d, false
+}
+
 // packArgs returns template arguments from a pack expansion.
 func packArgs(pn *ast.PackName, scope *Scope, u ast.Unit) []types.TemplateArg {
 	if sym := firstTypeSymbol(lookupName(pn.Name, scope, u)); sym != nil && sym.Type() != nil && isTypeLike(sym) {
@@ -845,6 +1106,79 @@ func isPackParamDecl(p *ast.ParamDecl) bool {
 				if _, isPack := ns.Name.(*ast.PackName); isPack {
 					return true
 				}
+			}
+		}
+	}
+	return false
+}
+
+// aliasTemplateRef is the template template argument an alias template's
+// name stands for, or nil when the name is not an alias template's.
+func aliasTemplateRef(syms []Symbol) *types.TemplateRef {
+	// An alias template has parameters of its own. A plain alias -- `using I
+	// = Maybe;` in a function body -- names a type, and is read as one.
+	ts, isType := firstTypeSymbol(syms).(*TypeSymbol)
+	if !isType || ts.Alias == nil || len(ts.Alias.Params) == 0 {
+		return nil
+	}
+	return &types.TemplateRef{Name: ts.SymName, Alias: ts}
+}
+
+// namesTemplateItself reports whether a name could denote a template rather
+// than one of its specializations: it has no template arguments of its own.
+// `__pointer_member` names the alias template; `std::void_t<S, int>` and
+// `allocator_traits<A>::rebind_alloc<char>` name the types they produce.
+func namesTemplateItself(n ast.Node) bool {
+	switch x := n.(type) {
+	case *ast.Ident:
+		return true
+	case *ast.QualifiedName:
+		_, plain := x.Name.(*ast.Ident)
+		return plain
+	}
+	return false
+}
+
+// namesSomethingDependent reports whether a lookup found only a name that
+// depends on template parameters not yet bound.
+func namesSomethingDependent(syms []Symbol) bool {
+	if len(syms) == 0 {
+		return false
+	}
+	for _, sym := range syms {
+		if _, isDep := sym.(*DependentSymbol); !isDep {
+			return false
+		}
+	}
+	return true
+}
+
+// namesValueTemplate reports whether a template-id -- plain or at the end of
+// a qualified name -- names a concept or a variable template, whose
+// specializations are values rather than types.
+func namesValueTemplate(n ast.Node, scope *Scope, u ast.Unit) bool {
+	var syms []Symbol
+	switch x := n.(type) {
+	case *ast.TemplateName:
+		syms = lookupName(x.Name, scope, u)
+	case *ast.QualifiedName:
+		tn, isTemplate := x.Name.(*ast.TemplateName)
+		if !isTemplate {
+			return false
+		}
+		q := *x
+		q.Name = tn.Name
+		syms = ResolveQualifiedName(&q, scope, nil, u)
+	default:
+		return false
+	}
+	for _, sym := range syms {
+		switch s := sym.(type) {
+		case *ConceptSymbol:
+			return true
+		case *VarSymbol:
+			if s.Template != nil {
+				return true
 			}
 		}
 	}

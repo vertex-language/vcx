@@ -287,6 +287,13 @@ var operators = map[string]struct{ itanium, msvc string }{
 // recordScopes is a class's own scope path: its enclosing scopes and then
 // itself, with its template arguments if it is a specialization.
 func recordScopes(rec *types.Record) []Scope {
-	out := Scopes(rec.Scopes...)
+	var out []Scope
+	if rec.Outer != nil && rec.Outer != rec {
+		// A member class of a specialization is named inside it, arguments
+		// and all: `vector<int, allocator<int>>::__destroy_vector`.
+		out = recordScopes(rec.Outer)
+	} else {
+		out = Scopes(rec.Scopes...)
+	}
 	return append(out, Scope{Name: rec.Name, Args: rec.TemplateArgs})
 }

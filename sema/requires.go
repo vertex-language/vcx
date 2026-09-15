@@ -2,6 +2,8 @@ package sema
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/vertex-language/vcx/ast"
 	"github.com/vertex-language/vcx/constexpr"
@@ -12,6 +14,21 @@ import (
 func (a *Analyzer) satisfyConcept(ctx *constexpr.Context, concept *ConceptSymbol, args []types.Type) (constexpr.Value, error) {
 	bound := NewScope(concept.SymScope, BlockScope, nil)
 	for i, param := range concept.Params {
+		if param != nil && param.IsPack && param.SymName != "" {
+			// `template <class _Tp, class... _Args> concept constructible_from`:
+			// the pack takes the rest of the arguments, none at all in
+			// `constructible_from<_Tp>`.
+			pack := &types.Pack{}
+			for _, t := range args[min(i, len(args)):] {
+				if p, isPack := t.(*types.Pack); isPack {
+					pack.Elems = append(pack.Elems, p.Elems...)
+					continue
+				}
+				pack.Elems = append(pack.Elems, types.TemplateArg{IsType: true, Type: t})
+			}
+			bound.Insert(&TypeSymbol{SymName: param.SymName, SymType: pack, SymPos: param.SymPos})
+			break
+		}
 		if param == nil || param.SymName == "" || i >= len(args) || args[i] == nil {
 			continue
 		}
@@ -42,8 +59,10 @@ func (a *Analyzer) satisfiesRequires(re *ast.RequiresExpr) (bool, error) {
 	// be neither true nor false.
 	savedParams, savedRequires, savedScope := a.curTemplateParams, a.curTemplateRequires, a.curScope
 	a.curTemplateParams, a.curTemplateRequires = nil, nil
+	a.inRequires++
 	defer func() {
 		a.curTemplateParams, a.curTemplateRequires, a.curScope = savedParams, savedRequires, savedScope
+		a.inRequires--
 	}()
 
 	// Parameters have function-prototype scope within the requires body.
@@ -54,7 +73,30 @@ func (a *Analyzer) satisfiesRequires(re *ast.RequiresExpr) (bool, error) {
 			return false, fmt.Errorf("the parameter type %s of the requires-expression does not resolve", info.Unresolved)
 		}
 		t := BuildDeclarator(p.Decl, info.Type, scope, a.unit)
+		if pack := packIn(t); pack != nil && isPackDeclarator(p.Decl) && p.Decl.DeclName() != nil {
+			// `requires(_Fn&& __fn, _Args&&... __args)`: a parameter pack,
+			// one parameter per element, so `std::forward<_Args>(__args)...`
+			// expands over it.
+			name := NameString(p.Decl.DeclName(), a.unit)
+			ps := &PackSymbol{SymName: name, SymScope: scope}
+			for _, elem := range pack.Elems {
+				ps.Elems = append(ps.Elems, &VarSymbol{SymName: name, SymType: substitutePack(t, elem.Type), SymScope: scope, IsParam: true})
+			}
+			scope.Insert(ps)
+			continue
+		}
 		if t == nil || isDependentType(t) {
+			if os.Getenv("VCX_DEBUG_REQUIRES") != "" {
+				var spelled strings.Builder
+				for tok := p.Specs.Pos(); tok < p.Specs.End(); tok++ {
+					spelled.WriteString(a.unit.Text(tok))
+					spelled.WriteByte(' ')
+					for _, sym := range LookupUnqualified(scope, a.unit.Text(tok)) {
+						fmt.Fprintf(os.Stderr, "requires   %s -> %T %v\n", a.unit.Text(tok), sym, sym.Type())
+					}
+				}
+				fmt.Fprintf(os.Stderr, "requires param %q built %v\n", spelled.String(), t)
+			}
 			return false, fmt.Errorf("a parameter of the requires-expression has no type under this binding")
 		}
 		name := ""
@@ -126,7 +168,13 @@ func (a *Analyzer) satisfiesRequirement(req ast.Node) (bool, error) {
 // nothing -- which is what a requirement asks -- discarding what it said.
 func (a *Analyzer) wellFormedExpr(e ast.Expr) (ExprInfo, bool) {
 	ndiags := len(a.diags)
+	// [expr.prim.req.general]/2: the expressions of a requires-expression
+	// are unevaluated operands. `static_cast<_To>(std::declval<_From>())` in
+	// convertible_to names declval without instantiating its body -- which
+	// is a static_assert that fails, by design, when it is.
+	a.unevaluated++
 	info := a.CheckExpr(e)
+	a.unevaluated--
 	if len(a.diags) > ndiags {
 		a.diags = a.diags[:ndiags]
 		return info, false

@@ -27,6 +27,12 @@ func LookupUnqualified(scope *Scope, name string) []Symbol {
 				if syms := lookupRecordMember(r, name, make(map[*types.Record]bool)); len(syms) > 0 {
 					return syms
 				}
+				// A base's nested types, aliases and static members live in
+				// its class scope, not its record: char_traits<char16_t>
+				// names `char_type` from __char_traits_base.
+				if syms := lookupInheritedScopes(cur, r, name, map[*types.Record]bool{r: true}); len(syms) > 0 {
+					return syms
+				}
 			}
 		}
 
@@ -121,6 +127,25 @@ func ResolveQualifiedName(q *ast.QualifiedName, curScope *Scope, globalScope *Sc
 	}
 
 	for i, qual := range q.Qual {
+		// `decltype(e)::member` -- the qualifier is the type of e, and the
+		// lookup continues in it the way it would through an alias.
+		if dn, isDecltype := qual.(*ast.DecltypeName); isDecltype {
+			specs := &ast.DeclSpecs{Span: dn.Span, List: []ast.DeclSpec{dn.Spec}}
+			t := BuildDeclSpecs(specs, curScope, u).Type
+			if t == nil || isDependentType(t) || types.Unqualify(t) == types.Typ(types.AutoKind) {
+				return []Symbol{&DependentSymbol{SymName: NameString(q, u), SymPos: q.Pos()}}
+			}
+			t = types.Unqualify(types.RemoveReference(t))
+			if rec := types.AsRecord(t); rec != nil {
+				curTarget = recordTarget(curScope, rec)
+			} else if e, isEnum := t.(*types.Enum); isEnum {
+				curTarget = e
+			} else {
+				return nil
+			}
+			continue
+		}
+
 		// A qualifier that is a template-id names a specialization:
 		// `Fact<5>::value`, `true_type::value` through an alias. It is
 		// built as a type -- instantiated when its arguments are

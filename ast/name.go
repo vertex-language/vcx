@@ -65,6 +65,14 @@ type DestructorName struct {
 	Type  Node // a *DecltypeSpec, for `~decltype(e)`; nil otherwise
 }
 
+// DecltypeName is `decltype(e)` where a name is written: the first
+// component of a nested-name-specifier (`decltype(e)::type`), or a whole
+// base-specifier (`struct S : decltype(e) {}`).
+type DecltypeName struct {
+	Span
+	Spec *DecltypeSpec
+}
+
 // PackName is a name followed by `...` in an expansion context.
 type PackName struct {
 	Span
@@ -86,5 +94,7 @@ func (*LiteralOperatorName) exprNode() {}
 func (*LiteralOperatorName) nameNode() {}
 func (*DestructorName) exprNode()      {}
 func (*DestructorName) nameNode()      {}
+func (*DecltypeName) exprNode()        {}
+func (*DecltypeName) nameNode()        {}
 func (*PackName) exprNode()            {}
 func (*PackName) nameNode()            {}

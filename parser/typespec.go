@@ -407,7 +407,14 @@ func (p *parser) parseBaseSpec() *ast.BaseSpec {
 		}
 	}
 
-	base.Name = p.parseName()
+	// `struct S : decltype(e) {}` -- a decltype-specifier is a whole
+	// class-or-decltype; followed by `::` it is a qualifier, and parseName's.
+	if p.peek() == token.DECLTYPE && !p.decltypeBeforeScope() {
+		dt := p.parseDecltypeSpec()
+		base.Name = &ast.DecltypeName{Span: ast.Span{Lo: dt.Pos(), Hi: dt.End()}, Spec: dt}
+	} else {
+		base.Name = p.parseName()
+	}
 	if base.Name == nil {
 		p.error(p.cur, "expected base class name")
 		return nil
@@ -502,8 +509,16 @@ func (p *parser) parseEnumerator() *ast.Enumerator {
 	}
 	name := p.parseIdent()
 
+	// [dcl.enum]/1 puts attribute-specifiers after the identifier too, and
+	// libc++ writes `no_message_available _LIBCPP_DEPRECATED = ENODATA`.
+	hi := name.End()
+	for _, ag := range p.parseAttrGroups() {
+		attrList = append(attrList, ag.Attrs...)
+		hi = ag.End()
+	}
+
 	en := &ast.Enumerator{
-		Span:   ast.Span{Lo: start, Hi: name.End()},
+		Span:   ast.Span{Lo: start, Hi: hi},
 		Name:   name,
 		Attrs:  attrList,
 		Assign: ast.NoTok,

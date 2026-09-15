@@ -92,6 +92,12 @@ type Context struct {
 	// ResolveConcept evaluates a concept-id constraint.
 	ResolveConcept func(*ast.TemplateName) (Value, bool, error)
 
+	// ConceptValue is the value the analysis gave a concept-id where it was
+	// written, when it decided one: inside a function template's
+	// specialization the id's arguments name the bound parameters, which the
+	// scope a constant evaluation runs in does not have.
+	ConceptValue func(ast.Expr) (bool, bool)
+
 	// ResolveRequires decides whether each requirement in a requires-expression is satisfied.
 	ResolveRequires func(*ast.RequiresExpr) (bool, error)
 	CallDepth       int
@@ -226,6 +232,11 @@ func (ctx *Context) Eval(expr ast.Expr) (Value, error) {
 		return ctx.evalTypeTrait(e)
 
 	case *ast.QualifiedName:
+		if _, isTemplate := e.Name.(*ast.TemplateName); isTemplate && ctx.ConceptValue != nil {
+			if v, known := ctx.ConceptValue(e); known {
+				return BoolValue{Val: v}, nil
+			}
+		}
 		if ctx.ResolveQualified != nil {
 			return ctx.ResolveQualified(e)
 		}
@@ -241,6 +252,11 @@ func (ctx *Context) Eval(expr ast.Expr) (Value, error) {
 		// The only template-id that is a value rather than a type is a
 		// concept-id. Anything else named with arguments here is a class or
 		// a function template, and neither has a value of its own.
+		if ctx.ConceptValue != nil {
+			if v, known := ctx.ConceptValue(e); known {
+				return BoolValue{Val: v}, nil
+			}
+		}
 		if ctx.ResolveConcept != nil {
 			if v, ok, err := ctx.ResolveConcept(e); err != nil {
 				return nil, err
@@ -997,6 +1013,12 @@ func (ctx *Context) evalCall(call *ast.CallExpr) (Value, error) {
 		}
 
 		if fn != nil {
+			return ctx.callFunction(fn, call.Args)
+		}
+	} else if ctx.ResolveCall != nil {
+		// A callee that is not a plain name -- `pick<int*>()`, `std::f()` --
+		// is the analysis's to resolve, the same as a name it did not know.
+		if fn, ok := ctx.ResolveCall(call); ok && fn != nil {
 			return ctx.callFunction(fn, call.Args)
 		}
 	}

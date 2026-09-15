@@ -93,6 +93,12 @@ type Info struct {
 	// Lambdas maps lambda expressions to their closure records.
 	Lambdas map[*ast.LambdaExpr]*LambdaInfo
 
+	// ConceptValues are the concept-ids the analysis decided where they
+	// were written -- in a function template's specialization, with its
+	// parameters bound -- for a constant evaluation of that body to read
+	// rather than decide again somewhere the parameters mean nothing.
+	ConceptValues map[ast.Expr]bool
+
 	// Arrows maps class member access (x->m) to chained operator-> functions.
 	Arrows map[*ast.MemberExpr][]*FuncSymbol
 
@@ -111,29 +117,30 @@ type Info struct {
 
 func newInfo() *Info {
 	return &Info{
-		Types:        map[ast.Expr]types.Type{},
-		Uses:         map[ast.Expr]Symbol{},
-		Calls:        map[*ast.CallExpr]*FuncSymbol{},
-		Defs:         map[ast.Node]Symbol{},
-		Ctors:        map[*ast.InitDeclarator]*FuncSymbol{},
-		Temporaries:  map[*ast.CallExpr]*FuncSymbol{},
-		News:         map[*ast.NewExpr]*FuncSymbol{},
-		Allocs:       map[*ast.NewExpr]*FuncSymbol{},
-		Operators:    map[ast.Expr]*FuncSymbol{},
-		BindingInits: map[*ast.StructuredBinding]*ast.InitDeclarator{},
-		Deletes:      map[*ast.DeleteExpr]*FuncSymbol{},
-		Casts:        map[*ast.FunctionalCastExpr]*FuncSymbol{},
-		Conversions:  map[ast.Expr]*FuncSymbol{},
-		Braced:       map[*ast.InitList]*ast.InitList{},
-		MemInits:     map[*ast.MemInit]*FuncSymbol{},
-		Rewrites:     map[ast.Expr]ast.Expr{},
-		Arrows:       map[*ast.MemberExpr][]*FuncSymbol{},
-		Lambdas:      map[*ast.LambdaExpr]*LambdaInfo{},
+		Types:          map[ast.Expr]types.Type{},
+		Uses:           map[ast.Expr]Symbol{},
+		Calls:          map[*ast.CallExpr]*FuncSymbol{},
+		Defs:           map[ast.Node]Symbol{},
+		Ctors:          map[*ast.InitDeclarator]*FuncSymbol{},
+		Temporaries:    map[*ast.CallExpr]*FuncSymbol{},
+		News:           map[*ast.NewExpr]*FuncSymbol{},
+		Allocs:         map[*ast.NewExpr]*FuncSymbol{},
+		Operators:      map[ast.Expr]*FuncSymbol{},
+		BindingInits:   map[*ast.StructuredBinding]*ast.InitDeclarator{},
+		Deletes:        map[*ast.DeleteExpr]*FuncSymbol{},
+		Casts:          map[*ast.FunctionalCastExpr]*FuncSymbol{},
+		Conversions:    map[ast.Expr]*FuncSymbol{},
+		Braced:         map[*ast.InitList]*ast.InitList{},
+		MemInits:       map[*ast.MemInit]*FuncSymbol{},
+		Rewrites:       map[ast.Expr]ast.Expr{},
+		Arrows:         map[*ast.MemberExpr][]*FuncSymbol{},
+		Lambdas:        map[*ast.LambdaExpr]*LambdaInfo{},
+		ConceptValues:  map[ast.Expr]bool{},
 		MemberPointers: map[*ast.UnaryExpr]*MemberRef{},
-		MemberInits:  map[*types.Record]map[string]*ast.InitDeclarator{},
-		Ranges:       map[*ast.RangeForStmt]*RangeProtocol{},
-		TypeIds:      map[*ast.TypeId]types.Type{},
-		Consts:       map[ast.Expr]int64{},
+		MemberInits:    map[*types.Record]map[string]*ast.InitDeclarator{},
+		Ranges:         map[*ast.RangeForStmt]*RangeProtocol{},
+		TypeIds:        map[*ast.TypeId]types.Type{},
+		Consts:         map[ast.Expr]int64{},
 	}
 }
 
@@ -172,10 +179,57 @@ type Analyzer struct {
 	// instArgs are the arguments of the class specialization being
 	// instantiated, for checkClassSpec to register it by (see there).
 	instArgs []types.TemplateArg
-	pending       map[*types.Method]*pendingBody
+	pending  map[*types.Method]*pendingBody
 
 	// rangeElem is the deduced element type for range-based for loops.
 	rangeElem types.Type
+
+	// outOfLine are the member definitions written outside a class
+	// template, by the class-specifier they belong to -- the primary's, a
+	// partial specialization's, or an explicit one's. Each instantiation
+	// of that pattern gets them (see completeInstanceMember).
+	outOfLine map[*ast.ClassSpec][]outOfLineDef
+
+	// instances are the class specializations made so far, with the pattern
+	// each came from, for definitions that are written after them.
+	instances []instanceMade
+
+	// friendInto is where a friend defined in a class is declared -- the
+	// namespace enclosing the class -- while its signature and body are read
+	// in the class's scope.
+	friendInto *Scope
+	// friendDecl is the friend friendInto is for. Only it is declared there:
+	// a constructor template instantiated from inside its body is declared
+	// where its instantiation is.
+	friendDecl *ast.FuncDecl
+
+	// reuseRecord is the record a class instantiation fills in, when the
+	// specialization was named -- and so already has a type -- before the
+	// template was defined (see ClassTemplateInfo.Incomplete).
+	reuseRecord *types.Record
+
+	// placeholders are the records of specializations named before their
+	// template was defined, with the template, until they are instantiated.
+	placeholders map[*types.Record]*RecordSymbol
+
+	// earlyBodies are in-class member definitions with a placeholder return,
+	// checked ahead of the class's other bodies when a use needs the type;
+	// bodyChecked are the definitions checked so.
+	earlyBodies map[*FuncSymbol]*pendingBody
+	bodyChecked map[*ast.FuncDecl]bool
+	// wantedBodies are the members a use asked for before their bodies were
+	// deferred -- a nested class's `operator()` called from its enclosing
+	// class's destructor -- checked when they arrive instead.
+	wantedBodies map[string]bool
+
+	// awaiting are member template specializations used before the member
+	// template had a definition (see defineAwaiting).
+	awaiting []*awaitingInstance
+
+	// inRequires counts the requires-expressions being evaluated. A concept's
+	// definition is one tree for every binding it is checked under, so a
+	// concept-id decided inside one is not recorded in ConceptValues.
+	inRequires int
 
 	// curTemplateParams holds active template parameters for concepts and nested declarations.
 	curTemplateParams []*TemplateParamSymbol
@@ -404,11 +458,28 @@ func (a *Analyzer) NewConstContext() *constexpr.Context {
 		return v, true, nil
 	}
 	ctx.ResolveRequires = a.satisfiesRequires
+	ctx.ConceptValue = func(e ast.Expr) (bool, bool) {
+		if a.info == nil {
+			return false, false
+		}
+		v, known := a.info.ConceptValues[e]
+		return v, known
+	}
 	ctx.ResolveQualified = func(qn *ast.QualifiedName) (constexpr.Value, error) {
 		syms := ResolveQualifiedName(qn, a.curScope, a.globalScope, a.unit)
 		// `std::is_void_v<int>` -- a template-id at the end names a
 		// variable template's instance, not the template.
 		if tn, isTemplate := qn.Name.(*ast.TemplateName); isTemplate {
+			// `std::ranges::range<_Rp&>`: a concept-id behind a qualifier.
+			for _, sym := range syms {
+				if cs, isConcept := sym.(*ConceptSymbol); isConcept {
+					args, err := a.conceptArgTypes(tn.Args)
+					if err != nil {
+						return nil, err
+					}
+					return a.satisfyConcept(ctx, cs, args)
+				}
+			}
 			v, found, err := a.resolveVarTemplateAmong(tn, syms, ctx)
 			if err != nil {
 				return nil, err
@@ -536,12 +607,20 @@ func Analyze(file *ast.File, model types.Model) (*Result, []Diagnostic) {
 	for _, decl := range file.Decls {
 		a.CheckDecl(decl)
 	}
+	a.reportUndefined()
 
 	for _, fn := range a.functions {
 		if fn.Body != nil {
-			funcCFG := cfg.Build(fn.Body, a.unit)
+			funcCFG := cfg.BuildWith(fn.Body, a.unit, a.callDoesNotReturn)
 			retDiags := cfg.CheckReturns(funcCFG, fn.Name(), fn.FuncType.Ret)
 			for _, rd := range retDiags {
+				// A function template's specialization is only warned about:
+				// std::declval's body is a static_assert and nothing else,
+				// and it is instantiated for decltype, never called.
+				if fn.TemplateOf != nil {
+					a.warnAt(fn.Pos(), rd)
+					continue
+				}
 				a.errorAt(fn.Pos(), rd)
 			}
 			unreachable := cfg.CheckUnreachable(funcCFG)
@@ -568,6 +647,19 @@ func Analyze(file *ast.File, model types.Model) (*Result, []Diagnostic) {
 // specialization deduced from it would be a specialization on nothing.
 func (a *Analyzer) dependentContext() bool {
 	return a.curTemplateParams != nil
+}
+
+// callDoesNotReturn reports a call that ends its path: one to a function
+// declared [[noreturn]], or to a builtin that never comes back.
+func (a *Analyzer) callDoesNotReturn(call *ast.CallExpr) bool {
+	if id, isIdent := call.Fun.(*ast.Ident); isIdent {
+		switch id.Text(a.unit) {
+		case "__builtin_unreachable", "__builtin_trap", "__builtin_abort":
+			return true
+		}
+	}
+	fn := a.info.Calls[call]
+	return fn != nil && (fn.NoReturn || fn.TemplateOf != nil && fn.TemplateOf.NoReturn)
 }
 
 // decltypeOf returns the decltype of an expression, considering declared entity type

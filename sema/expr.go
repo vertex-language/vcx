@@ -51,7 +51,11 @@ func (a *Analyzer) CheckExpr(expr ast.Expr) ExprInfo {
 		return info
 	}
 	info := a.checkExpr(expr)
-	if a.info != nil && info.Type != nil {
+	// Inside a requires-expression the nodes are a concept's or a
+	// requires-clause's, one for every set of arguments they are checked
+	// with; what they were for one set is not recorded for the next to read
+	// back (see NewConstContext's Folded and TypeOfExpr).
+	if a.info != nil && info.Type != nil && a.inRequires == 0 {
 		a.info.Types[expr] = info.Type
 	}
 	if info.IsConst {
@@ -204,14 +208,17 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		if isDependentExpr(cond) || isDependentExpr(thenInfo) || isDependentExpr(elseInfo) {
 			return dependentExpr()
 		}
-		ct := conditionalType(thenInfo, elseInfo, e)
-		// Conditional expression value category.
-		cat := PrValue
-		if thenInfo.ValCat == LValue && elseInfo.ValCat == LValue &&
+		// [expr.cond]/4: two glvalues of one value category whose types
+		// differ at most in cv-qualification make a glvalue of the more
+		// qualified type -- `false ? declval<const P&>() : declval<const P&>()`
+		// is an lvalue of `const P`, which common_reference_t is built on.
+		if thenInfo.ValCat == elseInfo.ValCat && (thenInfo.ValCat == LValue || thenInfo.ValCat == XValue) &&
 			types.Unqualify(thenInfo.Type).Equal(types.Unqualify(elseInfo.Type)) {
-			cat = LValue
+			t := types.Qualify(types.Unqualify(thenInfo.Type), types.QualsOf(thenInfo.Type)|types.QualsOf(elseInfo.Type))
+			return ExprInfo{Type: t, ValCat: thenInfo.ValCat}
 		}
-		return ExprInfo{Type: ct, ValCat: cat}
+		ct := conditionalType(thenInfo, elseInfo, e)
+		return ExprInfo{Type: ct, ValCat: PrValue}
 
 	case *ast.CallExpr:
 		return a.checkCallExpr(e)
@@ -223,19 +230,24 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		return a.checkIndexExpr(e)
 
 	case *ast.CastExpr:
-		targetT := BuildDeclarator(e.Type.Decl, BuildDeclSpecs(e.Type.Specs, a.curScope, a.unit).Type, a.curScope, a.unit)
+		// Recorded: a cast to a reference designates its operand's
+		// object, and lowering has to know which type was written.
+		targetT := a.noteTypeId(e.Type)
 		a.CheckExpr(e.X)
 		return castResult(targetT)
 
 	case *ast.NamedCastExpr:
 		// Named cast value category and result type.
-		targetT := BuildDeclarator(e.Type.Decl, BuildDeclSpecs(e.Type.Specs, a.curScope, a.unit).Type, a.curScope, a.unit)
+		targetT := a.noteTypeId(e.Type)
 		a.CheckExpr(e.X)
 		return castResult(targetT)
 
 	case *ast.FunctionalCastExpr:
 		targetT := BuildDeclarator(e.Type.Decl, BuildDeclSpecs(e.Type.Specs, a.curScope, a.unit).Type, a.curScope, a.unit)
 		rec := types.AsRecord(types.Unqualify(targetT))
+		if rec != nil && rec != a.curRecord && a.isClassTemplatePrimary(rec) {
+			return a.checkDeducedFunctionalCast(e, rec)
+		}
 		if e.Args != nil && (rec == nil || !hasUserConstructor(rec)) {
 			// Functional cast list-initialization.
 			a.checkListInit(e.Args, targetT)
@@ -458,7 +470,7 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 
 // noteConst records the value of an expression the analysis evaluated.
 func (a *Analyzer) noteConst(e ast.Expr, n int64) {
-	if a.info != nil {
+	if a.info != nil && a.inRequires == 0 {
 		a.info.Consts[e] = n
 	}
 }
@@ -749,22 +761,38 @@ func (a *Analyzer) checkBinaryExpr(b *ast.BinaryExpr) ExprInfo {
 	leftT := decayed(left.Type)
 	rightT := decayed(right.Type)
 
+	// A class operand with no operator found for it, inside a template, is
+	// most often the current instantiation -- `*(*this + __n)` in a class
+	// nested in one -- whose hidden friends are found when it is made. The
+	// built-in operators take no class, so nothing here could accept it;
+	// the instantiation is checked.
+	if a.dependentContext() && (types.AsRecord(types.Unqualify(types.RemoveReference(leftT))) != nil || types.AsRecord(types.Unqualify(types.RemoveReference(rightT))) != nil) {
+		switch b.Op {
+		case token.ADD, token.SUB, token.MUL, token.QUO, token.REM,
+			token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ,
+			token.SHL, token.SHR, token.AND, token.OR, token.XOR:
+			return dependentExpr()
+		}
+	}
+
 	switch b.Op {
 	case token.ADD, token.SUB, token.MUL, token.QUO, token.REM:
 		if !types.IsArithmetic(leftT) || !types.IsArithmetic(rightT) {
 			// Pointer arithmetic (ptr + int, int + ptr, ptr - int, ptr - ptr)
+			// The result is a prvalue: a `const P __j` operand's qualifier is
+			// not the sum's, and `{ __j + __n } -> same_as<_Ip>` asks for _Ip.
 			if b.Op == token.ADD && types.IsPointer(leftT) && types.IsInteger(rightT) {
-				return ExprInfo{Type: leftT, ValCat: PrValue}
+				return ExprInfo{Type: types.Unqualify(leftT), ValCat: PrValue}
 			}
 			if b.Op == token.ADD && types.IsInteger(leftT) && types.IsPointer(rightT) {
-				return ExprInfo{Type: rightT, ValCat: PrValue}
+				return ExprInfo{Type: types.Unqualify(rightT), ValCat: PrValue}
 			}
 			if b.Op == token.SUB && types.IsPointer(leftT) {
 				if types.IsInteger(rightT) {
-					return ExprInfo{Type: leftT, ValCat: PrValue}
+					return ExprInfo{Type: types.Unqualify(leftT), ValCat: PrValue}
 				}
 				if types.IsPointer(rightT) {
-					return ExprInfo{Type: types.Typ(types.LongLong), ValCat: PrValue} // ptrdiff_t
+					return ExprInfo{Type: a.ptrdiffT(), ValCat: PrValue}
 				}
 			}
 			a.errorAt(b.Pos(), fmt.Sprintf("invalid operands to binary %s (%q and %q)", b.Op, left.Type, right.Type))
@@ -776,6 +804,11 @@ func (a *Analyzer) checkBinaryExpr(b *ast.BinaryExpr) ExprInfo {
 		// Built-in comparison operators take arithmetic, enum, or pointer operands.
 		if !comparable(leftT) || !comparable(rightT) {
 			a.errorAt(b.Pos(), fmt.Sprintf("invalid operands to binary %s (%q and %q)", b.Op, left.Type, right.Type))
+		} else if a.pointerMeetsInteger(leftT, rightT, b.Y, right) || a.pointerMeetsInteger(rightT, leftT, b.X, left) {
+			// [expr.eq]/2, [expr.rel]/2: a pointer compares with a pointer or
+			// a null pointer constant, not with `long` -- which is what
+			// sentinel_for<long, const unsigned*> asks, and answers no.
+			a.errorAt(b.Pos(), fmt.Sprintf("comparison between pointer and integer (%q and %q)", left.Type, right.Type))
 		}
 		return ExprInfo{Type: types.Typ(types.Bool), ValCat: PrValue}
 
@@ -980,8 +1013,8 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 	var candidates []*FuncSymbol
 	var explicit []types.Type
 	var object *Argument
-	if id, ok := c.Fun.(*ast.Ident); ok {
-		syms := LookupUnqualified(a.curScope, id.Text(a.unit))
+	if calleeName, ok := unqualifiedCallee(c.Fun, a.unit); ok {
+		syms := LookupUnqualified(a.curScope, calleeName)
 		foundMember := false
 		for _, s := range syms {
 			if fn, isFn := s.(*FuncSymbol); isFn {
@@ -1003,7 +1036,7 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 		}
 		// Argument-dependent lookup (ADL) in associated namespaces.
 		if !foundMember {
-			candidates = a.addAssociated(candidates, id.Text(a.unit), args)
+			candidates = a.addAssociated(candidates, calleeName, args)
 		}
 	} else if qn, ok := c.Fun.(*ast.QualifiedName); ok {
 		syms := ResolveQualifiedName(qn, a.curScope, a.globalScope, a.unit)
@@ -1080,6 +1113,9 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 			return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
 		}
 		a.ensureInstantiated(resolved)
+		if mentionsAuto(resolved.FuncType.Ret) {
+			a.deduceMemberReturn(resolved)
+		}
 		if a.info != nil {
 			a.info.Calls[c] = resolved
 		}
@@ -1140,25 +1176,20 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 
 	// Call operator() on class objects or lambdas.
 	if rec := types.AsRecord(types.Unqualify(types.RemoveReference(calleeInfo.Type))); rec != nil {
-		var callable []*FuncSymbol
-		for _, m := range rec.Methods {
-			if m.Name != "operator()" {
-				continue
-			}
-			sig, ok := specialize(m.Func, nil, args)
-			if !ok {
-				continue
-			}
-			callable = append(callable, &FuncSymbol{
-				SymName: m.Name, FuncType: sig, InClass: rec,
-			})
-		}
-		if len(callable) > 0 {
-			resolved, err := ResolveOverload(callable, args)
+		// The call operators as the class declares them -- with their
+		// template-heads and requires-clauses -- resolved the way a member
+		// call is: ranges::iter_move's three constrained operator()s are
+		// told apart by their constraints, which a bare signature has lost.
+		if callable := a.memberFuncs(rec, "operator()"); len(callable) > 0 {
+			object := &Argument{Type: types.RemoveReference(calleeInfo.Type), IsLValue: calleeInfo.ValCat != PrValue}
+			resolved, err := a.resolveAmongOn(callable, object, nil, args, c.Pos())
 			if err != nil {
 				a.errorAt(c.Pos(), err.Error())
 				return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
 			}
+			// The call operator's body is instantiated by the call, as any
+			// member's is: `__destroy_vector(*this)()` in vector's destructor.
+			a.ensureInstantiated(resolved)
 			if a.info != nil {
 				a.info.Operators[c] = resolved
 			}
@@ -1166,6 +1197,10 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 			cat := PrValue
 			if types.IsLValueReference(ret) {
 				cat = LValue
+			} else if types.IsRValueReference(ret) {
+				// ranges::iter_move returns int&&: an xvalue, which
+				// decltype reports with its reference.
+				cat = XValue
 			}
 			return ExprInfo{Type: types.RemoveReference(ret), ValCat: cat}
 		}
@@ -1210,19 +1245,29 @@ func (a *Analyzer) calleeNamesAType(fun ast.Expr) (types.Type, bool) {
 	case *ast.QualifiedName:
 		syms = ResolveQualifiedName(f, a.curScope, a.globalScope, a.unit)
 	case *ast.TemplateName:
-		// Class template specialization used as constructor call.
-		isClassTemplate := false
+		// A class template's or an alias template's specialization used as
+		// a constructor call or a conversion: `basic_string_view<char>(p, n)`.
+		// Whatever the lookup finds beside the template -- a deduction guide
+		// is a function of the same name -- a template-id applied to a
+		// class names that class.
+		namesType := false
 		for _, sym := range LookupUnqualified(a.curScope, NameString(f.Name, a.unit)) {
-			if rs, isRec := sym.(*RecordSymbol); isRec && (rs.ClassTemplate != nil || rs.TemplateOf != nil) {
-				isClassTemplate = true
+			switch s := sym.(type) {
+			case *RecordSymbol:
+				namesType = true
+			case *TypeSymbol:
+				namesType = namesType || s.Alias != nil
 			}
 		}
-		if !isClassTemplate {
+		if !namesType {
 			return nil, false
 		}
 		specs := &ast.DeclSpecs{Span: f.Span, List: []ast.DeclSpec{&ast.NamedTypeSpec{Span: f.Span, Typename: ast.NoTok, Name: f}}}
 		info := BuildDeclSpecs(specs, a.curScope, a.unit)
-		if info.Type == nil || info.Unresolved != "" {
+		if info.Type == nil {
+			if os.Getenv("VCX_DEBUG_TEMPLATEID") != "" {
+				fmt.Fprintf(os.Stderr, "callee %s names no type (unresolved %q)\n", NameString(f, a.unit), info.Unresolved)
+			}
 			return nil, false
 		}
 		return info.Type, true
@@ -1253,15 +1298,31 @@ func (a *Analyzer) calleeNamesAType(fun ast.Expr) (types.Type, bool) {
 func (a *Analyzer) checkMemberExpr(m *ast.MemberExpr) ExprInfo {
 	lhs := a.CheckExpr(m.X)
 
-	// Dependent member access.
-	if isDependentExpr(lhs) {
+	// Dependent member access -- including through a placeholder-typed
+	// parameter, `auto& __parse_ctx`, which makes its function a template.
+	if isDependentExpr(lhs) || lhs.Type != nil && mentionsAuto(lhs.Type) {
 		return dependentExpr()
 	}
 
 	var rec *types.Record
 
+	if _, isDtor := m.Sel.(*ast.DestructorName); isDtor {
+		// [expr.prim.id.dtor]/2: `__loc->~_Tp()` for a scalar _Tp names a
+		// pseudo-destructor, whose call does nothing.
+		operand := lhs.Type
+		if m.Op == token.ARROW {
+			if p, isPtr := types.Unqualify(types.RemoveReference(operand)).(*types.Pointer); isPtr {
+				operand = p.Elem
+			}
+		}
+		if operand != nil && types.AsRecord(types.Unqualify(types.RemoveReference(operand))) == nil {
+			return ExprInfo{Type: &types.Func{Ret: types.Typ(types.Void)}, ValCat: PrValue}
+		}
+	}
+
 	if m.Op == token.PERIOD {
 		rec = types.AsRecord(lhs.Type)
+		a.completeNamedSpecialization(rec, m.Pos())
 		if rec == nil {
 			a.errorAt(m.X.Pos(), fmt.Sprintf("expected class or struct before '.', got %q", lhs.Type))
 			return ExprInfo{Type: types.Typ(types.Int), ValCat: LValue}
@@ -1269,6 +1330,7 @@ func (a *Analyzer) checkMemberExpr(m *ast.MemberExpr) ExprInfo {
 	} else if m.Op == token.ARROW {
 		if pointee := a.arrowPointee(m, lhs); pointee != nil {
 			rec = types.AsRecord(pointee)
+			a.completeNamedSpecialization(rec, m.Pos())
 		}
 		if rec == nil {
 			a.errorAt(m.X.Pos(), fmt.Sprintf("expected pointer to class before '->', got %q", lhs.Type))
@@ -1286,6 +1348,12 @@ func (a *Analyzer) checkMemberExpr(m *ast.MemberExpr) ExprInfo {
 	if len(syms) == 0 {
 		// Dependent base classes may provide the member.
 		if hasDependentBase(rec) {
+			return dependentExpr()
+		}
+		// So may a class template not yet made for its arguments --
+		// `basic_string_view<_CharT>` in a template as written names the
+		// template, whose members are its instantiation's.
+		if a.dependentContext() && (!rec.Complete || argsDependent(rec.TemplateArgs) || a.isClassTemplatePrimary(rec)) {
 			return dependentExpr()
 		}
 		a.errorAt(m.Sel.Pos(), fmt.Sprintf("no member named %q in %s", memberName, rec.String()))
@@ -1306,6 +1374,19 @@ func (a *Analyzer) checkMemberExpr(m *ast.MemberExpr) ExprInfo {
 	}
 
 	return a.foldConstant(m, a.symToExprInfo(sym), sym)
+}
+
+// pointerMeetsInteger reports whether a comparison sets a pointer against an
+// integer or enumeration operand other than a null pointer constant.
+func (a *Analyzer) pointerMeetsInteger(ptrT, otherT types.Type, other ast.Expr, otherInfo ExprInfo) bool {
+	if !isPointerLike(ptrT) || types.Unqualify(ptrT).Kind() == types.NullptrKind {
+		return false
+	}
+	o := types.Unqualify(types.RemoveReference(otherT))
+	if !types.IsArithmetic(o) && !types.IsEnum(o) {
+		return false
+	}
+	return !isNullConstant(other, otherInfo)
 }
 
 // decayed applies array-to-pointer and function-to-pointer decay.
@@ -1423,8 +1504,16 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 	// Deduced return type without trailing return type.
 	var ret types.Type = types.Typ(types.AutoKind)
 	if l.Trailing != nil && l.Trailing.Type != nil {
-		ti := BuildDeclSpecs(l.Trailing.Type.Specs, a.curScope, a.unit)
-		ret = BuildDeclarator(l.Trailing.Type.Decl, ti.Type, a.curScope, a.unit)
+		// The parameters are in scope in the trailing return type:
+		// `[](basic_string& __s) -> decltype(__s.__rep_)&&`.
+		trailScope := NewScope(a.curScope, BlockScope, nil)
+		for _, p := range params {
+			if p.Name != "" {
+				trailScope.Insert(&VarSymbol{SymName: p.Name, SymType: p.Type, SymScope: trailScope, IsParam: true})
+			}
+		}
+		ti := BuildDeclSpecs(l.Trailing.Type.Specs, trailScope, a.unit)
+		ret = BuildDeclarator(l.Trailing.Type.Decl, ti.Type, trailScope, a.unit)
 	}
 
 	var quals types.Qual
@@ -1619,6 +1708,15 @@ func (a *Analyzer) noteTypeId(id *ast.TypeId) types.Type {
 }
 
 // sizeT returns the std::size_t type for the target model.
+// ptrdiffT is std::ptrdiff_t, the type of a pointer difference: long where
+// long is pointer-sized (LP64), long long where it is not (LLP64).
+func (a *Analyzer) ptrdiffT() types.Type {
+	if sz, ok := a.model.Sizeof(types.Typ(types.Long)); ok && sz == a.model.SizePtr {
+		return types.Typ(types.Long)
+	}
+	return types.Typ(types.LongLong)
+}
+
 func (a *Analyzer) sizeT() types.Type {
 	if sz, ok := a.model.Sizeof(types.Typ(types.Long)); ok && sz == a.model.SizePtr {
 		return types.Typ(types.ULong)
@@ -1744,6 +1842,20 @@ func (a *Analyzer) arrowPointee(m *ast.MemberExpr, lhs ExprInfo) types.Type {
 // checkTemplateIdExpr checks a template-id in expression position (variable template or concept).
 func (a *Analyzer) checkTemplateIdExpr(e ast.Expr, tn *ast.TemplateName, syms []Symbol) ExprInfo {
 	name := NameString(tn.Name, a.unit)
+	if os.Getenv("VCX_DEBUG_TEMPLATEID") != "" {
+		for _, sym := range syms {
+			fmt.Fprintf(os.Stderr, "template-id %s -> %T %s\n", name, sym, sym.Type())
+		}
+		args := templateArgs(tn, a.curScope, a.unit)
+		fmt.Fprintf(os.Stderr, "template-id %s dependentContext=%v argsDependent=%v args=%s instantiating=%v\n", name, a.dependentContext(), argsDependent(args), argsKey(args), a.instantiating)
+		for i, arg := range args {
+			fmt.Fprintf(os.Stderr, "template-id %s arg[%d] isType=%v go=%T %v\n", name, i, arg.IsType, arg.Type, arg.Type)
+			if ts, isSpec := arg.Type.(*types.TemplateSpecialization); isSpec {
+				fmt.Fprintf(os.Stderr, "template-id %s arg[%d] spec inner go=%T args=%d\n", name, i, ts.Type, len(ts.Args))
+			}
+		}
+
+	}
 	for _, sym := range syms {
 		switch s := sym.(type) {
 		case *DependentSymbol:
@@ -1764,6 +1876,13 @@ func (a *Analyzer) checkTemplateIdExpr(e ast.Expr, tn *ast.TemplateName, syms []
 				n = 1
 			}
 			a.noteConst(e, n)
+			// Only in a function body, which each specialization has a copy
+			// of: a concept-id in a template-head or a default template
+			// argument is one node that every set of arguments reads, and
+			// what one set decided is no answer for the next.
+			if a.inRequires == 0 && a.info != nil && a.curFunc != nil {
+				a.info.ConceptValues[e] = v
+			}
 			return ExprInfo{Type: types.Typ(types.Bool), ValCat: PrValue, IsConst: true, ConstVal: n}
 		case *VarSymbol:
 			if s.Template == nil {
@@ -1781,6 +1900,22 @@ func (a *Analyzer) checkTemplateIdExpr(e ast.Expr, tn *ast.TemplateName, syms []
 			return a.foldConstant(e, a.symToExprInfo(inst), inst)
 		case *FuncSymbol:
 			return a.symToExprInfo(s)
+		}
+	}
+	// In a template as written, a class or alias template's specialization
+	// written where an expression goes is an argument to something that
+	// takes a type -- `__builtin_convertvector(__vec, __simd_vector<bool,
+	// _Np>)` -- and is checked with the instantiation.
+	if a.dependentContext() {
+		for _, sym := range syms {
+			switch s := sym.(type) {
+			case *RecordSymbol:
+				return dependentExpr()
+			case *TypeSymbol:
+				if s.Alias != nil {
+					return dependentExpr()
+				}
+			}
 		}
 	}
 	if len(syms) == 0 {
@@ -1933,6 +2068,14 @@ func (a *Analyzer) resolveAmongOn(candidates []*FuncSymbol, object *Argument, ex
 	viable := candidates[:0:0]
 	var whyNot []string
 	for _, cand := range candidates {
+		if cand.Template == nil && a.dependentContext() && isDependent(cand.FuncType) {
+			// A member of a class template as written: its signature mentions
+			// the class's parameters, which no call deduces. Deducing them
+			// would read `starts_with(value_type)` as `starts_with(bsv)` for a
+			// bsv argument; the types are settled by the instantiation.
+			viable = append(viable, cand)
+			continue
+		}
 		var paramNames []string
 		if cand.Template != nil {
 			for _, p := range cand.Template.Params {
@@ -1986,6 +2129,12 @@ func (a *Analyzer) resolveAmongOn(candidates []*FuncSymbol, object *Argument, ex
 		templateOf[&sub] = cand
 		viable = append(viable, &sub)
 	}
+	if len(viable) == 0 && a.dependentContext() && len(candidates) > 0 {
+		// In a template as written, arguments of the current instantiation
+		// -- __bit_iterator<vector<bool, _Allocator>, true> -- deduce against
+		// nothing yet. The call is resolved when they are types.
+		return candidates[0], nil
+	}
 	if len(viable) == 0 {
 		if len(whyNot) > 0 {
 			return nil, fmt.Errorf("no candidate matches: %s", strings.Join(whyNot, "; "))
@@ -2003,6 +2152,16 @@ func (a *Analyzer) resolveAmongOn(candidates []*FuncSymbol, object *Argument, ex
 		if best := a.moreConstrained(viable, object, args); best != nil {
 			resolved, err = best, nil
 		}
+	}
+	if err != nil && len(viable) > 0 && a.dependentContext() {
+		// Inside a template as written, candidates that could not be told
+		// apart are often told apart by a condition on its parameters --
+		// `__has_max_size_v<const _Ap>` -- that only the instantiation can
+		// evaluate. The call is resolved there; nothing is instantiated here.
+		if tmpl := templateOf[viable[0]]; tmpl != nil {
+			return tmpl, nil
+		}
+		return viable[0], nil
 	}
 	if err != nil {
 		return nil, err
@@ -2023,6 +2182,7 @@ func (a *Analyzer) resolveAmongOn(candidates []*FuncSymbol, object *Argument, ex
 
 // memberFuncs returns candidate member function symbols matching the given name.
 func (a *Analyzer) memberFuncs(rec *types.Record, name string) []*FuncSymbol {
+	a.completeNamedSpecialization(rec, 0)
 	var out []*FuncSymbol
 	if name == rec.Name {
 		// Inherited constructors exclude copy and move constructors.
@@ -2046,6 +2206,14 @@ func (a *Analyzer) memberFuncs(rec *types.Record, name string) []*FuncSymbol {
 			out = append(out, reg)
 			continue
 		}
+		// The symbol the class's scope holds for this member carries what
+		// the bare method does not -- a member template's head, a
+		// requires-clause -- and without those ranges::iter_move's three
+		// constrained operator()s all look viable and tie.
+		if declared := a.declaredMember(rec, m); declared != nil {
+			out = append(out, declared)
+			continue
+		}
 		out = append(out, &FuncSymbol{
 			SymName: m.Name, FuncType: m.Func, InClass: rec, Method: m,
 			Explicit: m.Explicit, Defaulted: m.Defaulted, Deleted: m.Deleted,
@@ -2063,11 +2231,43 @@ func isReferenceTo(t types.Type, rec *types.Record) bool {
 	return types.AsRecord(types.Unqualify(types.RemoveReference(t))) == rec
 }
 
+// templateNamedAsArgument is the template a bare name in a template argument
+// list denotes, when it denotes one: an alias template, or a class template
+// named from outside itself -- inside, the name is the injected-class-name and
+// a type.
+func (a *Analyzer) templateNamedAsArgument(syms []Symbol) *types.TemplateRef {
+	if ref := aliasTemplateRef(syms); ref != nil {
+		return ref
+	}
+	for _, sym := range syms {
+		rs, isRec := sym.(*RecordSymbol)
+		if !isRec || rs.ClassTemplate == nil || rs.TemplateOf != nil || rs.Record == nil {
+			continue
+		}
+		for r := a.curRecord; r != nil; r = nil {
+			if r == rs.Record || primaryRecords[r] == rs.Record {
+				return nil
+			}
+		}
+		return &types.TemplateRef{Name: rs.SymName, Primary: rs.Record}
+	}
+	return nil
+}
+
 // explicitTemplateArgs builds explicit template arguments for a call.
 func (a *Analyzer) explicitTemplateArgs(tn *ast.TemplateName) ([]types.Type, bool) {
 	var explicit []types.Type
 	for _, argNode := range tn.Args {
 		if typeId, isType := argNode.(*ast.TypeId); isType {
+			if name := bareTypeName(typeId); name != nil && namesTemplateItself(name) {
+				// `std::__sfinae_test_impl<__test_for_primary_template, _Tp>`:
+				// an argument for a template template parameter is the
+				// template, not a type made of it.
+				if ref := a.templateNamedAsArgument(lookupName(name, a.curScope, a.unit)); ref != nil {
+					explicit = append(explicit, ref)
+					continue
+				}
+			}
 			if name := bareTypeName(typeId); name != nil {
 				if e, isExpr := name.(ast.Expr); isExpr && namesAValue(lookupName(name, a.curScope, a.unit)) {
 					if n, err := a.NewConstContext().EvalInt(e); err == nil {
@@ -2637,4 +2837,174 @@ func arityAdmits(ft *types.Func, n int) bool {
 		}
 	}
 	return n >= required
+}
+
+// unqualifiedCallee is the name an unqualified call is looked up by: an
+// identifier, or an operator-function-id written as a call --
+// `operator=(static_cast<bool>(x))` in libc++'s __bit_reference.
+func unqualifiedCallee(fun ast.Expr, u ast.Unit) (string, bool) {
+	switch n := fun.(type) {
+	case *ast.Ident:
+		return n.Text(u), true
+	case *ast.OperatorName:
+		return NameString(n, u), true
+	}
+	return "", false
+}
+
+// declaredMember is the function symbol a class's scope holds for one of its
+// methods, or nil when the class has no scope to ask.
+func (a *Analyzer) declaredMember(rec *types.Record, m *types.Method) *FuncSymbol {
+	rs := a.curScope.recordSymbol(rec)
+	if rs == nil || rs.ClassScope == nil {
+		return nil
+	}
+	for _, sym := range rs.ClassScope.LookupLocal(m.Name) {
+		if fn, isFn := sym.(*FuncSymbol); isFn && fn.Method == m && fn.TemplateOf == nil {
+			return fn
+		}
+	}
+	return nil
+}
+
+// checkDeducedFunctionalCast is `pair{__first, __last}`: a class template
+// named without arguments, which the initializer deduces ([over.match.class.deduct]).
+func (a *Analyzer) checkDeducedFunctionalCast(e *ast.FunctionalCastExpr, primary *types.Record) ExprInfo {
+	items := e.ArgList
+	if e.Args != nil {
+		for _, item := range e.Args.Items {
+			if x, isExpr := item.(ast.Expr); isExpr {
+				items = append(items, x)
+			}
+		}
+	}
+	var args []Argument
+	for _, item := range items {
+		info := a.CheckExpr(item)
+		if isDependentExpr(info) {
+			return dependentExpr()
+		}
+		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue, NullConst: isNullConstant(item, info)})
+	}
+	if dependentArguments(args) {
+		return dependentExpr()
+	}
+	targetT := a.deduceClassTemplateArgs(a.curScope.recordSymbol(primary), args, e.Pos())
+	if targetT == nil {
+		if a.dependentContext() {
+			return dependentExpr()
+		}
+		a.errorAt(e.Pos(), fmt.Sprintf("cannot deduce the template arguments of %s from this initializer", primary.Name))
+		return ExprInfo{Type: primary, ValCat: PrValue}
+	}
+	rec := types.AsRecord(targetT)
+	if rec != nil && hasUserConstructor(rec) {
+		chosen, err := a.chooseConstructor(rec, args)
+		if err != nil {
+			a.errorAt(e.Pos(), fmt.Sprintf("no matching constructor for %s: %v", rec.Name, err))
+		} else if !chosen.Defaulted && a.info != nil {
+			a.info.Casts[e] = chosen
+		}
+	}
+	return ExprInfo{Type: targetT, ValCat: PrValue}
+}
+
+// deduceClassTemplateArgs finds the specialization of a class template that
+// arguments deduce: through its deduction guides, then through the
+// constructors of the template as written, each a guide of its own.
+func (a *Analyzer) deduceClassTemplateArgs(rs *RecordSymbol, args []Argument, at ast.Tok) types.Type {
+	if rs == nil || rs.ClassTemplate == nil {
+		return nil
+	}
+	info := rs.ClassTemplate
+	for _, g := range info.Guides {
+		sig, b, ok := specializeNamed(g.Func, templateParamSymbolNames(g.Params), nil, args)
+		if !ok || !argumentsConvert(sig, args) {
+			continue
+		}
+		ts, isSpec := types.Unqualify(substitute(g.Func.Ret, b)).(*types.TemplateSpecialization)
+		if !isSpec || !concrete(ts.Args) {
+			continue
+		}
+		if inst := a.instantiateClass(rs, ts.Args, at); inst != nil {
+			return inst.Record
+		}
+	}
+	classNames := templateParamSymbolNames(info.Params)
+	for _, ctor := range a.memberFuncs(rs.Record, rs.Record.Name) {
+		if ctor.FuncType == nil {
+			continue
+		}
+		names := classNames
+		if ctor.Template != nil {
+			names = append(append([]string{}, classNames...), templateParamSymbolNames(ctor.Template.Params)...)
+		}
+		sig, b, ok := specializeNamed(ctor.FuncType, names, nil, args)
+		if !ok || !argumentsConvert(sig, args) {
+			continue
+		}
+		var targs []types.TemplateArg
+		complete := true
+		for _, p := range info.Params {
+			bound, has := b[p.SymName]
+			if !has {
+				complete = p.Default != nil
+				break
+			}
+			if vb, isVal := bound.(*valueBound); isVal {
+				targs = append(targs, types.TemplateArg{Val: vb.Val, ValType: vb.Type})
+			} else {
+				targs = append(targs, types.TemplateArg{IsType: true, Type: bound})
+			}
+		}
+		if !complete || !concrete(targs) {
+			continue
+		}
+		if inst := a.instantiateClass(rs, targs, at); inst != nil {
+			return inst.Record
+		}
+	}
+	return nil
+}
+
+// templateParamSymbolNames is the names of template parameters, in order.
+func templateParamSymbolNames(params []*TemplateParamSymbol) []string {
+	names := make([]string, len(params))
+	for i, p := range params {
+		names[i] = p.SymName
+	}
+	return names
+}
+
+// argumentsConvert reports whether each argument converts to its parameter
+// of a deduced signature, and the parameters it leaves have defaults.
+func argumentsConvert(sig *types.Func, args []Argument) bool {
+	if sig == nil {
+		return false
+	}
+	for i, arg := range args {
+		if i >= len(sig.Params) {
+			return sig.Variadic
+		}
+		if sig.Params[i].Pack {
+			return true
+		}
+		cs := ClassifyConversion(arg.Type, sig.Params[i].Type, arg.IsLValue)
+		if !cs.Valid && !(arg.NullConst && isPointerLike(sig.Params[i].Type)) {
+			return false
+		}
+	}
+	for _, p := range sig.Params[min(len(args), len(sig.Params)):] {
+		if !p.HasDefault && !p.Pack {
+			return false
+		}
+	}
+	return true
+}
+
+// isClassTemplatePrimary reports whether a record is a class template as
+// written rather than one of its specializations.
+func (a *Analyzer) isClassTemplatePrimary(rec *types.Record) bool {
+	rs := a.curScope.recordSymbol(rec)
+	return rs != nil && rs.ClassTemplate != nil && rec.TemplateArgs == nil
 }

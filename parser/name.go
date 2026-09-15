@@ -128,6 +128,16 @@ func (p *parser) parseUnqualifiedName() ast.Name {
 	case token.OPERATOR:
 		base = p.parseOperatorName()
 
+	case token.DECLTYPE:
+		// decltype(e) begins a nested-name-specifier -- `decltype(e)::type`
+		// -- and is a name only there. Anywhere else it is a type-specifier,
+		// and not this function's to read.
+		if tmplTok.IsValid() || p.qualifiedPart || !p.decltypeBeforeScope() {
+			return nil
+		}
+		dt := p.parseDecltypeSpec()
+		return &ast.DecltypeName{Span: ast.Span{Lo: dt.Pos(), Hi: dt.End()}, Spec: dt}
+
 	default:
 		if tmplTok != ast.NoTok {
 			p.error(p.cur, "expected name after template")
@@ -393,4 +403,26 @@ func (p *parser) parseTemplateArgExpr() ast.Expr {
 	p.inTemplateArgs++
 	defer func() { p.inTemplateArgs-- }()
 	return p.parseAssignmentExpr()
+}
+
+// decltypeBeforeScope reports whether the cursor is at `decltype( ... ) ::`:
+// a decltype-specifier that begins a nested-name-specifier.
+func (p *parser) decltypeBeforeScope() bool {
+	if p.peekAt(0) != token.DECLTYPE || p.peekAt(1) != token.LPAREN {
+		return false
+	}
+	depth := 0
+	for i := 1; ; i++ {
+		switch p.peekAt(i) {
+		case token.LPAREN:
+			depth++
+		case token.RPAREN:
+			depth--
+			if depth == 0 {
+				return p.peekAt(i+1) == token.SCOPE
+			}
+		case token.EOF:
+			return false
+		}
+	}
 }

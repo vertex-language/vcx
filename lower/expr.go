@@ -66,9 +66,15 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 		return fl.call(e)
 
 	case *ast.CastExpr:
+		if _, _, isRef := fl.castRef(e); isRef {
+			return fl.rvalue(e)
+		}
 		return fl.convert(fl.expr(e.X), fl.typeOf(e.X), fl.typeOf(e))
 
 	case *ast.NamedCastExpr:
+		if _, _, isRef := fl.castRef(e); isRef {
+			return fl.rvalue(e)
+		}
 		return fl.convert(fl.expr(e.X), fl.typeOf(e.X), fl.typeOf(e))
 
 	case *ast.CondExpr:
@@ -317,8 +323,36 @@ func (fl *fn) lvalue(e ast.Expr) (ir.Ptr, types.Type, bool) {
 		}
 	}
 
+	if ref, x, isRef := fl.castRef(e); isRef {
+		addr, ok := fl.bind(x, ref)
+		return addr, types.RemoveReference(ref), ok
+	}
+
 	fl.u.errorf(e.Pos(), "lowering does not handle %T as an lvalue yet", e)
 	return ir.Ptr{}, nil, false
+}
+
+// castRef is the reference type a cast names, and its operand, when it
+// names one. Such a cast designates the operand's object -- std::move
+// and std::forward are one -- and so has an address rather than a value
+// copied somewhere new; copying it left the reference pointing into a
+// frame that had returned.
+func (fl *fn) castRef(e ast.Expr) (types.Type, ast.Expr, bool) {
+	var id *ast.TypeId
+	var x ast.Expr
+	switch c := e.(type) {
+	case *ast.CastExpr:
+		id, x = c.Type, c.X
+	case *ast.NamedCastExpr:
+		id, x = c.Type, c.X
+	default:
+		return nil, nil, false
+	}
+	t := fl.u.res.Info.TypeIds[id]
+	if t == nil || !isReference(t) {
+		return nil, nil, false
+	}
+	return t, x, true
 }
 
 // memberAddr returns the storage address and type of a member access.
@@ -733,6 +767,14 @@ func (fl *fn) call(e *ast.CallExpr) ir.Value {
 	}
 	if op := fl.u.res.Info.Operators[e]; op != nil {
 		return fl.operatorValue(e, op, e.Fun, e.Args)
+	}
+	if m, isMember := unparen(e.Fun).(*ast.MemberExpr); isMember && fl.u.res.Info.Calls[e] == nil {
+		if _, isDtor := m.Sel.(*ast.DestructorName); isDtor {
+			// A pseudo-destructor call, `__loc->~_Tp()` for a scalar _Tp,
+			// evaluates its object expression and does nothing else.
+			fl.expr(m.X)
+			return nil
+		}
 	}
 	callee := fl.u.res.Info.Calls[e]
 	var v ir.Value
@@ -1244,6 +1286,9 @@ func (fl *fn) isLValueShape(e ast.Expr) bool {
 	case *ast.BinaryExpr, *ast.IncDecExpr:
 		op := fl.u.res.Info.Operators[e]
 		return op != nil && isReference(op.FuncType.Ret)
+	case *ast.CastExpr, *ast.NamedCastExpr:
+		_, _, isRef := fl.castRef(e)
+		return isRef
 	}
 	return false
 }
@@ -1274,6 +1319,10 @@ func (fl *fn) lvalueQuiet(e ast.Expr) (ir.Ptr, types.Type, bool) {
 			return ir.Ptr{}, nil, false
 		}
 		return fl.lvalue(e.Lhs)
+	case *ast.CastExpr, *ast.NamedCastExpr:
+		if _, _, isRef := fl.castRef(e); isRef {
+			return fl.lvalue(e)
+		}
 	}
 	return ir.Ptr{}, nil, false
 }

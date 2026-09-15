@@ -447,6 +447,21 @@ func (fl *fn) initList(dst ir.Ptr, t types.Type, list *ast.InitList) {
 		baseOffs := make([]int64, len(rec.Bases))
 		fl.u.model.LayoutWithBases(rec, fieldOffs, baseOffs)
 		items := list.Items
+		// [dcl.init.aggr]/3.1: designated initializers name the members they
+		// initialize -- `__fields{.__type_ = true}` -- and the rest take their
+		// default member initializers.
+		var named map[string]ast.Expr
+		for _, it := range items {
+			if d, isDesignated := it.(*ast.DesignatedInit); isDesignated && d.Name != nil {
+				if named == nil {
+					named = map[string]ast.Expr{}
+				}
+				named[d.Name.Text(fl.u.unit)] = d.Value
+			}
+		}
+		if named != nil {
+			items = nil
+		}
 		for i, b := range rec.Bases {
 			at := dst
 			if baseOffs[i] != 0 {
@@ -468,8 +483,19 @@ func (fl *fn) initList(dst ir.Ptr, t types.Type, list *ast.InitList) {
 			if fieldOffs[i] != 0 {
 				at = fl.blk.Ptr.Add(dst, fl.blk.I64.Const(fieldOffs[i]))
 			}
-			if i < len(items) {
-				switch item := items[i].(type) {
+			var given ast.Node
+			if named != nil {
+				if v, ok := named[f.Name]; ok && f.Name != "" {
+					given = v
+				}
+			} else if i < len(items) {
+				given = items[i]
+			}
+			if f.BitField && fl.bitFieldInit(dst, rec, i, f, given) {
+				continue
+			}
+			if given != nil {
+				switch item := given.(type) {
 				case *ast.InitList:
 					fl.initList(at, f.Type, item)
 					continue
@@ -704,6 +730,30 @@ func (fl *fn) whileStmt(s *ast.WhileStmt) {
 	fl.blk.Br(header.To())
 
 	fl.blk = header
+	if d, isDecl := s.Cond.(*ast.SimpleDecl); isDecl && len(d.Inits) == 1 {
+		// `while (unsigned char __c = *__ptr++)`: the variable is declared
+		// afresh, and tested, on each pass through the header.
+		fl.pushScope()
+		defer fl.popScope()
+		init := d.Inits[0]
+		fl.declareLocal(init)
+		sym := fl.localSymbol(init)
+		if fl.blk == nil || sym == nil {
+			return
+		}
+		slot, has := fl.slots[sym]
+		if !has {
+			fl.u.errorf(s.Pos(), "lowering found no storage for the condition's variable")
+			return
+		}
+		c := fl.truthOf(fl.load(slot, types.RemoveReference(sym.SymType)), s.Pos())
+		if c == nil {
+			return
+		}
+		fl.blk.BrIf(*c, body.To(), exit.To())
+		fl.loop(body, header, exit, s.Body, header)
+		return
+	}
 	cond, ok := s.Cond.(ast.Expr)
 	if !ok {
 		fl.u.errorf(s.Pos(), "lowering does not handle a declaration as a condition yet")
@@ -902,4 +952,52 @@ func (fl *fn) rangeForStmt(s *ast.RangeForStmt) {
 	fl.blk.Br(head.To())
 
 	fl.blk = exit
+}
+
+// bitFieldInit initializes one bit-field member of an aggregate -- from its
+// item, its default member initializer, or zero -- into its bits, the other
+// bits of its storage unit kept. It reports whether the member was handled.
+func (fl *fn) bitFieldInit(dst ir.Ptr, rec *types.Record, i int, f types.Field, given ast.Node) bool {
+	unitOff, _, _, ok := fl.u.model.BitField(rec, i)
+	if !ok {
+		return false
+	}
+	if f.Name == "" {
+		return true // an unnamed bit-field is padding
+	}
+	bf, found := fl.u.bitFieldNamed(rec, f.Name)
+	if !found {
+		return false
+	}
+	unit := dst
+	if unitOff != 0 {
+		unit = fl.blk.Ptr.Add(dst, fl.blk.I64.Const(unitOff))
+	}
+	var src ast.Expr
+	if given != nil {
+		if l, isList := given.(*ast.InitList); isList {
+			if len(l.Items) > 0 {
+				src, _ = l.Items[0].(ast.Expr)
+			}
+		} else {
+			src, _ = given.(ast.Expr)
+		}
+	} else if decl := fl.u.res.Info.MemberInits[rec][f.Name]; decl != nil {
+		src = decl.Value
+		if src == nil && decl.Braced != nil && len(decl.Braced.Items) > 0 {
+			src, _ = decl.Braced.Items[0].(ast.Expr)
+		}
+	}
+	var val ir.Value
+	from := f.Type
+	if src != nil {
+		val, from = fl.expr(src), fl.typeOf(src)
+	} else {
+		val = fl.zeroOf(f.Type)
+	}
+	if val == nil || fl.blk == nil {
+		return true
+	}
+	fl.bitFieldStore(unit, bf, fl.convert(val, from, f.Type))
+	return true
 }

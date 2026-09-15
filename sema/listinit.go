@@ -61,6 +61,26 @@ func (a *Analyzer) checkListInit(list *ast.InitList, target types.Type) {
 			a.errorAt(list.Pos(), fmt.Sprintf("too many initializers for %s", rec.Name))
 		}
 		for i, item := range list.Items {
+			// [dcl.init.aggr]/3.1: `.__type_ = true` initializes the member it
+			// names, whatever its position.
+			if d, isDesignated := item.(*ast.DesignatedInit); isDesignated {
+				name := ""
+				if d.Name != nil {
+					name = d.Name.Text(a.unit)
+				}
+				found := false
+				for _, f := range fields {
+					if f.Name != "" && f.Name == name {
+						a.checkListItem(d.Value, f.Type)
+						found = true
+						break
+					}
+				}
+				if !found {
+					a.errorAt(item.Pos(), fmt.Sprintf("no member named %q in %s", name, rec.Name))
+				}
+				continue
+			}
 			if i < len(fields) {
 				a.checkListItem(item, fields[i].Type)
 			}

@@ -267,7 +267,7 @@ func (u *unit) callee(fn *sema.FuncSymbol) ir.Callee {
 		u.pendingFuncs = append(u.pendingFuncs, fn)
 		return f
 	}
-	if declared := u.declaredFor(fn); declared != nil && declared != fn {
+	if declared := u.declaredFor(fn); declared != nil && declared != fn && !(fn.TemplateOf != nil && declared.Template != nil && declared.TemplateOf == nil) {
 		c := u.callee(declared)
 		u.imports[fn] = c
 		return c

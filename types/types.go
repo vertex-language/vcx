@@ -95,7 +95,7 @@ func (b *Basic) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*Basic)
+	o, ok := strictOther(other).(*Basic)
 	return ok && b.K == o.K
 }
 
@@ -174,7 +174,7 @@ func (p *Pointer) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*Pointer)
+	o, ok := strictOther(other).(*Pointer)
 	return ok && (p.Elem == nil && o.Elem == nil || (p.Elem != nil && p.Elem.Equal(o.Elem)))
 }
 
@@ -189,7 +189,7 @@ func (r *LValueReference) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*LValueReference)
+	o, ok := strictOther(other).(*LValueReference)
 	return ok && (r.Elem == nil && o.Elem == nil || (r.Elem != nil && r.Elem.Equal(o.Elem)))
 }
 
@@ -204,7 +204,7 @@ func (r *RValueReference) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*RValueReference)
+	o, ok := strictOther(other).(*RValueReference)
 	return ok && (r.Elem == nil && o.Elem == nil || (r.Elem != nil && r.Elem.Equal(o.Elem)))
 }
 
@@ -220,7 +220,7 @@ func (m *MemberPointer) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*MemberPointer)
+	o, ok := strictOther(other).(*MemberPointer)
 	return ok && m.Class.Equal(o.Class) && m.Elem.Equal(o.Elem)
 }
 
@@ -243,7 +243,7 @@ func (a *Array) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*Array)
+	o, ok := strictOther(other).(*Array)
 	if !ok || !a.Elem.Equal(o.Elem) {
 		return false
 	}
@@ -294,7 +294,7 @@ func (f *Func) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*Func)
+	o, ok := strictOther(other).(*Func)
 	if !ok || f.Variadic != o.Variadic || f.Quals != o.Quals || f.RefQual != o.RefQual || f.Noexcept != o.Noexcept {
 		return false
 	}
@@ -359,6 +359,10 @@ type Field struct {
 
 	// Align is the member's alignas value, zero when none.
 	Align int64
+
+	// NoUniqueAddress is [[no_unique_address]] on the member: an empty class
+	// member so marked takes no storage of its own ([dcl.attr.nouniqueaddr]).
+	NoUniqueAddress bool
 }
 
 // Method represents a member function.
@@ -386,6 +390,11 @@ type Record struct {
 
 	// Scopes are the namespaces and classes enclosing the declaration, outermost first.
 	Scopes []string
+
+	// Outer is the class a nested class is declared in -- the specialization
+	// itself for a member class of one, `vector<int>` for its
+	// `__destroy_vector` -- whose template arguments are part of the name.
+	Outer *Record
 
 	// TemplateArgs is set on a specialization of a class template: the
 	// arguments it was instantiated with, which are part of its name.
@@ -418,7 +427,7 @@ func (r *Record) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*Record)
+	o, ok := strictOther(other).(*Record)
 	return ok && r == o
 }
 
@@ -454,7 +463,7 @@ func (e *Enum) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*Enum)
+	o, ok := strictOther(other).(*Enum)
 	return ok && e == o
 }
 
@@ -474,7 +483,7 @@ func (tp *TemplateParam) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*TemplateParam)
+	o, ok := strictOther(other).(*TemplateParam)
 	return ok && tp.Index == o.Index && tp.Depth == o.Depth && tp.IsType == o.IsType && tp.IsPack == o.IsPack
 }
 
@@ -528,7 +537,7 @@ func (ts *TemplateSpecialization) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*TemplateSpecialization)
+	o, ok := strictOther(other).(*TemplateSpecialization)
 	if !ok || ts.Name != o.Name || len(ts.Args) != len(o.Args) {
 		return false
 	}
@@ -540,17 +549,24 @@ func (ts *TemplateSpecialization) Equal(other Type) bool {
 	return true
 }
 
-// TemplateRef represents a template template argument: a class template named by its primary record.
+// TemplateRef represents a template template argument: a class template named
+// by its primary record, or an alias template.
 type TemplateRef struct {
 	Name    string
 	Primary *Record
+
+	// Alias is the analysis's symbol for an alias template passed as the
+	// argument -- `__pointer_member` to `template <class...> class _Op` --
+	// and nil for a class template. It is opaque here: the symbol belongs to
+	// the analyzer, which binds the parameter to it.
+	Alias any
 }
 
 func (*TemplateRef) Kind() Kind { return TemplateRefKind }
 
 func (t *TemplateRef) Equal(other Type) bool {
 	o, ok := other.(*TemplateRef)
-	return ok && t.Primary == o.Primary
+	return ok && t.Primary == o.Primary && t.Alias == o.Alias
 }
 
 func (t *TemplateRef) String() string { return t.Name }
@@ -597,7 +613,7 @@ func (d *DependentType) Equal(other Type) bool {
 	if other == nil {
 		return false
 	}
-	o, ok := Unqualify(other).(*DependentType)
+	o, ok := strictOther(other).(*DependentType)
 	return ok && d.Name == o.Name
 }
 
@@ -661,6 +677,20 @@ func (b *Basic) String() string {
 
 func (q *Qualified) String() string {
 	var b strings.Builder
+	switch q.T.(type) {
+	case *Pointer, *MemberPointer:
+		// A qualified pointer is written with its qualifiers after it:
+		// `int* const` is a const pointer, and `const int*` a pointer to
+		// const -- two types, which instantiations are keyed apart by.
+		b.WriteString(q.T.String())
+		if q.Q&QConst != 0 {
+			b.WriteString(" const")
+		}
+		if q.Q&QVolatile != 0 {
+			b.WriteString(" volatile")
+		}
+		return b.String()
+	}
 	if q.Q&QConst != 0 {
 		b.WriteString("const ")
 	}
@@ -797,4 +827,13 @@ func (ts *TemplateSpecialization) String() string {
 
 func (d *DependentType) String() string {
 	return d.Name
+}
+
+// strictOther is other for an Equal comparison: a cv-qualified type is not
+// the unqualified one, so only an empty qualification is looked through.
+func strictOther(other Type) Type {
+	if q, ok := other.(*Qualified); ok && q.Q == 0 {
+		return q.T
+	}
+	return other
 }

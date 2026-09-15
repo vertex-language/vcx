@@ -180,8 +180,15 @@ func (p *parser) parseSingleTemplateParam() ast.Decl {
 		}
 	}
 
+	// `typename C::type N` is not a type parameter named C: a qualified name
+	// after typename is a typename-specifier, and the parameter is a
+	// non-type one of that type. libc++'s __bit_iterator is declared so.
+	qualified := p.peek() == token.TYPENAME &&
+		(p.peekAt(1) == token.SCOPE || p.peekAt(1) == token.DECLTYPE ||
+			p.peekAt(1) == token.IDENT && (p.peekAt(2) == token.SCOPE || p.peekAt(2) == token.LSS))
+
 	// Type parameter: class/typename T = default, or constrained parameter Concept T = default
-	if p.peek() == token.CLASS || p.peek() == token.TYPENAME {
+	if !qualified && (p.peek() == token.CLASS || p.peek() == token.TYPENAME) {
 		kwTok := p.pos()
 		kind := p.peek()
 		p.next()

@@ -183,6 +183,13 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 				// contexts without a concrete value, both branches are checked.
 				ctx := a.NewConstContext()
 				passed, err := ctx.EvalBool(condExpr)
+				if err == nil && !a.dependentContext() {
+					// The condition is checked as well as evaluated, so what
+					// it decided is recorded where it was written: a constant
+					// evaluation of this body -- a consteval call -- reads the
+					// concept-ids from there (Info.ConceptValues).
+					a.CheckExpr(condExpr)
+				}
 				switch {
 				case err != nil && a.dependentContext():
 					a.CheckExpr(condExpr)
@@ -226,7 +233,9 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 		if s.Cond != nil {
 			if condExpr, ok := s.Cond.(ast.Expr); ok {
 				c := a.CheckExpr(condExpr)
-				if !types.IsInteger(c.Type) {
+				// [stmt.switch]/2: integral, enumeration, or -- in a
+				// template -- whatever the instantiation makes it.
+				if !types.IsInteger(c.Type) && !types.IsEnum(types.Unqualify(types.RemoveReference(c.Type))) && !isDependentExpr(c) && !isDependentType(c.Type) {
 					a.errorAt(condExpr.Pos(), "switch condition must be of integral or enumeration type")
 				}
 			}
@@ -236,6 +245,20 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 
 	case *ast.WhileStmt:
 		a.loopDepth++
+		// [stmt.while]/2: a condition that declares -- `while (unsigned
+		// char __c = *__ptr++)` -- is in scope through the body.
+		oldScope := a.curScope
+		a.curScope = NewScope(oldScope, BlockScope, nil)
+		if d, ok := s.Cond.(*ast.SimpleDecl); ok {
+			a.CheckDecl(d)
+			for _, init := range d.Inits {
+				if v, isVar := a.info.Defs[init].(*VarSymbol); isVar && v.SymType != nil &&
+					!isDependentType(v.SymType) && !contextuallyConvertibleToBool(v.SymType) {
+					a.errorAt(init.Pos(), "condition must be convertible to bool")
+				}
+			}
+		}
+		defer func() { a.curScope = oldScope }()
 		if s.Cond != nil {
 			if condExpr, ok := s.Cond.(ast.Expr); ok {
 				c := a.CheckExpr(condExpr)
@@ -292,6 +315,12 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 			// The loop variable's type is deduced from the range element type (*begin()).
 			prev := a.rangeElem
 			a.rangeElem = rangeElementType(rangeInfo.Type)
+			if a.rangeElem == nil && (isDependentExpr(rangeInfo) || isDependentType(rangeInfo.Type)) {
+				// `for (auto&& v : *loc)` in a template: the element is
+				// whatever the range turns out to hold, settled when the
+				// body is instantiated.
+				a.rangeElem = &types.DependentType{Name: "<range element>"}
+			}
 			if a.rangeElem == nil && !isDependentExpr(rangeInfo) {
 				if proto := a.rangeProtocol(s, rangeInfo); proto != nil {
 					a.rangeElem = proto.Elem
@@ -384,6 +413,21 @@ func (a *Analyzer) checkReturnStmt(r *ast.ReturnStmt) {
 			return
 		}
 		a.curFunc.FuncType.Ret = types.Unqualify(types.Decay(types.RemoveReference(info.Type)))
+		return
+	}
+	// decltype(auto) is the returned expression's decltype, reference and
+	// all: `return iter_move(std::forward<_Ip>(__i));` returns what that
+	// call does. `auto&` and `const auto*` deduce as a variable would.
+	if mentionsAuto(retT) {
+		if a.dependentContext() || isDependentExpr(info) {
+			a.curFunc.FuncType.Ret = &types.DependentType{Name: "auto"}
+			return
+		}
+		if types.Unqualify(retT).Kind() == types.DecltypeAutoKind {
+			a.curFunc.FuncType.Ret = a.decltypeOf(r.X)
+			return
+		}
+		a.curFunc.FuncType.Ret = a.deduceAuto(retT, info)
 		return
 	}
 

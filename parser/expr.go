@@ -779,6 +779,24 @@ func (p *parser) isFunctionalCast() bool {
 	case token.TYPENAME:
 		// In an expression, typename-specifier is a functional cast.
 		return true
+	case token.DECLTYPE:
+		// `decltype(e)()` and `decltype(e){}` value-initialize the type,
+		// which libc++'s _LIBCPP_VERBOSE_ABORT does to discard a call.
+		depth := 0
+		for i := 1; ; i++ {
+			switch p.peekAt(i) {
+			case token.LPAREN:
+				depth++
+			case token.RPAREN:
+				depth--
+				if depth == 0 {
+					next := p.peekAt(i + 1)
+					return next == token.LPAREN || next == token.LBRACE
+				}
+			case token.EOF:
+				return false
+			}
+		}
 	case token.INT, token.FLOAT, token.DOUBLE, token.CHAR, token.BOOL, token.VOID,
 		token.INT8, token.INT16, token.INT32, token.INT64, token.INT128,
 		token.UNSIGNED, token.SIGNED, token.SHORT, token.LONG:
@@ -1090,6 +1108,14 @@ func (p *parser) parseLambdaExpr() *ast.LambdaExpr {
 		rp = p.expect(token.RPAREN)
 	}
 
+	// A GNU __attribute__ may come before the specifiers and noexcept, where
+	// libc++ puts _LIBCPP_ALWAYS_INLINE; the standard attributes after them
+	// are read below, and both land in Attrs.
+	var attrList []*ast.Attr
+	for _, ag := range p.parseAttrGroups() {
+		attrList = append(attrList, ag.Attrs...)
+	}
+
 	var specs []ast.DeclSpec
 	for {
 		k := p.peek()
@@ -1109,9 +1135,7 @@ func (p *parser) parseLambdaExpr() *ast.LambdaExpr {
 		noex = p.parseNoexceptSpec()
 	}
 
-	attrs := p.parseAttrGroups()
-	var attrList []*ast.Attr
-	for _, ag := range attrs {
+	for _, ag := range p.parseAttrGroups() {
 		attrList = append(attrList, ag.Attrs...)
 	}
 
