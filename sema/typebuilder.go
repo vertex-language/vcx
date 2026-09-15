@@ -171,6 +171,13 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 						info.Unresolved = NameString(name, u)
 						info.UnresolvedPos = name.Pos()
 					}
+				} else if namespaceQualified(qn, scope, u) && info.Unresolved == "" {
+					// A namespace has no members still to come at the point
+					// of use, so one that has no such name names no type:
+					// `vertex::i16` where vertex declares no i16. Passing
+					// it by left a type of no members and no size.
+					info.Unresolved = NameString(name, u)
+					info.UnresolvedPos = name.Pos()
 				}
 			}
 			if len(syms) == 0 {
@@ -790,6 +797,35 @@ func isTypeLike(sym Symbol) bool {
 // membersOfCompleteClass looks up the last component of a qualified name in
 // its qualifier, when the qualifier is a complete class none of whose members
 // waits on a template argument; complete reports whether it is one.
+// namespaceQualified reports whether a qualified name's qualifier is a
+// namespace, so that a lookup into it finding nothing is an answer, as it is
+// not for a dependent class or one not yet complete.
+func namespaceQualified(qn *ast.QualifiedName, scope *Scope, u ast.Unit) bool {
+	n := len(qn.Qual)
+	if n == 0 {
+		return false
+	}
+	var syms []Symbol
+	if n == 1 && !qn.Global.IsValid() {
+		syms = LookupUnqualified(scope, NameString(qn.Qual[0], u))
+	} else {
+		prefix := &ast.QualifiedName{Span: qn.Span, Global: qn.Global, Qual: qn.Qual[:n-1], Name: qn.Qual[n-1]}
+		if len(qn.Colons) > 0 {
+			prefix.Colons = qn.Colons[:len(qn.Colons)-1]
+		}
+		syms = ResolveQualifiedName(prefix, scope, nil, u)
+	}
+	if len(syms) == 0 {
+		return false
+	}
+	for _, sym := range syms {
+		if _, isNamespace := sym.(*NamespaceSymbol); !isNamespace {
+			return false
+		}
+	}
+	return true
+}
+
 func membersOfCompleteClass(qn *ast.QualifiedName, scope *Scope, u ast.Unit) (found []Symbol, complete bool) {
 	n := len(qn.Qual)
 	if n == 0 {

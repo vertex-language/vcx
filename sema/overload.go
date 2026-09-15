@@ -2,7 +2,6 @@ package sema
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/vertex-language/vcx/token"
 	"github.com/vertex-language/vcx/types"
@@ -161,11 +160,6 @@ func ResolveOverloadOn(candidates []*FuncSymbol, object *Argument, args []Argume
 		}
 		cmp := compareCandidates(viable[best], viable[i])
 		if cmp >= 0 {
-			if os.Getenv("VCX_DEBUG_OVERLOAD") != "" {
-				for j, v := range viable {
-					fmt.Fprintf(os.Stderr, "overload %s viable[%d] %s dependent=%v template=%v pos=%d sym=%p decl=%p class=%p\n", v.Func.Name(), j, v.Func.FuncType, v.Dependent, v.IsTemplate, v.Func.SymPos, v.Func, v.Func.Decl, v.Func.InClass)
-				}
-			}
 			if viable[best].Dependent || viable[i].Dependent {
 				// Not an ambiguity yet: which candidate is better turns on
 				// a type the instantiation has not supplied, and the call

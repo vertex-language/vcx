@@ -1265,9 +1265,6 @@ func (a *Analyzer) calleeNamesAType(fun ast.Expr) (types.Type, bool) {
 		specs := &ast.DeclSpecs{Span: f.Span, List: []ast.DeclSpec{&ast.NamedTypeSpec{Span: f.Span, Typename: ast.NoTok, Name: f}}}
 		info := BuildDeclSpecs(specs, a.curScope, a.unit)
 		if info.Type == nil {
-			if os.Getenv("VCX_DEBUG_TEMPLATEID") != "" {
-				fmt.Fprintf(os.Stderr, "callee %s names no type (unresolved %q)\n", NameString(f, a.unit), info.Unresolved)
-			}
 			return nil, false
 		}
 		return info.Type, true
@@ -1842,20 +1839,6 @@ func (a *Analyzer) arrowPointee(m *ast.MemberExpr, lhs ExprInfo) types.Type {
 // checkTemplateIdExpr checks a template-id in expression position (variable template or concept).
 func (a *Analyzer) checkTemplateIdExpr(e ast.Expr, tn *ast.TemplateName, syms []Symbol) ExprInfo {
 	name := NameString(tn.Name, a.unit)
-	if os.Getenv("VCX_DEBUG_TEMPLATEID") != "" {
-		for _, sym := range syms {
-			fmt.Fprintf(os.Stderr, "template-id %s -> %T %s\n", name, sym, sym.Type())
-		}
-		args := templateArgs(tn, a.curScope, a.unit)
-		fmt.Fprintf(os.Stderr, "template-id %s dependentContext=%v argsDependent=%v args=%s instantiating=%v\n", name, a.dependentContext(), argsDependent(args), argsKey(args), a.instantiating)
-		for i, arg := range args {
-			fmt.Fprintf(os.Stderr, "template-id %s arg[%d] isType=%v go=%T %v\n", name, i, arg.IsType, arg.Type, arg.Type)
-			if ts, isSpec := arg.Type.(*types.TemplateSpecialization); isSpec {
-				fmt.Fprintf(os.Stderr, "template-id %s arg[%d] spec inner go=%T args=%d\n", name, i, ts.Type, len(ts.Args))
-			}
-		}
-
-	}
 	for _, sym := range syms {
 		switch s := sym.(type) {
 		case *DependentSymbol:

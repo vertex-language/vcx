@@ -2,8 +2,6 @@ package sema
 
 import (
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/vertex-language/vcx/ast"
 	"github.com/vertex-language/vcx/constexpr"
@@ -86,17 +84,6 @@ func (a *Analyzer) satisfiesRequires(re *ast.RequiresExpr) (bool, error) {
 			continue
 		}
 		if t == nil || isDependentType(t) {
-			if os.Getenv("VCX_DEBUG_REQUIRES") != "" {
-				var spelled strings.Builder
-				for tok := p.Specs.Pos(); tok < p.Specs.End(); tok++ {
-					spelled.WriteString(a.unit.Text(tok))
-					spelled.WriteByte(' ')
-					for _, sym := range LookupUnqualified(scope, a.unit.Text(tok)) {
-						fmt.Fprintf(os.Stderr, "requires   %s -> %T %v\n", a.unit.Text(tok), sym, sym.Type())
-					}
-				}
-				fmt.Fprintf(os.Stderr, "requires param %q built %v\n", spelled.String(), t)
-			}
 			return false, fmt.Errorf("a parameter of the requires-expression has no type under this binding")
 		}
 		name := ""

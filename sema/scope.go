@@ -3,7 +3,6 @@ package sema
 import (
 	"fmt"
 	"github.com/vertex-language/vcx/ast"
-	"os"
 	"strings"
 
 	"github.com/vertex-language/vcx/types"
@@ -200,16 +199,6 @@ func (s *Scope) insert(sym Symbol) (Symbol, error) {
 			// signature and two heads, each with its own enable_if.
 			if !sameTemplateParams(exFn, fn) {
 				continue
-			}
-			if os.Getenv("VCX_DEBUG_INSERT") != "" {
-				ek, nk := "<none>", "<none>"
-				if exFn.Template != nil {
-					ek = exFn.Template.HeadKey
-				}
-				if fn.Template != nil {
-					nk = fn.Template.HeadKey
-				}
-				fmt.Fprintf(os.Stderr, "merge %s: existing head %q, new head %q\n", name, ek, nk)
 			}
 			if len(fn.Defaults) > 0 {
 				if len(exFn.Defaults) < len(fn.Defaults) {

@@ -319,20 +319,10 @@ func (a *Analyzer) instantiateClass(tmpl *RecordSymbol, args []types.TemplateArg
 	// Select matching specialization: explicit specialization, then partial, then primary.
 	pattern, params, scope := info.Spec, info.Params, info.Scope
 	var bound []types.TemplateArg = args
-	chose := "primary"
 	if explicit, has := info.Explicit[key]; has {
 		pattern, params, bound = explicit, nil, nil
-		chose = "explicit"
 	} else if ps, b, matched := a.matchPartial(info, args); matched {
 		pattern, params, scope, bound = ps.Spec, ps.Params, ps.Scope, b
-		chose = "partial"
-	}
-	if os.Getenv("VCX_DEBUG_INSTANCE") != "" {
-		var keys []string
-		for k := range info.Explicit {
-			keys = append(keys, fmt.Sprintf("%q", k))
-		}
-		fmt.Fprintf(os.Stderr, "instantiate %s key=%q chose=%s explicit=[%s]\n", tmpl.SymName, key, chose, strings.Join(keys, " "))
 	}
 
 	if pattern == nil {
