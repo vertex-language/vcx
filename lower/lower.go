@@ -91,6 +91,11 @@ type unit struct {
 	// imports tracks imported functions by symbol and by name.
 	imports       map[*sema.FuncSymbol]ir.Callee
 	importsByName map[string]ir.Callee
+	// defsByName is every function this unit defines, by the symbol it
+	// links as. A declaration that reaches the same symbol by another
+	// route -- extern "C" in a namespace, say -- is that definition and
+	// must not become an import of it as well.
+	defsByName map[string]*ir.Func
 
 	// vtables maps polymorphic records to their vtables; thunks maps adjustor thunks.
 	vtables map[*types.Record][]vtable
@@ -214,6 +219,7 @@ func (u *unit) declare() {
 	u.funcTypes = map[*sema.FuncSymbol]*ir.Type{}
 	u.imports = map[*sema.FuncSymbol]ir.Callee{}
 	u.importsByName = map[string]ir.Callee{}
+	u.defsByName = map[string]*ir.Func{}
 	u.strings = map[string]*ir.Global{}
 	u.recordTypes = map[*types.Record]*ir.Type{}
 	u.srets = map[*sema.FuncSymbol]ir.Ptr{}
@@ -273,6 +279,16 @@ func (u *unit) callee(fn *sema.FuncSymbol) ir.Callee {
 		return c
 	}
 	name := u.linkSymbol(fn)
+	// A function this unit defines is not imported into it, however the
+	// declaration in hand was written. `extern "C"` gives a name C
+	// linkage wherever it is declared, so one written inside a namespace
+	// and defined at file scope is one function and one symbol --
+	// [dcl.link]/6 -- and emitting both a definition and an import of it
+	// is two of the same name.
+	if def, ok := u.defsByName[name]; ok {
+		u.imports[fn] = def
+		return def
+	}
 	if existing, dup := u.importsByName[name]; dup {
 		u.imports[fn] = existing
 		return existing
@@ -366,7 +382,12 @@ func (u *unit) ctorReturnsThis(fn *sema.FuncSymbol) bool {
 }
 
 func (u *unit) declareFunc(fn *sema.FuncSymbol) *ir.Func {
-	f := u.mod.Func(u.linkSymbol(fn)).Export()
+	name := u.linkSymbol(fn)
+	if def, ok := u.defsByName[name]; ok {
+		return def
+	}
+	f := u.mod.Func(name).Export()
+	u.defsByName[name] = f
 
 	// Inline functions use COMDAT linkage to allow duplicate definitions across units.
 	if fn.Inline {
