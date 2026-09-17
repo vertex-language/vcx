@@ -605,22 +605,34 @@ func (u *unit) globalFor(v *sema.VarSymbol) (ir.Symbol, bool) {
 // importGlobal is the reference to an object declared here and defined
 // elsewhere.
 func (u *unit) importGlobal(v *sema.VarSymbol) ir.Symbol {
+	name := u.globalSymbol(v)
+	// Named, through an __asm label, as an object this unit defines: it is
+	// that object.
+	for other, g := range u.globals {
+		if other.Defined && u.globalSymbol(other) == name {
+			return g
+		}
+	}
+	return u.mod.ImportGlobal(name, u.storageType(v.SymType))
+}
+
+// globalSymbol is an object's symbol in the object file: an __asm label as
+// written, or the mangled name with the container's prefix.
+func (u *unit) globalSymbol(v *sema.VarSymbol) string {
+	if v.AsmLabel != "" {
+		return v.AsmLabel
+	}
 	name, err := mangle.VariableName(u.opt.ABI, mangle.DescribeVariable(v, nil))
 	if err != nil {
 		u.errorf(v.SymPos, "%v", err)
 		name = "_unnameable_" + v.SymName
 	}
-	return u.mod.ImportGlobal(u.symbolName(name), u.storageType(v.SymType))
+	return u.symbolName(name)
 }
 
 func (u *unit) declareGlobal(v *sema.VarSymbol) *ir.Global {
 	_, align := u.sizeAlign(v.SymType)
-	name, err := mangle.VariableName(u.opt.ABI, mangle.DescribeVariable(v, nil))
-	if err != nil {
-		u.errorf(v.SymPos, "%v", err)
-		name = "_unnameable_" + v.SymName
-	}
-	g := u.mod.Global(u.symbolName(name), ir.RW, u.storageType(v.SymType))
+	g := u.mod.Global(u.globalSymbol(v), ir.RW, u.storageType(v.SymType))
 	if v.Inline {
 		// Inline variables use COMDAT linkage.
 		g.Comdat()

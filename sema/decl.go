@@ -655,6 +655,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			Init:       init.Value,
 			BracedInit: init.Braced,
 			ExternC:    a.externC,
+			AsmLabel:   a.asmLabel(init),
 			Inline:     declInfo.Inline,
 			// Defined unless extern without an initializer.
 			Defined: declInfo.Storage != StorageExtern || init.Value != nil || init.Braced != nil,
@@ -718,14 +719,20 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 		}
 
 		if name != "" {
-			a.recordDef(init, varSym)
 			into := a.curScope
 			if varSym.Template != nil {
 				into = a.declScope()
 			}
-			if err := into.Insert(varSym); err != nil {
+			// A redeclaration merges into the symbol already there, and
+			// that one is what this declarator defines.
+			surviving, err := into.insert(varSym)
+			if err != nil {
 				a.errorAt(init.Pos(), err.Error())
 			}
+			if surviving == nil {
+				surviving = varSym
+			}
+			a.recordDef(init, surviving)
 		}
 	}
 }

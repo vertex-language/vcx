@@ -286,10 +286,23 @@ func (s *Scope) insert(sym Symbol) (Symbol, error) {
 				// A definition completes a prior non-defining declaration.
 				switch {
 				case !exV.Defined && v.Defined:
-					exV.Init, exV.Storage, exV.Defined = v.Init, v.Storage, true
+					// [dcl.stc]/7: linkage is the first declaration's, so
+					// `extern const T x; const T x = {...};` stays external
+					// -- the definition does not make it internal the way a
+					// const at namespace scope alone would be.
+					exV.Init, exV.BracedInit, exV.Defined = v.Init, v.BracedInit, true
+					if exV.Storage != StorageExtern {
+						exV.Storage = v.Storage
+					}
 					exV.Constexpr = exV.Constexpr || v.Constexpr
+					if exV.AsmLabel == "" {
+						exV.AsmLabel = v.AsmLabel
+					}
 					return exV, nil
 				case !v.Defined:
+					if exV.AsmLabel == "" {
+						exV.AsmLabel = v.AsmLabel
+					}
 					return exV, nil
 				}
 			}

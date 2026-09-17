@@ -75,9 +75,16 @@ func (u *unit) declOf(v *sema.VarSymbol) *ast.InitDeclarator {
 	if u.declsOf == nil {
 		u.declsOf = map[sema.Symbol]*ast.InitDeclarator{}
 		for decl, sym := range u.res.Info.Defs {
-			if id, isInit := decl.(*ast.InitDeclarator); isInit {
-				u.declsOf[sym] = id
+			id, isInit := decl.(*ast.InitDeclarator)
+			if !isInit {
+				continue
 			}
+			// An object declared more than once is initialized by the
+			// declaration that gives it an initializer.
+			if have, ok := u.declsOf[sym]; ok && hasInitializer(have) && !hasInitializer(id) {
+				continue
+			}
+			u.declsOf[sym] = id
 		}
 	}
 	return u.declsOf[v]
@@ -160,4 +167,9 @@ func (u *unit) initSection() (string, ir.Domain) {
 		return "__DATA,__mod_init_func,mod_init_funcs", ir.RW
 	}
 	return ".init_array", ir.RW
+}
+
+// hasInitializer reports whether a declarator gives its object a value.
+func hasInitializer(d *ast.InitDeclarator) bool {
+	return d.Value != nil || d.Braced != nil || len(d.Args) > 0
 }

@@ -45,6 +45,10 @@ type VarSymbol struct {
 	// ExternC is an object declared with C language linkage (unmangled).
 	ExternC bool
 
+	// AsmLabel is GNU's `__asm("...")` on an object's declaration: its
+	// symbol in the object file exactly, prefix and all.
+	AsmLabel string
+
 	// Inline marks an inline or constexpr variable.
 	Inline bool
 

@@ -30,9 +30,13 @@ func (fl *fn) switchStmt(s *ast.SwitchStmt) {
 		return
 	}
 	fl.endFullExpr()
+	// The condition is promoted before a switch sees it ([stmt.switch]),
+	// so it is an int or wider: 32 bits, or 64 for a long, a size_t or an
+	// enum over one. The labels are converted to its type.
 	selI32, isI32 := sel.(ir.I32)
-	if !isI32 {
-		fl.u.errorf(s.Pos(), "lowering handles a switch only on a 32-bit integer so far")
+	selI64, isI64 := sel.(ir.I64)
+	if !isI32 && !isI64 {
+		fl.u.errorf(s.Pos(), "lowering handles a switch only on an integer of 32 or 64 bits so far")
 		return
 	}
 
@@ -63,7 +67,12 @@ func (fl *fn) switchStmt(s *ast.SwitchStmt) {
 	for i, g := range groups {
 		for _, v := range g.values {
 			next := fl.block("switch_test")
-			hit := fl.blk.I32.Eq(selI32, fl.blk.I32.Const(v))
+			var hit ir.I1
+			if isI64 {
+				hit = fl.blk.I64.Eq(selI64, fl.blk.I64.Const(v))
+			} else {
+				hit = fl.blk.I32.Eq(selI32, fl.blk.I32.Const(v))
+			}
 			fl.blk.BrIf(hit, bodies[i].To(), next.To())
 			fl.blk = next
 		}
