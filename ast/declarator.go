@@ -19,6 +19,22 @@ type DeclSpecs struct {
 	// Aligns are the alignas specifiers written among the specifiers,
 	// which appertain to the entity being declared.
 	Aligns []*AttrGroup
+
+	// Attrs are the vendor attributes written among the specifiers --
+	// `static __attribute__((device)) int f()` -- which appertain to the
+	// entity being declared the same as ones written before them.
+	Attrs []*AttrGroup
+}
+
+// AllAttrs is a declaration's attributes wherever they were written:
+// before the specifiers, and among them.
+func (s *DeclSpecs) AllAttrs(before []*AttrGroup) []*AttrGroup {
+	if s == nil || len(s.Attrs) == 0 {
+		return before
+	}
+	out := make([]*AttrGroup, 0, len(before)+len(s.Attrs))
+	out = append(out, before...)
+	return append(out, s.Attrs...)
 }
 
 // BasicSpec is a specifier that is exactly one keyword: a storage class

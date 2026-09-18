@@ -90,6 +90,9 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 		return fl.rvalue(e)
 
 	case *ast.MemberExpr:
+		if v, ok := fl.builtinVarMember(e); ok {
+			return v
+		}
 		return fl.rvalue(e)
 
 	case *ast.IncDecExpr:
@@ -219,6 +222,11 @@ func (fl *fn) lvalue(e ast.Expr) (ir.Ptr, types.Type, bool) {
 		// Structured binding element or member at its offset.
 		if v.Binding != nil && v.Binding.Get == nil {
 			return fl.bindingAddr(v)
+		}
+		// A builtin variable of the device pass has no storage: its value
+		// is copied into some.
+		if p, ok := fl.builtinVarAddr(v); ok {
+			return p, v.SymType, true
 		}
 		// Not a local, so it is a namespace-scope object: its storage is a
 		// symbol rather than a frame slot, and its address is taken the same
@@ -809,6 +817,17 @@ func (fl *fn) callRaw(e *ast.CallExpr, callee *sema.FuncSymbol) ir.Value {
 	// import of the callee here would be an undefined symbol for one
 	// that is never called directly -- a pure virtual has no definition
 	// anywhere.
+	// A device builtin is a verb, and the device math library is the
+	// hardware's; neither is a call.
+	if callee.Intrinsic {
+		return fl.intrinsicCall(callee, e)
+	}
+	if !fl.checkDeviceCall(callee, e.Pos()) {
+		return nil
+	}
+	if callee.Body == nil && fl.u.deviceMathVerb(callee) != "" {
+		return fl.deviceMathCall(callee, e)
+	}
 	var target ir.Callee
 	if !isVirtualCall(e, callee) {
 		target = fl.u.callee(callee)
@@ -1517,6 +1536,9 @@ func (fl *fn) templateId(e *ast.TemplateName) ir.Value {
 // the operand's address.
 func (fl *fn) builtinCall(name string, e *ast.CallExpr) (ir.Value, bool) {
 	if v, ok := fl.gnuBuiltinCall(name, e); ok {
+		return v, true
+	}
+	if v, ok := fl.hipAtomicCall(name, e); ok {
 		return v, true
 	}
 	switch name {

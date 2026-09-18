@@ -232,6 +232,10 @@ func (u *unit) declare() {
 		if fn.Inline {
 			continue
 		}
+		// An offload unit's functions belong to one pass or the other.
+		if !u.lowersFunc(fn) {
+			continue
+		}
 		u.funcs[fn] = u.declareFunc(fn)
 	}
 	// Globals after functions: a global's initializer may be a function's
@@ -388,6 +392,12 @@ func (u *unit) declareFunc(fn *sema.FuncSymbol) *ir.Func {
 	}
 	f := u.mod.Func(name).Export()
 	u.defsByName[name] = f
+
+	// A kernel is the device's entry point, with the calling convention
+	// the launch uses.
+	if fn.Space == sema.SpaceGlobal && u.devicePass() {
+		f.CallConv(ir.Kernel)
+	}
 
 	// Inline functions use COMDAT linkage to allow duplicate definitions across units.
 	if fn.Inline {
@@ -575,6 +585,9 @@ func (u *unit) declareGlobalsIn(scope *sema.Scope, seen map[*sema.Scope]bool) {
 					// External declarations without definitions are imported on use.
 					continue
 				}
+				if !u.lowersGlobal(s) {
+					continue
+				}
 				u.globals[s] = u.declareGlobal(s)
 				u.declaredOrder = append(u.declaredOrder, s)
 			}
@@ -595,6 +608,15 @@ func (u *unit) globalFor(v *sema.VarSymbol) (ir.Symbol, bool) {
 	// Only an extern object or a static data member can be defined in
 	// another unit; anything else undefined here is not an object at all.
 	if v.Defined || v.Template != nil || v.Storage != sema.StorageExtern && v.InClass == nil {
+		if u.offload() && !u.lowersGlobal(v) {
+			// The other pass's object: a host variable named in device
+			// code, or a __shared__ one named on the host.
+			if u.devicePass() {
+				u.errorf(v.SymPos, "reference to host variable %q in device code; a __device__, __constant__ or __shared__ object lives there", v.SymName)
+			} else {
+				u.errorf(v.SymPos, "reference to __shared__ variable %q in host code", v.SymName)
+			}
+		}
 		return nil, false
 	}
 	g := u.importGlobal(v)
@@ -632,7 +654,7 @@ func (u *unit) globalSymbol(v *sema.VarSymbol) string {
 
 func (u *unit) declareGlobal(v *sema.VarSymbol) *ir.Global {
 	_, align := u.sizeAlign(v.SymType)
-	g := u.mod.Global(u.globalSymbol(v), ir.RW, u.storageType(v.SymType))
+	g := u.mod.Global(u.globalSymbol(v), u.domainOf(v), u.storageType(v.SymType))
 	if v.Inline {
 		// Inline variables use COMDAT linkage.
 		g.Comdat()
@@ -653,6 +675,14 @@ func (u *unit) declareGlobal(v *sema.VarSymbol) *ir.Global {
 // global has a symbol, so that one initializer can name another global's
 // address whatever order the two were declared in.
 func (u *unit) initializeGlobal(v *sema.VarSymbol, g *ir.Global) {
+	if v.Memory == sema.MemShared && u.devicePass() {
+		// Workgroup storage is zeroed and nothing else: there is no
+		// moment before the block starts at which to initialize it.
+		if v.Init != nil || v.BracedInit != nil {
+			u.errorf(v.SymPos, "a __shared__ variable cannot be initialized")
+		}
+		return
+	}
 	if v.Init != nil && classOf(v.SymType) == nil {
 		if n, err := u.evalInt(v.Init); err == nil {
 			g.Init(ir.Lit(ir.Int(n)))

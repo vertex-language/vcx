@@ -467,6 +467,20 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 					continue
 				}
 			}
+			// `typedef enum K { ... } K;` names the enumeration it declares,
+			// as the record form above does.
+			if en := types.AsEnum(types.Unqualify(fullType)); en != nil && en.Name == name {
+				isSameEnum := false
+				for _, existing := range a.curScope.LookupLocal(name) {
+					if es, isEnum := existing.(*EnumSymbol); isEnum && es.Enum == en {
+						isSameEnum = true
+						break
+					}
+				}
+				if isSameEnum {
+					continue
+				}
+			}
 			if err := a.declScope().Insert(&TypeSymbol{
 				SymName:  name,
 				SymType:  fullType,
@@ -569,6 +583,9 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 
 			fnSym.AsmLabel = a.asmLabel(init)
 			fnSym.NoReturn = hasAttrNamed(d.Attrs, "noreturn", a.unit)
+			fnSym.Space = a.execSpaceOf(d.Specs.AllAttrs(d.Attrs), init.Pos())
+			fnSym.Space = a.implicitSpace(fnSym)
+			a.checkKernel(fnSym)
 			// The template-head before the scope sees the declaration, as in
 			// checkFuncDecl: two member templates of one signature are told
 			// apart by it.
@@ -582,6 +599,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 					surviving.AsmLabel = fnSym.AsmLabel
 				}
 				surviving.NoReturn = surviving.NoReturn || fnSym.NoReturn
+				mergeSpace(surviving, fnSym)
 				fnSym = surviving
 			}
 			a.noteDeclared(fnSym)
@@ -657,6 +675,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			ExternC:    a.externC,
 			AsmLabel:   a.asmLabel(init),
 			Inline:     declInfo.Inline,
+			Memory:     a.memSpaceOf(d.Specs.AllAttrs(d.Attrs), init.Pos()),
 			// Defined unless extern without an initializer.
 			Defined: declInfo.Storage != StorageExtern || init.Value != nil || init.Braced != nil,
 		}
@@ -1310,8 +1329,12 @@ func (a *Analyzer) checkFuncDecl(d *ast.FuncDecl) {
 		}
 		// Template name declared in template-declaration scope.
 		fnSym.NoReturn = hasAttrNamed(d.Attrs, "noreturn", a.unit)
+		fnSym.Space = a.execSpaceOf(d.Specs.AllAttrs(d.Attrs), d.Pos())
+		fnSym.Space = a.implicitSpace(fnSym)
+		a.checkKernel(fnSym)
 		if surviving, err := a.funcDeclScope(d).InsertFunc(fnSym); err == nil {
 			surviving.NoReturn = surviving.NoReturn || fnSym.NoReturn
+			mergeSpace(surviving, fnSym)
 			fnSym = surviving
 		}
 		a.noteDeclared(fnSym)

@@ -292,6 +292,7 @@ func NewAnalyzer(u ast.Unit, model types.Model) *Analyzer {
 	}
 	a.declareBuiltinTypes()
 	a.declareLibraryBuiltins()
+	a.declareDeviceBuiltins()
 	a.declareBuiltinTemplates()
 	global.Decltype = func(e ast.Expr, scope *Scope) types.Type {
 		// The operand means what it means where the type was written --

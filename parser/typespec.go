@@ -127,9 +127,14 @@ func (p *parser) parseDeclSpecs() *ast.DeclSpecs {
 			continue
 
 		case token.ALIGNAS, token.DECLSPEC, token.ATTRIBUTE:
-			// An attribute may appear anywhere among decl-specifiers; alignas is kept.
-			if g := p.parseAttrGroup(); g != nil && (g.Align != nil || g.AlignX != nil) {
-				specs.Aligns = append(specs.Aligns, g)
+			// An attribute may appear anywhere among decl-specifiers;
+			// alignas is kept apart, and the rest kept for the entity.
+			if g := p.parseAttrGroup(); g != nil {
+				if g.Align != nil || g.AlignX != nil {
+					specs.Aligns = append(specs.Aligns, g)
+				} else {
+					specs.Attrs = append(specs.Attrs, g)
+				}
 			}
 			continue
 		}

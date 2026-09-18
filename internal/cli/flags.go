@@ -24,6 +24,12 @@ type ppFlags struct {
 	freestanding bool
 	keepComments bool
 
+	// The offload flags, as nvcc and hipcc spell them.
+	language    string
+	offloadArch string
+	deviceOnly  bool
+	hostOnly    bool
+
 	c *vcx.Compiler
 }
 
@@ -34,6 +40,13 @@ func (p *ppFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&p.target, "target", vcx.DefaultTarget().Name, "target to compile for")
 	fs.StringVar(&p.std, "std", "c++23", "language standard: c++20, c++23, c++26")
 	fs.BoolVar(&p.freestanding, "freestanding", false, "freestanding environment (no library runtime)")
+	fs.StringVar(&p.language, "x", "", "language of the inputs: c++, cuda, hip (default: by extension)")
+	fs.StringVar(&p.offloadArch, "offload-arch", "", "device to compile kernels for: sm_75, gfx942, ... (default sm_52 for CUDA)")
+	fs.StringVar(&p.offloadArch, "arch", "", "same as --offload-arch")
+	fs.BoolVar(&p.deviceOnly, "cuda-device-only", false, "compile only the device pass of a CUDA or HIP unit")
+	fs.BoolVar(&p.deviceOnly, "offload-device-only", false, "same as --cuda-device-only")
+	fs.BoolVar(&p.hostOnly, "cuda-host-only", false, "compile only the host pass of a CUDA or HIP unit")
+	fs.BoolVar(&p.hostOnly, "offload-host-only", false, "same as --cuda-host-only")
 }
 
 func (p *ppFlags) compiler() (*vcx.Compiler, error) {
@@ -53,6 +66,14 @@ func (p *ppFlags) compiler() (*vcx.Compiler, error) {
 		return nil, fmt.Errorf("unknown standard %q (supported: c++20, c++23, c++26)", p.std)
 	}
 
+	lang, err := vcx.ParseLanguage(p.language)
+	if err != nil {
+		return nil, err
+	}
+	if p.deviceOnly && p.hostOnly {
+		return nil, fmt.Errorf("--cuda-device-only and --cuda-host-only name no pass together")
+	}
+
 	p.c = &vcx.Compiler{
 		Target:       p.target,
 		Std:          std,
@@ -60,6 +81,10 @@ func (p *ppFlags) compiler() (*vcx.Compiler, error) {
 		Defs:         p.defs,
 		Undefs:       p.undefs,
 		Freestanding: p.freestanding,
+		Language:     lang,
+		OffloadArch:  p.offloadArch,
+		DeviceOnly:   p.deviceOnly,
+		HostOnly:     p.hostOnly,
 	}
 	return p.c, nil
 }

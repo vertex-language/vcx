@@ -17,6 +17,7 @@ import (
 //	z size_t  d double   f float    L long double
 //	p void*   P const void*   s char*   S const char*
 //	w wchar_t* W const wchar_t*   c wchar_t
+//	ul unsigned long   ull unsigned long long   b bool
 //	*i int*   *d double* *f float* *L long double*
 var libraryBuiltins = map[string]string{}
 
@@ -125,6 +126,12 @@ func (a *Analyzer) sigType(letter string) types.Type {
 		return ptr(cnst(types.Typ(types.WChar)))
 	case "c":
 		return types.Typ(types.WChar)
+	case "ul":
+		return types.Typ(types.ULong)
+	case "ull":
+		return types.Typ(types.ULongLong)
+	case "b":
+		return types.Typ(types.Bool)
 	}
 	if strings.HasPrefix(letter, "*") {
 		return ptr(a.sigType(letter[1:]))

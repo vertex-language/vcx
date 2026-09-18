@@ -23,6 +23,62 @@ type Model struct {
 
 	// VaList is what a va_list is under the target's calling convention.
 	VaList VaListKind
+
+	// Offload is the offload language the unit is written in -- CUDA or
+	// HIP -- or none for plain C++. It admits the execution-space
+	// attributes and the device builtins in both of the two passes such
+	// a unit is compiled in.
+	Offload Offload
+
+	// DeviceISA is the device the unit's kernels are compiled for, in
+	// either pass: which family of builtins is declared (__nvvm_* or
+	// __builtin_amdgcn_*), the way clang's host pass keeps the device's
+	// builtins as an auxiliary target's.
+	DeviceISA DeviceISA
+
+	// DevicePass is the second of the two passes: the one whose module
+	// holds the kernels and the device functions, and nothing of the
+	// host. __CUDA_ARCH__ is defined exactly when this is set.
+	DevicePass bool
+}
+
+// Offload is the offload language of a unit: the dialect that gives C++
+// __global__, __device__ and the launch syntax.
+type Offload uint8
+
+const (
+	NoOffload Offload = iota
+	CUDA
+	HIP
+)
+
+func (o Offload) String() string {
+	switch o {
+	case CUDA:
+		return "cuda"
+	case HIP:
+		return "hip"
+	}
+	return "c++"
+}
+
+// DeviceISA is the instruction set a unit's kernels are lowered to.
+type DeviceISA uint8
+
+const (
+	NoDevice DeviceISA = iota
+	NVPTX
+	AMDGCN
+)
+
+func (d DeviceISA) String() string {
+	switch d {
+	case NVPTX:
+		return "nvptx64"
+	case AMDGCN:
+		return "amdgcn"
+	}
+	return "none"
 }
 
 // VaListKind is the shape of __builtin_va_list, which the calling
@@ -61,6 +117,21 @@ func LP64() Model {
 		ABI:             ItaniumGeneric,
 		VaList:          VaListX86_64,
 	}
+}
+
+// ForDevice is the model of a device pass whose host has this one: the
+// host's sizes, so that the headers both passes read lay every type out
+// the same -- clang's NVPTX and AMDGPU targets copy the host's long and
+// wchar_t for the same reason, and a CUDA long is 32 bits on Windows --
+// with long double a plain double, which is the widest either ISA has,
+// the Itanium ABI, which is what a kernel is named by in either image
+// whatever the host mangles with, and a va_list that is a pointer.
+func ForDevice(host Model) Model {
+	m := host
+	m.SizeLongDouble, m.AlignLongDouble = 8, 8
+	m.ABI = ItaniumGeneric
+	m.VaList = VaListPointer
+	return m
 }
 
 // LLP64 returns the target model for x86-64 Windows.
@@ -103,6 +174,9 @@ func ILP32() Model {
 
 // ModelForTarget returns the model appropriate for target configuration.
 func ModelForTarget(arch, os string) Model {
+	if arch == "nvptx64" || arch == "amdgcn" {
+		return ForDevice(LP64())
+	}
 	if os == "windows" {
 		return LLP64()
 	}

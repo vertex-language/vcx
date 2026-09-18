@@ -60,6 +60,22 @@ type Compiler struct {
 	// paths, searched after IncludeDirs and before the system's: headers
 	// a caller carries in an embed.FS, which no -I can name.
 	IncludeFS []SystemInclude
+
+	// Language overrides what an input's extension says it is written
+	// in: -x cuda makes a .cpp a CUDA unit.
+	Language Language
+
+	// OffloadArch is the device an offload unit's kernels are compiled
+	// for -- sm_75, gfx942 -- as --offload-arch names it. Empty is sm_52
+	// for CUDA; HIP has no default.
+	OffloadArch string
+
+	// DeviceOnly compiles only the device pass of an offload unit, and
+	// HostOnly only the host pass: --cuda-device-only and
+	// --cuda-host-only. Neither set is both, once the host side exists;
+	// until then an offload unit compiles as its device pass alone.
+	DeviceOnly bool
+	HostOnly   bool
 }
 
 func (c *Compiler) target() (Target, error) {
@@ -69,12 +85,55 @@ func (c *Compiler) target() (Target, error) {
 	return TargetByName(c.Target)
 }
 
+// A pass is one compilation of an input: the target it is compiled for
+// and the model the analysis sees. A C++ unit has one; an offload unit
+// has a host pass and a device pass, and the device pass is the one
+// whose module holds the kernels.
+type pass struct {
+	lang   Language
+	arch   OffloadArch // the device, for an offload unit
+	device bool        // this is the device pass
+	host   Target      // the host's target, whose headers both passes read
+	tgt    Target      // the target compiled for: host, or the device
+	model  types.Model
+}
+
+// passFor is the pass an input is compiled in: the host's for a C++
+// unit, and for an offload unit the device pass unless HostOnly asks for
+// the host's. (The host pass of an offload unit is Phase C's: it lowers
+// no kernel yet.)
+func (c *Compiler) passFor(in Input) (pass, error) {
+	host, err := c.target()
+	if err != nil {
+		return pass{}, err
+	}
+	p := pass{lang: c.language(in), host: host, tgt: host, model: types.ModelForTarget(host.Arch, host.OS)}
+	if p.lang == LangCXX {
+		return p, nil
+	}
+	p.arch, err = c.offloadArch(p.lang)
+	if err != nil {
+		return pass{}, err
+	}
+	p.model.Offload = p.lang.offload()
+	p.model.DeviceISA = p.arch.ISA()
+	if c.HostOnly {
+		return p, nil
+	}
+	p.device = true
+	p.tgt = p.arch.Target()
+	p.model = types.ForDevice(p.model)
+	p.model.DevicePass = true
+	return p, nil
+}
+
 func (c *Compiler) preprocessorConfig(in Input) preprocessor.Config {
 	cfg := preprocessor.Config{
 		Std:    c.Std.tokenStd(),
 		Source: in.mount(),
 		Hosted: !c.Freestanding,
 	}
+	p, passErr := c.passFor(in)
 	for _, inc := range c.IncludeDirs {
 		cfg.Search = append(cfg.Search, preprocessor.Mount{
 			Name: inc,
@@ -84,15 +143,26 @@ func (c *Compiler) preprocessorConfig(in Input) preprocessor.Config {
 	for _, inc := range c.IncludeFS {
 		cfg.Search = append(cfg.Search, preprocessor.Mount{Name: inc.Name, FS: inc.FS})
 	}
+	// An offload unit's own headers come before the system's, and its
+	// wrapper is read before the unit's first line, as clang reads its
+	// __clang_cuda_runtime_wrapper.h: the execution-space macros, the
+	// builtin variables and the device library are in scope everywhere.
+	if own, ok := offloadHeaders(p.lang); ok && passErr == nil {
+		cfg.Search = append(cfg.Search, preprocessor.Mount{Name: own.Name, FS: own.FS, System: true})
+		cfg.PreIncludes = append(cfg.PreIncludes, offloadWrapper(p.lang))
+	}
 	for _, sys := range c.SystemIncludes() {
 		cfg.Search = append(cfg.Search, preprocessor.Mount{Name: sys.Name, FS: sys.FS, System: true})
 	}
 	// The target's own macros first, so that -D and -U on the command line
-	// can shadow any of them.
-	if tgt, err := c.target(); err == nil {
-		cfg.Predefines = append(cfg.Predefines, tgt.Predefines()...)
-		if tgt.Dialect == DialectGNU {
-			cfg.Vendor = tgt.gnuVendor()
+	// can shadow any of them. Both passes of an offload unit carry the
+	// host's macros, since both read the host's headers; the device pass
+	// adds the device's on top, as clang's does.
+	if passErr == nil {
+		cfg.Predefines = append(cfg.Predefines, p.host.Predefines()...)
+		cfg.Predefines = append(cfg.Predefines, offloadPredefines(p.lang, p.arch, p.device)...)
+		if p.host.Dialect == DialectGNU || p.device {
+			cfg.Vendor = p.tgt.gnuVendor()
 		}
 	}
 	for _, d := range c.Defs {
@@ -200,13 +270,12 @@ func (c *Compiler) Check(in Input) ([]Diagnostic, error) {
 	}
 	defer file.Release()
 
-	tgt, err := c.target()
+	p, err := c.passFor(in)
 	if err != nil {
 		return diags, err
 	}
 
-	model := types.ModelForTarget(tgt.Arch, tgt.OS)
-	_, semaDiags := sema.Analyze(file, model)
+	_, semaDiags := sema.Analyze(file, p.model)
 	for _, d := range semaDiags {
 		diags = append(diags, Diagnostic{
 			Severity: d.Severity,
@@ -259,11 +328,11 @@ func (c *Compiler) Layout(in Input) ([]RecordLayout, []Diagnostic, error) {
 	}
 	defer file.Release()
 
-	tgt, err := c.target()
+	p, err := c.passFor(in)
 	if err != nil {
 		return nil, diags, err
 	}
-	model := types.ModelForTarget(tgt.Arch, tgt.OS)
+	model := p.model
 
 	res, semaDiags := sema.Analyze(file, model)
 	for _, d := range semaDiags {
@@ -420,11 +489,11 @@ func (c *Compiler) IR(in Input) (*ir.Module, []Diagnostic, error) {
 	}
 	defer file.Release()
 
-	tgt, err := c.target()
+	p, err := c.passFor(in)
 	if err != nil {
 		return nil, diags, err
 	}
-	model := types.ModelForTarget(tgt.Arch, tgt.OS)
+	tgt, model := p.tgt, p.model
 
 	res, semaDiags := sema.Analyze(file, model)
 	for _, d := range semaDiags {
@@ -465,11 +534,11 @@ func (c *Compiler) Object(in Input) ([]byte, []Diagnostic, error) {
 	if mod == nil || HasErrors(diags) {
 		return nil, diags, nil
 	}
-	tgt, err := c.target()
+	p, err := c.passFor(in)
 	if err != nil {
 		return nil, diags, err
 	}
-	obj, err := emitObject(mod, tgt)
+	obj, err := emitObject(mod, p.tgt, p.arch)
 	return obj, diags, err
 }
 
@@ -533,13 +602,26 @@ func (c *Compiler) Build(params BuildParams) error {
 		}
 		out := params.Output
 		if out == "" {
-			out = moduleName(in) + ".o"
+			out = moduleName(in) + c.objectExt(in)
 		}
 		if err := os.WriteFile(out, obj, 0o644); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// objectExt is the extension of what Object produces for the input: an
+// object file, or a device image for an offload unit's device pass.
+func (c *Compiler) objectExt(in Input) string {
+	p, err := c.passFor(in)
+	if err != nil || !p.device {
+		return ".o"
+	}
+	if p.tgt.Container == ContainerPTX {
+		return ".ptx"
+	}
+	return ".hsaco"
 }
 
 // Run compiles and runs a single source file.

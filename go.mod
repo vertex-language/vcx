@@ -5,10 +5,12 @@ go 1.23
 require (
 	github.com/vertex-language/vcc v0.0.0
 	github.com/vertex-language/amd64 v0.0.0
+	github.com/vertex-language/amdgpu v0.0.0
 	github.com/vertex-language/arm64 v0.0.0
 	github.com/vertex-language/i386 v0.0.0
 	github.com/vertex-language/ir v0.0.0
 	github.com/vertex-language/ir/lower v0.0.0
+	github.com/vertex-language/ptx v0.0.0
 )
 
 require (
@@ -20,6 +22,7 @@ require (
 
 replace (
 	github.com/vertex-language/amd64 => ../amd64
+	github.com/vertex-language/amdgpu => ../amdgpu
 	github.com/vertex-language/arm64 => ../arm64
 	github.com/vertex-language/asm => ../asm
 	github.com/vertex-language/elf => ../elf
@@ -28,6 +31,7 @@ replace (
 	github.com/vertex-language/ir/lower => ../ir/lower
 	github.com/vertex-language/macho => ../macho
 	github.com/vertex-language/pe => ../pe
+	github.com/vertex-language/ptx => ../ptx
 )
 
 replace github.com/vertex-language/vcc => ../vcc

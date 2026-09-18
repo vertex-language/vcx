@@ -40,8 +40,10 @@ func (p *parser) isDeclStart() bool {
 			return true // [[attribute]]
 		}
 
-	case token.ALIGNAS:
-		// An alignment-specifier is an attribute that opens a declaration.
+	case token.ALIGNAS, token.ATTRIBUTE, token.DECLSPEC:
+		// An alignment-specifier, or a vendor attribute -- `__shared__
+		// int tile[8]` in a kernel is `__attribute__((shared)) int ...`
+		// -- is an attribute that opens a declaration.
 		return true
 	}
 

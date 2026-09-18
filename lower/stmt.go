@@ -157,7 +157,7 @@ func (fl *fn) declareLocal(init *ast.InitDeclarator) {
 	if sym == nil {
 		return
 	}
-	if sym.Storage == sema.StorageStatic {
+	if sym.Storage == sema.StorageStatic || sym.Memory == sema.MemShared {
 		fl.declareStaticLocal(init, sym)
 		return
 	}
@@ -236,10 +236,18 @@ func (fl *fn) declareStaticLocal(init *ast.InitDeclarator, sym *sema.VarSymbol) 
 	_, align := u.sizeAlign(sym.SymType)
 	fl.nstatics++
 	base := fmt.Sprintf("?%s@?%d?%s@4", sym.SymName, fl.nstatics, u.funcSymbol(fl.sym))
-	g := u.mod.Global(u.symbolName(base+"A"), ir.RW, u.storageType(sym.SymType))
+	g := u.mod.Global(u.symbolName(base+"A"), u.domainOf(sym), u.storageType(sym.SymType))
 	g.Internal()
 	g.Align(uint64(align))
 	u.globals[sym] = g
+	if sym.Memory == sema.MemShared && u.devicePass() {
+		// A __shared__ local is the block's storage, zeroed: no
+		// initializer, and nothing to guard.
+		if init.Value != nil || init.Braced != nil {
+			u.errorf(init.Pos(), "a __shared__ variable cannot be initialized")
+		}
+		return
+	}
 	obj := fl.blk.Ptr.GetAddr(g)
 
 	// Constant initialization, or none at all: the image is the value.

@@ -31,6 +31,10 @@ const (
 	ContainerELF Container = iota
 	ContainerMachO
 	ContainerPE
+
+	// ContainerPTX is NVIDIA's textual ISA: what a CUDA device
+	// compilation produces, which the driver assembles at load time.
+	ContainerPTX
 )
 
 func (c Container) String() string {
@@ -41,6 +45,8 @@ func (c Container) String() string {
 		return "macho"
 	case ContainerPE:
 		return "pe"
+	case ContainerPTX:
+		return "ptx"
 	}
 	return "unknown"
 }
@@ -130,6 +136,33 @@ var targets = map[string]Target{
 		ABI:          ABIItanium,
 		Freestanding: true,
 	},
+
+	// The two device targets: what the device pass of a CUDA or HIP unit
+	// is compiled for. Both are GNU-dialect, Itanium-ABI targets, as
+	// clang's are, whatever the host is; the host pass of the same unit
+	// keeps the host's target. Which SM or GFX processor is in
+	// Compiler.OffloadArch, the way a CPU's feature set is not in its
+	// target name either.
+	"nvptx64-cuda": {
+		Name:      "nvptx64-cuda",
+		Arch:      "nvptx64",
+		OS:        "cuda",
+		Container: ContainerPTX,
+		ABI:       ABIItanium,
+	},
+	"amdgcn-hsa": {
+		Name:      "amdgcn-hsa",
+		Arch:      "amdgcn",
+		OS:        "hsa",
+		Container: ContainerELF,
+		ABI:       ABIItanium,
+	},
+}
+
+// Device reports whether t is a GPU: a target no host program runs on,
+// whose code is a kernel image the host loads.
+func (t Target) Device() bool {
+	return t.Arch == "nvptx64" || t.Arch == "amdgcn"
 }
 
 // DefaultTarget returns the host machine's native target.
@@ -163,6 +196,12 @@ func TargetByName(name string) (Target, error) {
 	// Normalization
 	name = strings.ReplaceAll(name, "amd64", "x86_64")
 	name = strings.ReplaceAll(name, "darwin", "macos")
+	switch name {
+	case "nvptx64", "nvptx64-nvidia-cuda", "nvptx":
+		name = "nvptx64-cuda"
+	case "amdgcn", "amdgcn-amd-amdhsa", "amdgcn-hsa":
+		name = "amdgcn-hsa"
+	}
 
 	if t, ok := targets[name]; ok {
 		return t, nil

@@ -1527,6 +1527,12 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 		Noexcept: l.Noexcept != nil,
 	}
 	sym := &FuncSymbol{SymName: "operator()", FuncType: call, InClass: closure, SymPos: l.Pos(), SymScope: a.curScope, Inline: true, Access: types.AccessPublic}
+	// A lambda written in device code runs where the function around it
+	// runs; one in host code is the host's, as nvcc has it without
+	// --extended-lambda.
+	if a.curFunc != nil && a.curFunc.Space.OnDevice() {
+		sym.Space = SpaceHostDevice
+	}
 	method := &types.Method{
 		Name:   "operator()",
 		Func:   call,
@@ -2014,6 +2020,9 @@ func conditionalType(thenInfo, elseInfo ExprInfo, e *ast.CondExpr) types.Type {
 // builtinCall answers a call to one of the compiler's expression builtins.
 func (a *Analyzer) builtinCall(name string, c *ast.CallExpr) (ExprInfo, bool) {
 	if info, ok := a.gnuBuiltinCall(name, c); ok {
+		return info, true
+	}
+	if info, ok := a.hipAtomicCall(name, c); ok {
 		return info, true
 	}
 	switch name {

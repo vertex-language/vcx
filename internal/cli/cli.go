@@ -119,7 +119,7 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 	var pp ppFlags
 	pp.register(fs)
 	outPath := fs.String("o", "a.out", "output file")
-	emit := fs.String("emit", "obj", "what to produce: vir, obj")
+	emit := fs.String("emit", "obj", "what to produce: vir, obj, ptx, hsaco")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -138,6 +138,17 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		inputs = append(inputs, in)
+	}
+
+	// `--emit ptx` and `--emit hsaco` are the device pass alone, written
+	// as the image the driver loads.
+	switch *emit {
+	case "ptx", "hsaco":
+		c.DeviceOnly, c.HostOnly = true, false
+	case "vir", "obj":
+	default:
+		fmt.Fprintf(stderr, "v++: --emit %s: not vir, obj, ptx or hsaco\n", *emit)
+		return exitUsage
 	}
 
 	// `--emit vir` stops one rung short and prints the module. It is the

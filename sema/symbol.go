@@ -42,6 +42,9 @@ type VarSymbol struct {
 	// InClass is the class of a static data member.
 	InClass *types.Record
 
+	// Memory is where the object lives in an offload unit (see MemSpace).
+	Memory MemSpace
+
 	// ExternC is an object declared with C language linkage (unmangled).
 	ExternC bool
 
@@ -130,6 +133,14 @@ type FuncSymbol struct {
 
 	// ExternC indicates C language linkage (unmangled name).
 	ExternC bool
+
+	// Space is where the function runs in an offload unit (see ExecSpace).
+	Space ExecSpace
+
+	// Intrinsic marks a device builtin -- __nvvm_read_ptx_sreg_tid_x,
+	// __builtin_amdgcn_s_barrier -- which lowering turns into a verb
+	// rather than a call.
+	Intrinsic bool
 
 	// LinkName, when set, is the name the linker sees in place of SymName,
 	// before the container adds its prefix: a library builtin
