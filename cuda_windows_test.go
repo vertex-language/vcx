@@ -114,7 +114,8 @@ func (c *cudaDriver) check(what string, r uintptr) error {
 	return nil
 }
 
-// load JITs the text; the log is what ptxas would have said.
+// load JITs the text, or loads a cubin as it is; the log is what ptxas
+// would have said.
 func (c *cudaDriver) load(src string) (uintptr, error) {
 	image := append([]byte(src), 0)
 	logBuf := make([]byte, 8192)
@@ -190,37 +191,43 @@ func TestCUDACorpusRuns(t *testing.T) {
 			// A subtest is its own goroutine: the context is made current
 			// on its thread.
 			c := gpu(t)
-			src := ptxOf(t, tc, c.arch)
-			mod, err := c.load(src)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer c.moduleUnload.Call(mod)
-			f, err := c.function(mod, "_Z4testPi")
-			if err != nil {
-				t.Fatal(err)
-			}
-			size := uintptr(len(tc.expect)) * 4
-			var dptr uint64
-			if r, _, _ := c.memAlloc.Call(uintptr(unsafe.Pointer(&dptr)), size); r != 0 {
-				t.Fatal(c.check("cuMemAlloc", r))
-			}
-			defer c.memFree.Call(uintptr(dptr))
-			if r, _, _ := c.memsetD32.Call(uintptr(dptr), 0, uintptr(len(tc.expect))); r != 0 {
-				t.Fatal(c.check("cuMemsetD32", r))
-			}
-			if err := c.launch(f, tc.grid, tc.block, tc.shmem, unsafe.Pointer(&dptr)); err != nil {
-				t.Fatalf("%v\n--- ptx ---\n%s", err, src)
-			}
-			got := make([]int32, len(tc.expect))
-			if r, _, _ := c.memcpyDtoH.Call(uintptr(unsafe.Pointer(&got[0])), uintptr(dptr), size); r != 0 {
-				t.Fatal(c.check("cuMemcpyDtoH", r))
-			}
-			for i := range got {
-				if got[i] != tc.expect[i] {
-					t.Fatalf("out[%d] = %d, want %d\nout = %v\n--- ptx ---\n%s", i, got[i], tc.expect[i], got, src)
-				}
-			}
+			runKernelCase(t, c, tc, ptxOf(t, tc, c.arch))
 		})
+	}
+}
+
+// runKernelCase loads the PTX, runs the case's kernel over a zeroed
+// buffer with the launch its header names, and compares what came back.
+func runKernelCase(t *testing.T, c *cudaDriver, tc cudaCase, src string) {
+	t.Helper()
+	mod, err := c.load(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.moduleUnload.Call(mod)
+	f, err := c.function(mod, "_Z4testPi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := uintptr(len(tc.expect)) * 4
+	var dptr uint64
+	if r, _, _ := c.memAlloc.Call(uintptr(unsafe.Pointer(&dptr)), size); r != 0 {
+		t.Fatal(c.check("cuMemAlloc", r))
+	}
+	defer c.memFree.Call(uintptr(dptr))
+	if r, _, _ := c.memsetD32.Call(uintptr(dptr), 0, uintptr(len(tc.expect))); r != 0 {
+		t.Fatal(c.check("cuMemsetD32", r))
+	}
+	if err := c.launch(f, tc.grid, tc.block, tc.shmem, unsafe.Pointer(&dptr)); err != nil {
+		t.Fatalf("%v\n--- ptx ---\n%s", err, src)
+	}
+	got := make([]int32, len(tc.expect))
+	if r, _, _ := c.memcpyDtoH.Call(uintptr(unsafe.Pointer(&got[0])), uintptr(dptr), size); r != 0 {
+		t.Fatal(c.check("cuMemcpyDtoH", r))
+	}
+	for i := range got {
+		if got[i] != tc.expect[i] {
+			t.Fatalf("out[%d] = %d, want %d\nout = %v\n--- ptx ---\n%s", i, got[i], tc.expect[i], got, src)
+		}
 	}
 }

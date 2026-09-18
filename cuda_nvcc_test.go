@@ -68,3 +68,41 @@ func TestCUDAProgramsAgainstNvcc(t *testing.T) {
 		})
 	}
 }
+
+// The kernels of tests/cuda/device compiled by nvcc to a cubin -- the
+// PTX a newer toolkit writes outruns an older driver's JIT, and SASS
+// does not -- and run through the same driver harness with the same
+// launch: the header's expectations hold for NVIDIA's compiler too.
+func TestCUDACorpusAgainstNvcc(t *testing.T) {
+	tk, ok := vcx.FindCUDAToolkit()
+	if !ok {
+		t.Skip("no CUDA toolkit")
+	}
+	nvcc := filepath.Join(tk.Dir, "bin", "nvcc.exe")
+	cl, ok := findMSVC(t)
+	if !ok {
+		t.Skip("no cl.exe for nvcc's host side")
+	}
+	cases := cudaCases(t)
+	gpu(t)
+	dir := t.TempDir()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.expect) == 0 {
+				t.Skip("no expectation")
+			}
+			c := gpu(t)
+			ptx := filepath.Join(dir, tc.name+".cubin")
+			cmd := exec.Command(nvcc, "-ccbin", filepath.Dir(cl.exe), "-cubin", "-arch="+c.arch, "-o", ptx, tc.path)
+			cmd.Env = append(os.Environ(), "INCLUDE="+cl.include, "LIB="+cl.lib)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("nvcc refused %s: %v\n%s", tc.path, err, out)
+			}
+			src, err := os.ReadFile(ptx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runKernelCase(t, c, tc, string(src))
+		})
+	}
+}
