@@ -585,6 +585,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			fnSym.NoReturn = hasAttrNamed(d.Attrs, "noreturn", a.unit)
 			fnSym.Space = a.execSpaceOf(d.Specs.AllAttrs(d.Attrs), init.Pos())
 			fnSym.Space = a.implicitSpace(fnSym)
+			fnSym.LaunchBounds = a.launchBoundsOf(d.Specs.AllAttrs(d.Attrs), init.Pos())
 			a.checkKernel(fnSym)
 			// The template-head before the scope sees the declaration, as in
 			// checkFuncDecl: two member templates of one signature are told
@@ -1331,6 +1332,7 @@ func (a *Analyzer) checkFuncDecl(d *ast.FuncDecl) {
 		fnSym.NoReturn = hasAttrNamed(d.Attrs, "noreturn", a.unit)
 		fnSym.Space = a.execSpaceOf(d.Specs.AllAttrs(d.Attrs), d.Pos())
 		fnSym.Space = a.implicitSpace(fnSym)
+		fnSym.LaunchBounds = a.launchBoundsOf(d.Specs.AllAttrs(d.Attrs), d.Pos())
 		a.checkKernel(fnSym)
 		if surviving, err := a.funcDeclScope(d).InsertFunc(fnSym); err == nil {
 			surviving.NoReturn = surviving.NoReturn || fnSym.NoReturn

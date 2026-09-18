@@ -413,6 +413,12 @@ func (u *unit) declareFunc(fn *sema.FuncSymbol) *ir.Func {
 	// the launch uses.
 	if fn.Space == sema.SpaceGlobal && u.devicePass() {
 		f.CallConv(ir.Kernel)
+		if n := fn.LaunchBounds[0]; n > 0 {
+			f.Meta(ir.Attached("max_workgroup_size", ir.MInt(n)))
+		}
+		if n := fn.LaunchBounds[1]; n > 0 {
+			f.Meta(ir.Attached("min_workgroups_per_cu", ir.MInt(n)))
+		}
 	}
 
 	// Inline functions use COMDAT linkage to allow duplicate definitions across units.

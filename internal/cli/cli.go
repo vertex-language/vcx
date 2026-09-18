@@ -65,8 +65,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if !isCommand(verb) {
 		// The driver spelling: v++ [flags] files... is a build, read the
 		// way nvcc and clang++ read their command lines.
-		driver, _ := driverArgs(args)
-		return cmdBuild(driver, stdout, stderr)
+		return cmdBuild(args, stdout, stderr)
 	}
 	switch verb {
 	case "tokens":
@@ -133,6 +132,8 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdBuild(args []string, stdout, stderr io.Writer) int {
+	// Flags after the files too, as every driver allows.
+	args, _ = driverArgs(args)
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var pp ppFlags

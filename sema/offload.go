@@ -2,8 +2,11 @@ package sema
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/vertex-language/vcx/ast"
+	"github.com/vertex-language/vcx/token"
 	"github.com/vertex-language/vcx/types"
 )
 
@@ -140,6 +143,39 @@ func (a *Analyzer) memSpaceOf(groups []*ast.AttrGroup, at ast.Tok) MemSpace {
 			continue
 		}
 		out = space
+	}
+	return out
+}
+
+// launchBoundsOf reads __launch_bounds__(max[, min]): integer literals,
+// which is what the attribute is written with in practice; an
+// expression there is not evaluated yet and is ignored with a note.
+func (a *Analyzer) launchBoundsOf(groups []*ast.AttrGroup, at ast.Tok) [2]int64 {
+	var out [2]int64
+	for _, g := range groups {
+		if g == nil {
+			continue
+		}
+		for _, attr := range g.Attrs {
+			if attr == nil || attr.Name == nil || strings.TrimSuffix(strings.TrimPrefix(attr.Name.Text(a.unit), "__"), "__") != "launch_bounds" {
+				continue
+			}
+			i := 0
+			for t := attr.Args.Lo; t < attr.Args.Hi && i < 2; t++ {
+				switch a.unit.Kind(t) {
+				case token.COMMA:
+					i++
+				case token.INT_LIT:
+					n, err := strconv.ParseInt(strings.TrimRight(a.unit.Text(t), "uUlL"), 0, 64)
+					if err == nil {
+						out[i] = n
+					}
+				default:
+					a.errorAt(at, "__launch_bounds__ takes integer literals here; an expression in it is not evaluated yet")
+					return out
+				}
+			}
+		}
 	}
 	return out
 }

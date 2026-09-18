@@ -137,6 +137,11 @@ type FuncSymbol struct {
 	// Space is where the function runs in an offload unit (see ExecSpace).
 	Space ExecSpace
 
+	// LaunchBounds is __launch_bounds__(max, min) on a kernel: the most
+	// work-items a launch may give it, and the fewest workgroups a
+	// compute unit should hold; zero where not written.
+	LaunchBounds [2]int64
+
 	// Intrinsic marks a device builtin -- __nvvm_read_ptx_sreg_tid_x,
 	// __builtin_amdgcn_s_barrier -- which lowering turns into a verb
 	// rather than a call.
