@@ -574,6 +574,18 @@ func (fl *fn) assign(e *ast.AssignExpr) ir.Value {
 		if lhs == nil {
 			return nil
 		}
+		if p, isPtr := lhs.(ir.Ptr); isPtr && (op == token.ADD || op == token.SUB) && isInteger(fl.typeOf(e.Rhs)) {
+			// p += n and p -= n: n elements along.
+			elem := types.Unqualify(types.RemoveReference(t)).(*types.Pointer).Elem
+			nType := fl.typeOf(e.Rhs)
+			if op == token.SUB {
+				off := fl.convert(v, nType, types.Typ(types.LongLong)).(ir.I64)
+				v, nType = fl.blk.I64.Sub(fl.blk.I64.Const(0), off), types.Typ(types.LongLong)
+			}
+			v = fl.scaled(p, v, nType, elem)
+			fl.store(slot, v, t)
+			return v
+		}
 		v = fl.arith(op, e.Pos(), lhs, fl.convert(v, fl.typeOf(e.Rhs), t), t)
 		if v == nil {
 			return nil
@@ -822,7 +834,20 @@ func (fl *fn) callRaw(e *ast.CallExpr, callee *sema.FuncSymbol) ir.Value {
 	if callee.Intrinsic {
 		return fl.intrinsicCall(callee, e)
 	}
-	if !fl.checkDeviceCall(callee, e.Pos()) {
+	// cl's __va_start(&ap, last): the variadic prologue, a verb.
+	if callee.SymName == "__va_start" && callee.ExternC && callee.Body == nil && len(e.Args) >= 1 {
+		ap := fl.expr(e.Args[0])
+		if p, isPtr := ap.(ir.Ptr); isPtr {
+			fl.blk.VaStart(p)
+		}
+		return nil
+	}
+	if !fl.checkDeviceCall(callee, e.Pos(), e.IsLaunch()) {
+		return nil
+	}
+	// A launch pushes its configuration first; the stub called next
+	// pops it.
+	if e.IsLaunch() && !fl.pushLaunch(e) {
 		return nil
 	}
 	if callee.Body == nil && fl.u.deviceMathVerb(callee) != "" {

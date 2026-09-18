@@ -32,6 +32,10 @@ func (p *parser) parseBinaryExprRemainder(lhs ast.Expr, minPrec int) ast.Expr {
 		if (k == token.GTR || k == token.SHR) && p.inTemplateArgs > 0 {
 			break
 		}
+		// Inside a launch configuration, `>>>` closes it.
+		if p.inLaunch > 0 && p.launchCloses() {
+			break
+		}
 
 		// Assignment operators (right-associative, below conditional)
 		if p.isAssignOp(k) && minPrec <= 2 {
@@ -583,6 +587,56 @@ func (p *parser) parsePostfixExpr() ast.Expr {
 				Lparen: lp,
 				Args:   args,
 				Rparen: rp,
+			}
+
+		case token.SHL:
+			// A kernel launch, expr<<<grid, block[, shmem[, stream]]>>>(args):
+			// CUDA's, and no C++ of any kind, since `<<` followed at once
+			// by `<` opens nothing else.
+			if !p.launchOpens() {
+				return expr
+			}
+			launch := p.next() // <<
+			p.next()           // <
+			config := []ast.Expr{}
+			p.inLaunch++
+			for !p.atEOF() && !p.launchCloses() {
+				config = append(config, p.parseAssignmentExpr())
+				if p.peek() == token.COMMA {
+					p.next()
+				} else {
+					break
+				}
+			}
+			p.inLaunch--
+			if !p.launchCloses() {
+				p.error(p.pos(), "expected >>> to close the launch configuration")
+				return expr
+			}
+			p.next() // >> (or the first >)
+			p.next() // >  (or the second)
+			if p.peek() == token.GTR && p.u.Kind(p.cur-1) == token.GTR {
+				p.next() // the third of > > >
+			}
+			lp := p.expect(token.LPAREN)
+			var args []ast.Expr
+			for !p.atEOF() && p.peek() != token.RPAREN {
+				args = append(args, p.parseAssignmentExpr())
+				if p.peek() == token.COMMA {
+					p.next()
+				} else {
+					break
+				}
+			}
+			rp := p.expect(token.RPAREN)
+			expr = &ast.CallExpr{
+				Span:   ast.Span{Lo: expr.Pos(), Hi: rp + 1},
+				Fun:    expr,
+				Lparen: lp,
+				Args:   args,
+				Rparen: rp,
+				Config: config,
+				Launch: launch,
 			}
 
 		case token.PERIOD, token.ARROW:

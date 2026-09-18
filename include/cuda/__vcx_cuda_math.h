@@ -15,51 +15,50 @@
 #ifndef __VCX_CUDA_MATH_H__
 #define __VCX_CUDA_MATH_H__
 
-#if defined(__CUDA_ARCH__)
 
 extern "C" {
-__device__ float sqrtf(float);
-__device__ double sqrt(double);
-__device__ float fabsf(float);
-__device__ double fabs(double);
-__device__ float floorf(float);
-__device__ double floor(double);
-__device__ float ceilf(float);
-__device__ double ceil(double);
-__device__ float truncf(float);
-__device__ double trunc(double);
-__device__ float rintf(float);
-__device__ double rint(double);
-__device__ float nearbyintf(float);
-__device__ double nearbyint(double);
-__device__ float roundf(float);
-__device__ double round(double);
-__device__ float fminf(float, float);
-__device__ double fmin(double, double);
-__device__ float fmaxf(float, float);
-__device__ double fmax(double, double);
-__device__ float fmaf(float, float, float);
-__device__ double fma(double, double, double);
-__device__ float copysignf(float, float);
-__device__ double copysign(double, double);
-__device__ float rsqrtf(float);
-__device__ double rsqrt(double);
-__device__ float expf(float);
-__device__ double exp(double);
-__device__ float exp2f(float);
-__device__ double exp2(double);
-__device__ float logf(float);
-__device__ double log(double);
-__device__ float log2f(float);
-__device__ double log2(double);
-__device__ float sinf(float);
-__device__ double sin(double);
-__device__ float cosf(float);
-__device__ double cos(double);
-__device__ float tanf(float);
-__device__ double tan(double);
-__device__ float powf(float, float);
-__device__ double pow(double, double);
+__host__ __device__ float sqrtf(float);
+__host__ __device__ double sqrt(double);
+__host__ __device__ float fabsf(float);
+__host__ __device__ double fabs(double);
+__host__ __device__ float floorf(float);
+__host__ __device__ double floor(double);
+__host__ __device__ float ceilf(float);
+__host__ __device__ double ceil(double);
+__host__ __device__ float truncf(float);
+__host__ __device__ double trunc(double);
+__host__ __device__ float rintf(float);
+__host__ __device__ double rint(double);
+__host__ __device__ float nearbyintf(float);
+__host__ __device__ double nearbyint(double);
+__host__ __device__ float roundf(float);
+__host__ __device__ double round(double);
+__host__ __device__ float fminf(float, float);
+__host__ __device__ double fmin(double, double);
+__host__ __device__ float fmaxf(float, float);
+__host__ __device__ double fmax(double, double);
+__host__ __device__ float fmaf(float, float, float);
+__host__ __device__ double fma(double, double, double);
+__host__ __device__ float copysignf(float, float);
+__host__ __device__ double copysign(double, double);
+__host__ __device__ float rsqrtf(float);
+__host__ __device__ double rsqrt(double);
+__host__ __device__ float expf(float);
+__host__ __device__ double exp(double);
+__host__ __device__ float exp2f(float);
+__host__ __device__ double exp2(double);
+__host__ __device__ float logf(float);
+__host__ __device__ double log(double);
+__host__ __device__ float log2f(float);
+__host__ __device__ double log2(double);
+__host__ __device__ float sinf(float);
+__host__ __device__ double sin(double);
+__host__ __device__ float cosf(float);
+__host__ __device__ double cos(double);
+__host__ __device__ float tanf(float);
+__host__ __device__ double tan(double);
+__host__ __device__ float powf(float, float);
+__host__ __device__ double pow(double, double);
 }
 
 /* The fast, approximate forms: what the SFU computes directly. */
@@ -91,5 +90,4 @@ __VCX_DEVICE_INLINE unsigned __float2uint_rz(float x) { return (unsigned)x; }
 __VCX_DEVICE_INLINE float __int2float_rn(int x) { return (float)x; }
 __VCX_DEVICE_INLINE float __uint2float_rn(unsigned x) { return (float)x; }
 
-#endif /* __CUDA_ARCH__ */
 #endif /* __VCX_CUDA_MATH_H__ */

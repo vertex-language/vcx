@@ -38,7 +38,8 @@ func (u *unit) lowersFunc(fn *sema.FuncSymbol) bool {
 	if u.devicePass() {
 		return fn.Space.OnDevice()
 	}
-	return fn.Space.OnHost()
+	// A kernel has a host side too: its launch stub.
+	return fn.Space.OnHost() || fn.Space == sema.SpaceGlobal
 }
 
 // lowersGlobal reports whether this pass defines the object: the device
@@ -70,9 +71,12 @@ func (u *unit) domainOf(v *sema.VarSymbol) ir.Domain {
 // checkDeviceCall is the line between the two passes at a call: device
 // code may not call a host function, and host code may not call a
 // device one. It returns false when the call is refused.
-func (fl *fn) checkDeviceCall(callee *sema.FuncSymbol, at ast.Tok) bool {
+func (fl *fn) checkDeviceCall(callee *sema.FuncSymbol, at ast.Tok, launch bool) bool {
 	u := fl.u
 	if !u.offload() || callee.Intrinsic {
+		return true
+	}
+	if launch {
 		return true
 	}
 	if u.devicePass() {

@@ -11,6 +11,7 @@ import (
 	"github.com/vertex-language/vcx/ast"
 	"github.com/vertex-language/vcx/constexpr"
 	"github.com/vertex-language/vcx/mangle"
+	"github.com/vertex-language/vcx/offload"
 	"github.com/vertex-language/vcx/sema"
 	"github.com/vertex-language/vcx/token"
 	"github.com/vertex-language/vcx/types"
@@ -32,6 +33,11 @@ type Options struct {
 
 	// ABI is the name-mangling scheme (MSVC or Itanium).
 	ABI mangle.ABI
+
+	// Images are the device images the host pass of an offload unit
+	// embeds and registers: what the device pass produced for each
+	// architecture asked for.
+	Images []offload.Image
 }
 
 // Diagnostic is one complaint from lowering.
@@ -152,6 +158,10 @@ type unit struct {
 
 	// params caches lowered parameter values for each function.
 	params map[*sema.FuncSymbol][]ir.Value
+
+	// kernelStubs are the kernels the host pass defined stubs for, in
+	// order, for the registration constructor.
+	kernelStubs []*sema.FuncSymbol
 }
 
 func (u *unit) errorf(pos ast.Tok, format string, args ...any) {
@@ -228,12 +238,15 @@ func (u *unit) declare() {
 		if fn.Body == nil {
 			continue
 		}
-		// Inline functions are emitted only when odr-used.
-		if fn.Inline {
-			continue
-		}
 		// An offload unit's functions belong to one pass or the other.
 		if !u.lowersFunc(fn) {
+			continue
+		}
+		// Inline functions are emitted only when odr-used -- except a
+		// kernel, whose use is a launch on the host: an instantiated
+		// kernel template is in the device image whatever the device
+		// pass sees of it.
+		if fn.Inline && !(fn.Space == sema.SpaceGlobal && u.devicePass()) {
 			continue
 		}
 		u.funcs[fn] = u.declareFunc(fn)
@@ -392,6 +405,9 @@ func (u *unit) declareFunc(fn *sema.FuncSymbol) *ir.Func {
 	}
 	f := u.mod.Func(name).Export()
 	u.defsByName[name] = f
+	if fn.FuncType.Variadic {
+		f.Variadic()
+	}
 
 	// A kernel is the device's entry point, with the calling convention
 	// the launch uses.
@@ -515,7 +531,7 @@ func (u *unit) define() {
 
 	for _, fn := range u.res.Functions {
 		f, ok := u.funcs[fn]
-		if !ok || fn.Inline {
+		if !ok || fn.Inline && !(fn.Space == sema.SpaceGlobal && u.devicePass()) {
 			continue
 		}
 		u.defineFunc(fn, f)
@@ -528,6 +544,9 @@ func (u *unit) define() {
 		u.pendingFuncs = u.pendingFuncs[1:]
 		u.defineFunc(fn, u.funcs[fn])
 	}
+	// The device image and the kernels the stubs above stand for, once
+	// every stub exists.
+	u.defineRegistration()
 }
 
 // declareGlobals gives every namespace-scope object a symbol.

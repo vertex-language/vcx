@@ -1,3 +1,5 @@
+//go:build windows
+
 package vcx_test
 
 // The execution oracle for the cuda corpus: the CUDA driver, which JITs
@@ -162,6 +164,16 @@ func (c *cudaDriver) launch(f uintptr, grid, block [3]uint32, args ...unsafe.Poi
 	}
 	r, _, _ = c.ctxSynchronize.Call()
 	return c.check("cuCtxSynchronize", r)
+}
+
+// driverPresent reports whether the machine has a driver and a GPU to
+// run on, and otherwise why not.
+func driverPresent() (*cudaDriver, string) {
+	if !driverOnce {
+		driverOnce = true
+		driver, driverSkip = openDriver()
+	}
+	return driver, driverSkip
 }
 
 // TestCUDACorpusRuns runs every kernel of the corpus on the GPU: the

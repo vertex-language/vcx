@@ -64,7 +64,17 @@ type CallExpr struct {
 	Lparen Tok
 	Args   []Expr
 	Rparen Tok
+
+	// Config is a kernel launch's execution configuration, the
+	// expressions between <<< and >>>: the grid, the block, and
+	// optionally the shared memory size and the stream. Nil for a call,
+	// and never nil for a launch, even one that wrote none.
+	Config []Expr
+	Launch Tok // the <<<, for a launch
 }
+
+// IsLaunch reports whether the call is a kernel launch, f<<<g, b>>>(args).
+func (c *CallExpr) IsLaunch() bool { return c.Config != nil }
 
 // MemberExpr is X.Sel or X->Sel.
 type MemberExpr struct {

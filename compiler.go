@@ -11,6 +11,7 @@ import (
 	"github.com/vertex-language/ir"
 
 	"github.com/vertex-language/vcx/lower"
+	"github.com/vertex-language/vcx/offload"
 
 	"github.com/vertex-language/vcx/ast"
 	"github.com/vertex-language/vcx/parser"
@@ -40,9 +41,17 @@ func (s Std) tokenStd() token.Std {
 
 // BuildParams controls a compilation and link run.
 type BuildParams struct {
+	// Output is the executable, or with CompileOnly the object of the
+	// one input (or a directory for several).
 	Output string
 	Inputs []Input
-	Libs   []string
+
+	// Libs and LibDirs are -l and -L for the link.
+	Libs    []string
+	LibDirs []string
+
+	// CompileOnly stops at objects: -c.
+	CompileOnly bool
 }
 
 // Compiler is the central compiler driver.
@@ -98,10 +107,9 @@ type pass struct {
 	model  types.Model
 }
 
-// passFor is the pass an input is compiled in: the host's for a C++
-// unit, and for an offload unit the device pass unless HostOnly asks for
-// the host's. (The host pass of an offload unit is Phase C's: it lowers
-// no kernel yet.)
+// passFor is the pass an input's object comes from: the host's for a
+// C++ unit and for an offload unit, whose host object carries the device
+// pass's image, unless DeviceOnly asks for the device pass alone.
 func (c *Compiler) passFor(in Input) (pass, error) {
 	host, err := c.target()
 	if err != nil {
@@ -117,23 +125,39 @@ func (c *Compiler) passFor(in Input) (pass, error) {
 	}
 	p.model.Offload = p.lang.offload()
 	p.model.DeviceISA = p.arch.ISA()
-	if c.HostOnly {
-		return p, nil
+	if c.DeviceOnly {
+		return p.toDevice(), nil
 	}
+	return p, nil
+}
+
+// toDevice is the device pass of the same unit.
+func (p pass) toDevice() pass {
 	p.device = true
 	p.tgt = p.arch.Target()
 	p.model = types.ForDevice(p.model)
 	p.model.DevicePass = true
-	return p, nil
+	return p
+}
+
+// embedsImages reports whether the pass is a host pass that carries the
+// device pass's image: every host pass of an offload unit, unless
+// HostOnly asked for the host alone.
+func (c *Compiler) embedsImages(p pass) bool {
+	return p.lang != LangCXX && !p.device && !c.HostOnly
 }
 
 func (c *Compiler) preprocessorConfig(in Input) preprocessor.Config {
+	p, passErr := c.passFor(in)
+	return c.preprocessorConfigFor(in, p, passErr)
+}
+
+func (c *Compiler) preprocessorConfigFor(in Input, p pass, passErr error) preprocessor.Config {
 	cfg := preprocessor.Config{
 		Std:    c.Std.tokenStd(),
 		Source: in.mount(),
 		Hosted: !c.Freestanding,
 	}
-	p, passErr := c.passFor(in)
 	for _, inc := range c.IncludeDirs {
 		cfg.Search = append(cfg.Search, preprocessor.Mount{
 			Name: inc,
@@ -227,12 +251,17 @@ func (c *Compiler) Preprocess(in Input) ([]byte, []Diagnostic, error) {
 
 // Parse runs phases 1-4 and parses the token stream into an ast.File.
 func (c *Compiler) Parse(in Input, mode parser.Mode) (*ast.File, []Diagnostic, error) {
+	p, err := c.passFor(in)
+	return c.parseFor(in, mode, p, err)
+}
+
+func (c *Compiler) parseFor(in Input, mode parser.Mode, p pass, passErr error) (*ast.File, []Diagnostic, error) {
 	f, diags, err := c.Source(in)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	cfg := c.preprocessorConfig(in)
+	cfg := c.preprocessorConfigFor(in, p, passErr)
 	if mode&parser.ParseComments != 0 {
 		cfg.KeepComments = true
 	}
@@ -481,18 +510,65 @@ func roundUpTo(n, a int64) int64 {
 	return (n + a - 1) / a * a
 }
 
-// IR runs the analysis and lowers the AST into a VIR module.
+// IR runs the analysis and lowers the AST into a VIR module: the host's
+// module for a C++ unit, and for an offload unit the host pass's, which
+// embeds the device pass's image, or the device pass's own under
+// DeviceOnly.
 func (c *Compiler) IR(in Input) (*ir.Module, []Diagnostic, error) {
-	file, diags, err := c.Parse(in, parser.DefaultMode)
+	p, err := c.passFor(in)
+	if err != nil {
+		return nil, nil, err
+	}
+	var images []offload.Image
+	var diags []Diagnostic
+	if c.embedsImages(p) {
+		images, diags, err = c.deviceImages(in, p)
+		if err != nil || HasErrors(diags) {
+			return nil, diags, err
+		}
+	}
+	mod, more, err := c.irFor(in, p, images)
+	return mod, append(diags, more...), err
+}
+
+// deviceImages runs the device pass of an offload unit for each
+// architecture asked for and is the images the host pass embeds.
+func (c *Compiler) deviceImages(in Input, p pass) ([]offload.Image, []Diagnostic, error) {
+	dp := p.toDevice()
+	mod, diags, err := c.irFor(in, dp, nil)
+	if err != nil || mod == nil || HasErrors(diags) {
+		return nil, diags, err
+	}
+	data, err := emitObject(mod, dp.tgt, dp.arch)
+	if err != nil {
+		return nil, diags, err
+	}
+	return []offload.Image{imageOf(dp.arch, data)}, diags, nil
+}
+
+// imageOf describes a device image for the container it travels in.
+func imageOf(arch OffloadArch, data []byte) offload.Image {
+	im := offload.Image{Arch: arch.Name, Data: data}
+	if arch.ISA() == types.AMDGCN {
+		im.Kind = offload.ELF
+		return im
+	}
+	im.Kind = offload.PTX
+	im.SM = arch.SM.SM
+	im.ISAMajor, im.ISAMinor = 8, 0
+	if i := strings.Index(string(data), ".version "); i >= 0 {
+		fmt.Sscanf(string(data[i+len(".version "):]), "%d.%d", &im.ISAMajor, &im.ISAMinor)
+	}
+	return im
+}
+
+// irFor is one pass of an input: its module.
+func (c *Compiler) irFor(in Input, p pass, images []offload.Image) (*ir.Module, []Diagnostic, error) {
+	file, diags, err := c.parseFor(in, parser.DefaultMode, p, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer file.Release()
-
-	p, err := c.passFor(in)
-	if err != nil {
-		return nil, diags, err
-	}
 	tgt, model := p.tgt, p.model
 
 	res, semaDiags := sema.Analyze(file, model)
@@ -514,6 +590,7 @@ func (c *Compiler) IR(in Input) (*ir.Module, []Diagnostic, error) {
 		Model:        model,
 		SymbolPrefix: symbolPrefix(tgt),
 		ABI:          manglingABI(tgt),
+		Images:       images,
 	})
 	for _, d := range lowDiags {
 		diags = append(diags, Diagnostic{
@@ -583,56 +660,3 @@ func moduleName(in Input) string {
 	return b.String()
 }
 
-// Build compiles inputs into an object file.
-func (c *Compiler) Build(params BuildParams) error {
-	// Object generation only; linking is handled externally.
-	for _, in := range params.Inputs {
-		if !in.isSource() {
-			continue
-		}
-		obj, diags, err := c.Object(in)
-		if err != nil {
-			return err
-		}
-		if HasErrors(diags) {
-			return &DiagnosticError{Diagnostics: diags}
-		}
-		if obj == nil {
-			return fmt.Errorf("no object produced for %s", in.Name)
-		}
-		out := params.Output
-		if out == "" {
-			out = moduleName(in) + c.objectExt(in)
-		}
-		if err := os.WriteFile(out, obj, 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// objectExt is the extension of what Object produces for the input: an
-// object file, or a device image for an offload unit's device pass.
-func (c *Compiler) objectExt(in Input) string {
-	p, err := c.passFor(in)
-	if err != nil || !p.device {
-		return ".o"
-	}
-	if p.tgt.Container == ContainerPTX {
-		return ".ptx"
-	}
-	return ".hsaco"
-}
-
-// Run compiles and runs a single source file.
-func (c *Compiler) Run(path string) ([]byte, error) {
-	in := File(path)
-	diags, err := c.Check(in)
-	if err != nil {
-		return nil, err
-	}
-	if HasErrors(diags) {
-		return nil, &DiagnosticError{Diagnostics: diags}
-	}
-	return []byte(fmt.Sprintf("Compiled %s successfully\n", path)), nil
-}

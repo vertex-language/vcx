@@ -1119,6 +1119,7 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 		if a.info != nil {
 			a.info.Calls[c] = resolved
 		}
+		a.checkLaunch(c, resolved)
 		a.noteArgConversions(resolved, c.Args, args, c.Pos())
 		for i := len(c.Args); i < len(resolved.Defaults); i++ {
 			if def := resolved.Defaults[i]; def != nil {

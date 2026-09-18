@@ -86,6 +86,10 @@ type parser struct {
 	maxDepth       int
 	inTemplateArgs int
 
+	// inLaunch counts the launch configurations being parsed, inside
+	// which `>>>` closes rather than shifts.
+	inLaunch int
+
 	// halfGtr tracks when the first '>' of a '>>' token closed a template argument list.
 	halfGtr bool
 
@@ -259,6 +263,35 @@ func (p *parser) consumeGreater() ast.Tok {
 		return p.cur
 	}
 	return p.next()
+}
+
+// adjacent reports whether token b starts where token a ends: two tokens
+// with nothing between them, which is how `<<<` and `>>>` are told from
+// a shift beside a comparison.
+func (p *parser) adjacent(a, b ast.Tok) bool {
+	x, y := p.u.Position(a), p.u.Position(b)
+	return x.Filename == y.Filename && x.Line == y.Line && y.Column == x.Column+len(p.u.Text(a))
+}
+
+// launchOpens reports whether the cursor is at `<<<`: a `<<` with a `<`
+// against it.
+func (p *parser) launchOpens() bool {
+	return !p.halfGtr && p.u.Kind(p.cur) == token.SHL && p.u.Kind(p.cur+1) == token.LSS && p.adjacent(p.cur, p.cur+1)
+}
+
+// launchCloses reports whether the cursor is at `>>>`: a `>>` with a
+// `>` against it, or three `>` in a row.
+func (p *parser) launchCloses() bool {
+	if p.halfGtr {
+		return false
+	}
+	switch p.u.Kind(p.cur) {
+	case token.SHR:
+		return p.u.Kind(p.cur+1) == token.GTR && p.adjacent(p.cur, p.cur+1)
+	case token.GTR:
+		return p.u.Kind(p.cur+1) == token.GTR && p.u.Kind(p.cur+2) == token.GTR && p.adjacent(p.cur, p.cur+1) && p.adjacent(p.cur+1, p.cur+2)
+	}
+	return false
 }
 
 func (p *parser) match(k token.Kind) bool {

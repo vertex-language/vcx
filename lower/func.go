@@ -60,6 +60,11 @@ func (u *unit) defineFunc(sym *sema.FuncSymbol, f *ir.Func) {
 		// is a no-op that hands back placeholders; walking the body would
 		return
 	}
+	// A kernel in the host pass is its launch stub, whatever its body says.
+	if u.offload() && !u.devicePass() && sym.Space == sema.SpaceGlobal {
+		u.defineKernelStub(sym, f)
+		return
+	}
 	fl := &fn{u: u, sym: sym, f: f, slots: map[sema.Symbol]ir.Ptr{}}
 	fl.entry = f.Entry()
 	fl.blk = f.Block("body")

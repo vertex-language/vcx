@@ -12,7 +12,6 @@
 #ifndef __VCX_CUDA_ATOMICS_H__
 #define __VCX_CUDA_ATOMICS_H__
 
-#if defined(__CUDA_ARCH__)
 
 #define __VCX_ATOMIC_SCOPES(DEF)                                                         \
   DEF(, __nvvm_atom_)                                                                    \
@@ -73,5 +72,4 @@ __VCX_ATOMIC_SCOPES(__VCX_ATOMIC_RMW)
 #undef __VCX_ATOMIC_RMW
 #undef __VCX_ATOMIC_SCOPES
 
-#endif /* __CUDA_ARCH__ */
 #endif /* __VCX_CUDA_ATOMICS_H__ */

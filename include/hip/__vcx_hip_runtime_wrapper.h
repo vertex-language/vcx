@@ -78,7 +78,6 @@ __VCX_DEVICE_INLINE void __threadfence_system(void) { __builtin_amdgcn_fence(__A
 
 /* ---- warp primitives -------------------------------------------------- */
 
-#if defined(__HIP_DEVICE_COMPILE__)
 __VCX_DEVICE_INLINE unsigned __lane_id(void) {
   return __builtin_amdgcn_mbcnt_hi(~0u, __builtin_amdgcn_mbcnt_lo(~0u, 0u));
 }
@@ -124,7 +123,6 @@ __VCX_DEVICE_INLINE int __clz(int x) { return x == 0 ? 32 : __builtin_clz((unsig
 __VCX_DEVICE_INLINE int __clzll(long long x) { return x == 0 ? 64 : __builtin_clzll((unsigned long long)x); }
 __VCX_DEVICE_INLINE int __ffs(int x) { return x == 0 ? 0 : __builtin_ctz((unsigned)x) + 1; }
 __VCX_DEVICE_INLINE int __ffsll(long long x) { return x == 0 ? 0 : __builtin_ctzll((unsigned long long)x) + 1; }
-#endif
 
 /* ---- atomics ---------------------------------------------------------- */
 

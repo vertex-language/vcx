@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os/exec"
 
 	"github.com/vertex-language/ir/text"
 
@@ -19,8 +21,10 @@ const (
 const usage = `v++ — the Vertex C++ Compiler
 
 Usage:
-    v++ build  [flags] [files...]   compile to an object; --emit vir stops one rung short
-    v++ run    [flags] [file]       build to a temporary path and run it
+    v++ build  [flags] [files...]   compile and link an executable; -c stops at objects,
+                                    --emit vir|ptx|hsaco one rung short
+    v++ run    [flags] [file] [-- args...]
+                                    build to a temporary path and run it
     v++ check  [flags] [files...]   preprocess, parse, analyze; print diagnostics
     v++ ast    [flags] [file]       parse and dump the syntax tree
     v++ layout [flags] [file]       print the computed layout of every class
@@ -35,6 +39,12 @@ Common flags:
     -D name[=val]   define a macro (repeatable)
     -U name         undefine a macro (repeatable)
     -freestanding   freestanding environment (no standard library)
+
+Offload flags (a .cu is CUDA, a .hip is HIP, as nvcc and hipcc have it):
+    -x cuda|hip     the language, whatever the extension says
+    --offload-arch  the device: sm_75, gfx942, ... (default sm_52 for CUDA)
+    --cuda-device-only / --cuda-host-only
+                    one pass of an offload unit rather than both
 
 Flags for ast:
     -skip-bodies    skip function bodies (fast structural pass)
@@ -118,8 +128,12 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var pp ppFlags
 	pp.register(fs)
-	outPath := fs.String("o", "a.out", "output file")
-	emit := fs.String("emit", "obj", "what to produce: vir, obj, ptx, hsaco")
+	outPath := fs.String("o", "", "output file (default a.exe or a.out, or the object's name with -c)")
+	emit := fs.String("emit", "", "what to produce: vir, obj, ptx, hsaco (obj implies -c)")
+	compileOnly := fs.Bool("c", false, "compile to objects, do not link")
+	var libs, libDirs stringList
+	fs.Var(&libs, "l", "link a library (repeatable)")
+	fs.Var(&libDirs, "L", "add a library search directory (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -145,7 +159,10 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 	switch *emit {
 	case "ptx", "hsaco":
 		c.DeviceOnly, c.HostOnly = true, false
-	case "vir", "obj":
+		*compileOnly = true
+	case "obj":
+		*compileOnly = true
+	case "vir", "":
 	default:
 		fmt.Fprintf(stderr, "v++: --emit %s: not vir, obj, ptx or hsaco\n", *emit)
 		return exitUsage
@@ -173,8 +190,11 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 	}
 
 	err = c.Build(vcx.BuildParams{
-		Output: *outPath,
-		Inputs: inputs,
+		Output:      *outPath,
+		Inputs:      inputs,
+		Libs:        libs,
+		LibDirs:     libDirs,
+		CompileOnly: *compileOnly,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "v++:", err)
@@ -202,12 +222,20 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	out, err := c.Run(fs.Arg(0))
+	out, err := c.Run(fs.Arg(0), fs.Args()[1:]...)
+	stdout.Write(out)
 	if err != nil {
+		var run *vcx.RunError
+		if errors.As(err, &run) {
+			stderr.Write(run.Stderr)
+			var exit *exec.ExitError
+			if errors.As(run.Err, &exit) {
+				return exit.ExitCode()
+			}
+		}
 		fmt.Fprintln(stderr, "v++:", err)
 		return exitDiags
 	}
-	stdout.Write(out)
 	return exitOK
 }
 

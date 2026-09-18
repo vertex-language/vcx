@@ -6,7 +6,6 @@
 #ifndef __VCX_HIP_ATOMICS_H__
 #define __VCX_HIP_ATOMICS_H__
 
-#if defined(__HIP_DEVICE_COMPILE__)
 
 #define __VCX_HIP_ATOMIC_SCOPES(DEF)                                                     \
   DEF(, __HIP_MEMORY_SCOPE_AGENT)                                                        \
@@ -57,5 +56,4 @@ __VCX_HIP_ATOMIC_SCOPES(__VCX_HIP_RMW)
 #undef __VCX_HIP_RMW_T
 #undef __VCX_HIP_ATOMIC_SCOPES
 
-#endif /* __HIP_DEVICE_COMPILE__ */
 #endif /* __VCX_HIP_ATOMICS_H__ */

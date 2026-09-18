@@ -8,7 +8,6 @@
 #ifndef __VCX_CUDA_WARP_H__
 #define __VCX_CUDA_WARP_H__
 
-#if defined(__CUDA_ARCH__)
 
 /* ---- bit casts --------------------------------------------------------- */
 
@@ -140,5 +139,4 @@ __VCX_DEVICE_INLINE int __any_sync(unsigned mask, int pred) { return __nvvm_vote
 __VCX_DEVICE_INLINE unsigned __ballot_sync(unsigned mask, int pred) { return __nvvm_vote_ballot_sync(mask, pred); }
 __VCX_DEVICE_INLINE unsigned __activemask(void) { return __nvvm_vote_ballot_sync(0xffffffffu, 1); }
 
-#endif /* __CUDA_ARCH__ */
 #endif /* __VCX_CUDA_WARP_H__ */

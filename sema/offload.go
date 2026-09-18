@@ -191,3 +191,55 @@ func (a *Analyzer) implicitSpace(fn *FuncSymbol) ExecSpace {
 	}
 	return SpaceHost
 }
+
+// checkLaunch is what a kernel launch, f<<<grid, block, shmem, stream>>>(
+// args), may be: the callee is a kernel, the configuration has two to
+// four expressions, the first two convertible to dim3 -- an integer is
+// the x extent -- and a launch is written in host code, since dynamic
+// parallelism is not lowered.
+func (a *Analyzer) checkLaunch(c *ast.CallExpr, callee *FuncSymbol) {
+	if !c.IsLaunch() {
+		if callee.Space == SpaceGlobal && a.offload() {
+			a.errorAt(c.Pos(), fmt.Sprintf("%q is a __global__ function and is launched with <<<grid, block>>>, not called", callee.SymName))
+		}
+		return
+	}
+	if !a.offload() {
+		a.errorAt(c.Launch, "a kernel launch in a C++ unit; name the file .cu or .hip, or pass -x cuda")
+		return
+	}
+	if callee.Space != SpaceGlobal {
+		a.errorAt(c.Launch, fmt.Sprintf("%q is not a __global__ function and cannot be launched", callee.SymName))
+	}
+	if a.curFunc != nil && a.curFunc.Space == SpaceGlobal || a.curFunc != nil && a.curFunc.Space == SpaceDevice {
+		a.errorAt(c.Launch, "a launch from device code is dynamic parallelism, which is not lowered")
+	}
+	if len(c.Config) < 2 || len(c.Config) > 4 {
+		a.errorAt(c.Launch, fmt.Sprintf("a launch configuration is <<<grid, block>>>, <<<grid, block, shmem>>> or <<<grid, block, shmem, stream>>>; this one has %d expressions", len(c.Config)))
+	}
+	for i, x := range c.Config {
+		info := a.CheckExpr(x)
+		if isDependentExpr(info) {
+			continue
+		}
+		t := types.Unqualify(types.RemoveReference(info.Type))
+		switch i {
+		case 0, 1:
+			if rec := types.AsRecord(t); rec != nil && rec.Name == "dim3" {
+				continue
+			}
+			if types.IsInteger(t) || types.IsEnum(t) {
+				continue
+			}
+			a.errorAt(x.Pos(), fmt.Sprintf("a launch's %s is a dim3 or an integer, not %s", [...]string{"grid", "block"}[i], info.Type))
+		case 2:
+			if !types.IsInteger(t) && !types.IsEnum(t) {
+				a.errorAt(x.Pos(), fmt.Sprintf("a launch's shared memory size is an integer, not %s", info.Type))
+			}
+		case 3:
+			if _, isPtr := t.(*types.Pointer); !isPtr && !isNullConstant(x, info) && !types.IsInteger(t) {
+				a.errorAt(x.Pos(), fmt.Sprintf("a launch's stream is a cudaStream_t, not %s", info.Type))
+			}
+		}
+	}
+}
