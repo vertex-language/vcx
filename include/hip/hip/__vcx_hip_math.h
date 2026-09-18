@@ -1,5 +1,5 @@
 /*
- * __vcx_cuda_math.h -- the device math library's surface.
+ * __vcx_hip_math.h -- the device math library's surface, for HIP.
  *
  * The C math functions are declared here with their C names, so that a
  * kernel may call sqrtf without including <cmath>; the host's <cmath>,
@@ -10,10 +10,10 @@
  * and the rest are not lowered yet and say so by name.
  *
  * The __-prefixed intrinsics are the approximate forms, over the
- * __nvvm_* builtins that name the PTX instruction.
+ * __builtin_amdgcn_* builtins that name the instruction.
  */
-#ifndef __VCX_CUDA_MATH_H__
-#define __VCX_CUDA_MATH_H__
+#ifndef __VCX_HIP_MATH_H__
+#define __VCX_HIP_MATH_H__
 
 
 extern "C" {
@@ -85,33 +85,25 @@ __host__ __device__ float ldexpf(float, int);
 __host__ __device__ double ldexp(double, int);
 }
 
-/* The fast, approximate forms: what the SFU computes directly. */
-__VCX_DEVICE_INLINE float __fsqrt_rn(float x) { return __nvvm_sqrt_rn_f(x); }
-__VCX_DEVICE_INLINE float __frsqrt_rn(float x) { return __nvvm_rsqrt_approx_f(x); }
-__VCX_DEVICE_INLINE float __frcp_rn(float x) { return __nvvm_rcp_approx_ftz_f(x); }
-__VCX_DEVICE_INLINE float __fdividef(float a, float b) { return a * __nvvm_rcp_approx_ftz_f(b); }
-__VCX_DEVICE_INLINE float __exp2f(float x) { return __nvvm_ex2_approx_f(x); }
-__VCX_DEVICE_INLINE float __expf(float x) { return __nvvm_ex2_approx_f(x * 1.4426950408889634f); }
-__VCX_DEVICE_INLINE float __exp10f(float x) { return __nvvm_ex2_approx_f(x * 3.3219280948873622f); }
-__VCX_DEVICE_INLINE float __log2f(float x) { return __nvvm_lg2_approx_f(x); }
-__VCX_DEVICE_INLINE float __logf(float x) { return __nvvm_lg2_approx_f(x) * 0.69314718055994531f; }
-__VCX_DEVICE_INLINE float __log10f(float x) { return __nvvm_lg2_approx_f(x) * 0.30102999566398120f; }
-__VCX_DEVICE_INLINE float __sinf(float x) { return __nvvm_sin_approx_f(x); }
-__VCX_DEVICE_INLINE float __cosf(float x) { return __nvvm_cos_approx_f(x); }
-__VCX_DEVICE_INLINE float __tanf(float x) { return __nvvm_sin_approx_f(x) * __nvvm_rcp_approx_ftz_f(__nvvm_cos_approx_f(x)); }
-__VCX_DEVICE_INLINE void __sincosf(float x, float *s, float *c) { *s = __nvvm_sin_approx_f(x); *c = __nvvm_cos_approx_f(x); }
-__VCX_DEVICE_INLINE float __powf(float a, float b) { return __nvvm_ex2_approx_f(b * __nvvm_lg2_approx_f(a)); }
-__VCX_DEVICE_INLINE float __fmaf_rn(float a, float b, float c) { return __nvvm_fma_rn_f(a, b, c); }
-__VCX_DEVICE_INLINE double __fma_rn(double a, double b, double c) { return __nvvm_fma_rn_d(a, b, c); }
+/* The fast, approximate forms, over the AMD instructions. */
+__VCX_DEVICE_INLINE float __fsqrt_rn(float x) { return __builtin_amdgcn_sqrtf(x); }
+__VCX_DEVICE_INLINE float __frsqrt_rn(float x) { return __builtin_amdgcn_rsqf(x); }
+__VCX_DEVICE_INLINE float __frcp_rn(float x) { return __builtin_amdgcn_rcpf(x); }
+__VCX_DEVICE_INLINE float __fdividef(float a, float b) { return a * __builtin_amdgcn_rcpf(b); }
+__VCX_DEVICE_INLINE float __exp2f(float x) { return __builtin_amdgcn_exp2f(x); }
+__VCX_DEVICE_INLINE float __expf(float x) { return __builtin_amdgcn_exp2f(x * 1.4426950408889634f); }
+__VCX_DEVICE_INLINE float __log2f(float x) { return __builtin_amdgcn_logf(x); }
+__VCX_DEVICE_INLINE float __logf(float x) { return __builtin_amdgcn_logf(x) * 0.69314718055994531f; }
+__VCX_DEVICE_INLINE float __log10f(float x) { return __builtin_amdgcn_logf(x) * 0.30102999566398120f; }
+__VCX_DEVICE_INLINE float __sinf(float x) { return __builtin_amdgcn_sinf(x * 0.15915494309189535f); }
+__VCX_DEVICE_INLINE float __cosf(float x) { return __builtin_amdgcn_cosf(x * 0.15915494309189535f); }
+__VCX_DEVICE_INLINE float __powf(float a, float b) { return __builtin_amdgcn_exp2f(b * __builtin_amdgcn_logf(a)); }
+__VCX_DEVICE_INLINE float __fmaf_rn(float a, float b, float c) { return fmaf(a, b, c); }
+__VCX_DEVICE_INLINE double __fma_rn(double a, double b, double c) { return fma(a, b, c); }
 __VCX_DEVICE_INLINE float __fadd_rn(float a, float b) { return a + b; }
 __VCX_DEVICE_INLINE float __fsub_rn(float a, float b) { return a - b; }
 __VCX_DEVICE_INLINE float __fmul_rn(float a, float b) { return a * b; }
 __VCX_DEVICE_INLINE float __fdiv_rn(float a, float b) { return a / b; }
 __VCX_DEVICE_INLINE float __saturatef(float x) { return x < 0.0f ? 0.0f : x > 1.0f ? 1.0f : x; }
-__VCX_DEVICE_INLINE int __float2int_rn(float x) { return __nvvm_f2i_rn(x); }
-__VCX_DEVICE_INLINE int __float2int_rz(float x) { return (int)x; }
-__VCX_DEVICE_INLINE unsigned __float2uint_rz(float x) { return (unsigned)x; }
-__VCX_DEVICE_INLINE float __int2float_rn(int x) { return (float)x; }
-__VCX_DEVICE_INLINE float __uint2float_rn(unsigned x) { return (float)x; }
 
-#endif /* __VCX_CUDA_MATH_H__ */
+#endif /* __VCX_HIP_MATH_H__ */

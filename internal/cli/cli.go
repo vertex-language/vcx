@@ -25,6 +25,9 @@ Usage:
                                     --emit vir|ptx|hsaco one rung short
     v++ run    [flags] [file] [-- args...]
                                     build to a temporary path and run it
+    v++ [flags] files...            the driver spelling: a build, with the
+                                    flags and files in any order, as nvcc,
+                                    hipcc and clang++ take them
     v++ check  [flags] [files...]   preprocess, parse, analyze; print diagnostics
     v++ ast    [flags] [file]       parse and dump the syntax tree
     v++ layout [flags] [file]       print the computed layout of every class
@@ -59,6 +62,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	verb, rest := args[0], args[1:]
+	if !isCommand(verb) {
+		// The driver spelling: v++ [flags] files... is a build, read the
+		// way nvcc and clang++ read their command lines.
+		driver, _ := driverArgs(args)
+		return cmdBuild(driver, stdout, stderr)
+	}
 	switch verb {
 	case "tokens":
 		return cmdTokens(rest, stdout, stderr)

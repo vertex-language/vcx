@@ -128,6 +128,11 @@ __VCX_DEVICE_INLINE int __ffsll(long long x) { return x == 0 ? 0 : __builtin_ctz
 
 #include <hip/__vcx_hip_atomics.h>
 
+/* ---- the device math library ------------------------------------------ */
+
+#include <hip/__vcx_hip_math.h>
+#include <hip/__vcx_devicelib_math.h>
+
 /* ---- the host API ----------------------------------------------------- */
 
 #include <hip/hip_runtime.h>

@@ -79,6 +79,7 @@ __VCX_DEVICE_INLINE void __threadfence_system(void) { __nvvm_membar_sys(); }
 /* ---- the device math library ------------------------------------------ */
 
 #include <__vcx_cuda_math.h>
+#include <__vcx_devicelib_math.h>
 
 /* ---- the host API ----------------------------------------------------- */
 

@@ -130,8 +130,15 @@ var deviceMath = map[string]string{
 	"fmaf": "fma", "fma": "fma", "copysignf": "copysign", "copysign": "copysign",
 	"rsqrtf": "rsqrt", "rsqrt": "rsqrt",
 	"abs": "iabs", "labs": "labs", "llabs": "labs",
-	"expf": "", "exp": "", "exp2f": "", "exp2": "", "logf": "", "log": "", "log2f": "", "log2": "",
-	"sinf": "", "sin": "", "cosf": "", "cos": "", "tanf": "", "tan": "", "powf": "", "pow": "",
+	// What the header-only device library computes: a call to the C
+	// name becomes a call to the __vcx_ function the wrapper defined.
+	"expf": "lib", "exp": "lib", "exp2f": "lib", "exp2": "lib", "exp10f": "lib", "exp10": "lib",
+	"logf": "lib", "log": "lib", "log2f": "lib", "log2": "lib", "log10f": "lib", "log10": "lib",
+	"sinf": "lib", "sin": "lib", "cosf": "lib", "cos": "lib", "tanf": "lib", "tan": "lib",
+	"sincosf": "lib", "sincos": "lib", "powf": "lib", "pow": "lib", "fmodf": "lib", "fmod": "lib",
+	"sinhf": "lib", "sinh": "lib", "coshf": "lib", "cosh": "lib", "tanhf": "lib", "tanh": "lib",
+	"atanf": "lib", "atan": "lib", "atan2f": "lib", "atan2": "lib", "asinf": "lib", "asin": "lib",
+	"acosf": "lib", "acos": "lib", "ldexpf": "lib", "ldexp": "lib",
 }
 
 // deviceMathCall lowers a call to the device math library.
@@ -139,6 +146,9 @@ func (fl *fn) deviceMathCall(callee *sema.FuncSymbol, e *ast.CallExpr) ir.Value 
 	b := fl.blk
 	name := fl.u.deviceMathVerb(callee)
 	verb := deviceMath[name]
+	if verb == "lib" {
+		return fl.deviceLibCall(name, callee, e)
+	}
 	if verb == "" {
 		fl.u.errorf(e.Pos(), "%s is not in the device math library yet: the hardware has no instruction for it, and the polynomial is not written", name)
 		return nil
@@ -222,6 +232,46 @@ func (fl *fn) deviceMathCall(callee *sema.FuncSymbol, e *ast.CallExpr) ir.Value 
 		return n.Div(n.Const(1), n.Sqrt(x))
 	}
 	fl.u.errorf(e.Pos(), "internal: no lowering for device math %s", name)
+	return nil
+}
+
+// deviceLibCall routes a C math function to the device library's
+// definition of it: __vcx_<name>, a __device__ function the runtime
+// wrapper defined, called with the arguments converted to the C
+// function's parameter types.
+func (fl *fn) deviceLibCall(name string, callee *sema.FuncSymbol, e *ast.CallExpr) ir.Value {
+	lib := fl.u.deviceLib(name)
+	if lib == nil {
+		fl.u.errorf(e.Pos(), "%s is in the device math library, but no __vcx_%s is declared: the runtime wrapper header was not read", name, name)
+		return nil
+	}
+	target := fl.u.callee(lib)
+	if target == nil {
+		fl.u.errorf(e.Pos(), "lowering has no symbol for __vcx_%s", name)
+		return nil
+	}
+	args, ok := fl.scalarArgs(callee, e.Args)
+	if !ok {
+		return nil
+	}
+	res := fl.blk.Call(target, args...)
+	if res.Len() == 0 {
+		return nil
+	}
+	return res.Value(0)
+}
+
+// deviceLib is the device library's function for a C math name, found
+// in the global scope by its __vcx_ name.
+func (u *unit) deviceLib(name string) *sema.FuncSymbol {
+	if u.res.GlobalScope == nil {
+		return nil
+	}
+	for _, sym := range u.res.GlobalScope.LookupLocal("__vcx_" + name) {
+		if fn, isFn := sym.(*sema.FuncSymbol); isFn && fn.Body != nil {
+			return fn
+		}
+	}
 	return nil
 }
 
