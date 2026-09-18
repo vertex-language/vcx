@@ -383,6 +383,14 @@ device pass, the host pass with the image embedded and registered, vcx's
 runtime over the driver, vcx's linker -- and compares standard output.
 Nothing but vcx is involved.
 
+Where the CUDA toolkit is installed beside cl.exe, both corpora are also
+compiled by nvcc -- the kernels to cubins run through the same harness,
+the programs to executables -- and held to the same headers
+(`TestCUDACorpusAgainstNvcc`, `TestCUDAProgramsAgainstNvcc`), and the
+programs run on NVIDIA's cudart as well as vcx's. That is the oracle:
+what nvcc prints is what the header says, and what vcx prints is what
+nvcc prints.
+
 ## hip/
 
 The same two questions for AMD, as far as this machine can answer them:
