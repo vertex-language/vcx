@@ -26,6 +26,7 @@ func isCommand(word string) bool {
 var valueFlags = map[string]bool{
 	"I": true, "D": true, "U": true, "target": true, "std": true, "x": true, "o": true,
 	"l": true, "L": true, "offload-arch": true, "arch": true, "emit": true,
+	"cudart": true, "cuda-path": true,
 }
 
 // attachable are the flags whose value may be written against them.
@@ -44,7 +45,7 @@ var ignoredFlags = map[string]bool{
 	"MF": true, "MT": true, "MQ": true,
 	"Xcompiler": true, "Xlinker": true, "Xptxas": true, "Xnvlink": true, "Xcudafe": true,
 	"ccbin": true, "compiler-bindir": true, "maxrregcount": true, "default-stream": true,
-	"cudart": true, "cudadevrt": true, "gpu-architecture": true, "gpu-code": true,
+	"cudadevrt": true, "gpu-architecture": true, "gpu-code": true,
 }
 
 // driverArgs rewrites a driver-style command line into what cmdBuild's

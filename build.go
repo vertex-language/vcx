@@ -58,12 +58,37 @@ func (c *Compiler) Build(params BuildParams) error {
 	}
 
 	// The runtime of each offload language present, as an object of its
-	// own, after the program's objects.
-	for _, lang := range []Language{LangCUDA, LangHIP} {
-		if !offload[lang] {
-			continue
+	// own, after the program's objects: vcx's over the driver, or the
+	// glue to the toolkit's cudart with the library itself on the line.
+	libs, libDirs := params.Libs, params.LibDirs
+	if offload[LangCUDA] {
+		which, tk := c.cudaRuntime()
+		var rt Input
+		var err error
+		switch which {
+		case "vcx":
+			rt, err = c.runtimeObject("runtime/cuda/vcx_cudart.cpp", LangCUDA)
+		case "static", "shared":
+			if tk.Lib == "" {
+				return fmt.Errorf("-cudart %s asks for the toolkit's cudart, and no CUDA toolkit was found (CUDA_PATH, or the default directories)", which)
+			}
+			rt, err = c.runtimeObject("runtime/cuda/vcx_cudart_glue.cpp", LangCUDA)
+			libDirs = append(append([]string(nil), libDirs...), tk.Lib)
+			lib := "cudart_static"
+			if which == "shared" {
+				lib = "cudart"
+			}
+			libs = append(append([]string(nil), libs...), lib)
 		}
-		rt, err := c.runtimeObject(lang)
+		if err != nil {
+			return err
+		}
+		if rt.Name != "" {
+			objects = append(objects, rt)
+		}
+	}
+	if offload[LangHIP] {
+		rt, err := c.runtimeObject("runtime/hip/vcx_hiprt.cpp", LangHIP)
 		if err != nil {
 			return err
 		}
@@ -73,7 +98,7 @@ func (c *Compiler) Build(params BuildParams) error {
 	if out == "" {
 		out = c.defaultExecutable()
 	}
-	return c.Link(LinkParams{Objects: objects, Output: out, Libs: params.Libs, LibDirs: params.LibDirs})
+	return c.Link(LinkParams{Objects: objects, Output: out, Libs: libs, LibDirs: libDirs})
 }
 
 // writeObjects writes each object where -c and -o say: one output for
@@ -111,20 +136,12 @@ func (c *Compiler) defaultExecutable() string {
 // compiled unit calls, over the vendor's driver, compiled here for the
 // host at link time.
 //
-//go:embed runtime/cuda/vcx_cudart.cpp runtime/hip/vcx_hiprt.cpp
+//go:embed runtime/cuda/vcx_cudart.cpp runtime/cuda/vcx_cudart_glue.cpp runtime/hip/vcx_hiprt.cpp
 var runtimeFS embed.FS
 
-// runtimeObject compiles the language's runtime for the host.
-func (c *Compiler) runtimeObject(lang Language) (Input, error) {
-	var path string
-	switch lang {
-	case LangCUDA:
-		path = "runtime/cuda/vcx_cudart.cpp"
-	case LangHIP:
-		path = "runtime/hip/vcx_hiprt.cpp"
-	default:
-		return Input{}, fmt.Errorf("no runtime for %s", lang)
-	}
+// runtimeObject compiles one of the embedded runtime sources for the
+// host, as a host-only unit of the language.
+func (c *Compiler) runtimeObject(path string, lang Language) (Input, error) {
 	src, err := runtimeFS.ReadFile(path)
 	if err != nil {
 		return Input{}, fmt.Errorf("vcx: embedded runtime missing: %w", err)

@@ -82,6 +82,14 @@ type Compiler struct {
 	OffloadArch  string
 	OffloadArchs []string
 
+	// CUDAPath names the CUDA toolkit to use: empty finds one, "none"
+	// uses none, a directory is one. CUDARuntime is how a CUDA program's
+	// runtime is linked: "vcx" (vcx's own, over the driver), "static" or
+	// "shared" (the toolkit's cudart), "none"; empty is the toolkit's
+	// static cudart when a toolkit is there and vcx's otherwise.
+	CUDAPath    string
+	CUDARuntime string
+
 	// DeviceOnly compiles only the device pass of an offload unit, and
 	// HostOnly only the host pass: --cuda-device-only and
 	// --cuda-host-only. Neither set is both, once the host side exists;
@@ -559,14 +567,14 @@ func (c *Compiler) deviceImages(in Input, p pass) ([]offload.Image, []Diagnostic
 		if err != nil {
 			return nil, diags, err
 		}
-		images = append(images, imageOf(dp.arch, data))
+		images = append(images, imageOf(dp.arch, p.host, data))
 	}
 	return images, diags, nil
 }
 
 // imageOf describes a device image for the container it travels in.
-func imageOf(arch OffloadArch, data []byte) offload.Image {
-	im := offload.Image{Arch: arch.Name, Data: data}
+func imageOf(arch OffloadArch, host Target, data []byte) offload.Image {
+	im := offload.Image{Arch: arch.Name, Data: data, Host: host.OS}
 	if arch.ISA() == types.AMDGCN {
 		im.Kind = offload.ELF
 		return im

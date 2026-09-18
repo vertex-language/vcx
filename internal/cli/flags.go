@@ -27,8 +27,10 @@ type ppFlags struct {
 	// The offload flags, as nvcc and hipcc spell them.
 	language     string
 	offloadArchs stringList
-	deviceOnly  bool
-	hostOnly    bool
+	deviceOnly   bool
+	hostOnly     bool
+	cudart       string
+	cudaPath     string
 
 	c *vcx.Compiler
 }
@@ -47,6 +49,8 @@ func (p *ppFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&p.deviceOnly, "offload-device-only", false, "same as --cuda-device-only")
 	fs.BoolVar(&p.hostOnly, "cuda-host-only", false, "compile only the host pass of a CUDA or HIP unit")
 	fs.BoolVar(&p.hostOnly, "offload-host-only", false, "same as --cuda-host-only")
+	fs.StringVar(&p.cudart, "cudart", "", "the CUDA runtime to link: vcx, static, shared, none (default: static with a toolkit, else vcx)")
+	fs.StringVar(&p.cudaPath, "cuda-path", "", "the CUDA toolkit to use (default: CUDA_PATH or the installed one; none for none)")
 }
 
 func (p *ppFlags) compiler() (*vcx.Compiler, error) {
@@ -83,6 +87,8 @@ func (p *ppFlags) compiler() (*vcx.Compiler, error) {
 		Freestanding: p.freestanding,
 		Language:     lang,
 		OffloadArchs: p.offloadArchs,
+		CUDARuntime:  p.cudart,
+		CUDAPath:     p.cudaPath,
 		DeviceOnly:   p.deviceOnly,
 		HostOnly:     p.hostOnly,
 	}

@@ -30,6 +30,10 @@ type Image struct {
 	// Data is the image itself. A PTX image is text without a
 	// terminating NUL; the container adds one.
 	Data []byte
+
+	// Host is the operating system the program is built for, which the
+	// entry's flags record: "windows", "linux" or "macos".
+	Host string
 }
 
 // ImageKind is the form of a device image.
@@ -40,8 +44,12 @@ const (
 	ELF
 )
 
-// The fat binary container, as nvcc lays it out: a sixteen-byte header
-// and, for each image, a sixty-four-byte entry followed by its payload.
+// The fat binary container, as fatbinary.exe of CUDA 13 lays it out
+// (read back with the same tool's cuobjdump): a sixteen-byte header and,
+// for each image, an eighty-byte entry followed by its payload, the
+// payload padded to eight. The entry's fields past the obvious ones
+// are what the tool writes for an uncompressed image; the two words at
+// 20 and 64 are copied as observed, since nothing documents them.
 const (
 	fatbinMagic   = 0xBA55ED50
 	fatbinVersion = 1
@@ -49,9 +57,11 @@ const (
 	fatbinKindPTX = 1
 	fatbinKindELF = 2
 
-	// The entry flags: the image is for a 64-bit host, and the host is
-	// the one it was built on.
-	fatbinFlag64Bit = 0x01
+	// The entry flags: the image is for a 64-bit host, and which host.
+	fatbinFlag64Bit   = 0x01
+	fatbinFlagLinux   = 0x10
+	fatbinFlagMac     = 0x20
+	fatbinFlagWindows = 0x40
 )
 
 // Fatbin encodes the images as an NVIDIA fat binary.
@@ -63,26 +73,36 @@ func Fatbin(images []Image) []byte {
 			payload = append(append([]byte(nil), im.Data...), 0)
 		}
 		padded := (len(payload) + 7) &^ 7
-		entry := make([]byte, 64)
+		entry := make([]byte, 80)
 		le := binary.LittleEndian
 		kind := uint16(fatbinKindELF)
 		if im.Kind == PTX {
 			kind = fatbinKindPTX
 		}
+		flags := uint64(fatbinFlag64Bit)
+		switch im.Host {
+		case "linux":
+			flags |= fatbinFlagLinux
+		case "macos", "darwin":
+			flags |= fatbinFlagMac
+		default:
+			flags |= fatbinFlagWindows
+		}
 		le.PutUint16(entry[0:], kind)
 		le.PutUint16(entry[2:], 0x0101)
-		le.PutUint32(entry[4:], 64)
+		le.PutUint32(entry[4:], 80)
 		le.PutUint64(entry[8:], uint64(padded))
 		le.PutUint32(entry[16:], 0) // compressed size: none
-		le.PutUint32(entry[20:], 0)
+		le.PutUint32(entry[20:], 64)
 		le.PutUint16(entry[24:], uint16(im.ISAMinor))
 		le.PutUint16(entry[26:], uint16(im.ISAMajor))
 		le.PutUint32(entry[28:], uint32(im.SM))
 		le.PutUint32(entry[32:], 0) // object name offset
 		le.PutUint32(entry[36:], 0) // object name length
-		le.PutUint64(entry[40:], fatbinFlag64Bit)
+		le.PutUint64(entry[40:], flags)
 		le.PutUint64(entry[48:], 0)
 		le.PutUint64(entry[56:], 0) // decompressed size: not compressed
+		le.PutUint32(entry[64:], 0x48)
 		body = append(body, entry...)
 		body = append(body, payload...)
 		for len(body)%8 != 0 {

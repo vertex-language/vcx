@@ -26,19 +26,28 @@ func TestCUDAPrograms(t *testing.T) {
 	if _, skip := driverPresent(); skip != "" {
 		t.Skip(skip)
 	}
+	// Every program runs on vcx's own runtime over the driver; where a
+	// toolkit is installed it runs on NVIDIA's cudart too, which is the
+	// check that the fat binary and the registration are the real thing.
+	runtimes := []string{"vcx"}
+	if _, ok := vcx.FindCUDAToolkit(); ok {
+		runtimes = append(runtimes, "static")
+	}
 	for _, path := range files {
-		t.Run(strings.TrimSuffix(filepath.Base(path), ".cu"), func(t *testing.T) {
-			want, archs := expectLines(t, path)
-			c := &vcx.Compiler{OffloadArchs: archs}
-			out, err := c.Run(path)
-			if err != nil {
-				t.Fatalf("%s: %v\n--- stdout ---\n%s", path, err, out)
-			}
-			got := strings.TrimRight(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n")
-			if got != want {
-				t.Fatalf("%s printed:\n%s\nwant:\n%s", path, got, want)
-			}
-		})
+		for _, rt := range runtimes {
+			t.Run(strings.TrimSuffix(filepath.Base(path), ".cu")+"/"+rt, func(t *testing.T) {
+				want, archs := expectLines(t, path)
+				c := &vcx.Compiler{OffloadArchs: archs, CUDARuntime: rt}
+				out, err := c.Run(path)
+				if err != nil {
+					t.Fatalf("%s: %v\n--- stdout ---\n%s", path, err, out)
+				}
+				got := strings.TrimRight(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n")
+				if got != want {
+					t.Fatalf("%s printed:\n%s\nwant:\n%s", path, got, want)
+				}
+			})
+		}
 	}
 }
 
