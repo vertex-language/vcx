@@ -24,6 +24,16 @@ func (c *Compiler) Build(params BuildParams) error {
 	offload := map[Language]bool{}
 	for _, in := range params.Inputs {
 		if !in.isSource() {
+			// An object built earlier: it needs the runtime if it
+			// registers a device image, which its symbol table says.
+			if data, err := in.bytes(); err == nil {
+				if bytes.Contains(data, []byte("__cudaRegisterFatBinary")) {
+					offload[LangCUDA] = true
+				}
+				if bytes.Contains(data, []byte("__hipRegisterFatBinary")) {
+					offload[LangHIP] = true
+				}
+			}
 			objects = append(objects, in)
 			continue
 		}
