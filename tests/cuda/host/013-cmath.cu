@@ -1,5 +1,7 @@
 // <cmath> on both sides: std::sqrt, std::exp, std::sin and the
 // classifications in a kernel and in main, each scaled to an integer.
+// The classifications are spelled unqualified: nvcc has no std::isnan
+// for the device, only the C one.
 // expect: device 4000 2718 841 1 host 4000 2718 841 1
 #include <cuda_runtime.h>
 #include <cmath>
@@ -9,7 +11,7 @@ __host__ __device__ void fill(int *out, float x) {
   out[0] = (int)(std::sqrt(x) * 1000.0f + 0.5f);
   out[1] = (int)(std::exp(1.0f) * 1000.0f + 0.5f);
   out[2] = (int)(std::sin(1.0) * 1000.0 + 0.5);
-  out[3] = std::isfinite(x) && !std::isnan(x) ? 1 : 0;
+  out[3] = isfinite(x) && !isnan(x) ? 1 : 0;
 }
 
 __global__ void kernel(int *out, float x) { fill(out, x); }
