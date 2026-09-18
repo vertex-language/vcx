@@ -269,8 +269,7 @@ func (p *parser) consumeGreater() ast.Tok {
 // with nothing between them, which is how `<<<` and `>>>` are told from
 // a shift beside a comparison.
 func (p *parser) adjacent(a, b ast.Tok) bool {
-	x, y := p.u.Position(a), p.u.Position(b)
-	return x.Filename == y.Filename && x.Line == y.Line && y.Column == x.Column+len(p.u.Text(a))
+	return p.u.Adjacent(a, b)
 }
 
 // launchOpens reports whether the cursor is at `<<<`: a `<<` with a `<`

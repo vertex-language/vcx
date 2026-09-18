@@ -62,6 +62,18 @@ func (u *Unit) Site(i ast.Tok) preprocessor.Site {
 	return u.toks[i].Site()
 }
 
+// Adjacent reports whether token b was spelled right where token a ends,
+// with nothing between them, in the file or macro body both came from:
+// what tells `<<<` from `<< <`, and holds inside a macro's expansion,
+// where a Site would put every token at the invocation.
+func (u *Unit) Adjacent(a, b ast.Tok) bool {
+	if !a.IsValid() || !b.IsValid() || int(a) >= len(u.toks) || int(b) >= len(u.toks) {
+		return false
+	}
+	x, y := u.toks[a], u.toks[b]
+	return x.Origin != nil && x.Origin == y.Origin && x.End == y.Pos
+}
+
 // Span returns a site covering a node from lo to hi when both tokens share an origin.
 func (u *Unit) Span(lo, hi ast.Tok) preprocessor.Site {
 	s := u.Site(lo)
