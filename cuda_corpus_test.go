@@ -19,6 +19,7 @@ import (
 //
 //	// grid: 4
 //	// block: 64
+//	// shmem: 256        (dynamic shared memory, optional)
 //	// expect: 0 1 2 3 ...
 //
 // The expected values are the file's own -- worked out by hand, or by
@@ -37,6 +38,7 @@ type cudaCase struct {
 	block  [3]uint32
 	expect []int32
 	arch   string
+	shmem  uint32 // dynamic shared memory, in bytes
 }
 
 func cudaCases(t *testing.T) []cudaCase {
@@ -69,6 +71,12 @@ func cudaCases(t *testing.T) []cudaCase {
 				c.block = dims(t, path, rest)
 			case "arch":
 				c.arch = rest
+			case "shmem":
+				n, err := strconv.ParseUint(rest, 10, 32)
+				if err != nil {
+					t.Fatalf("%s: shmem %q: %v", path, rest, err)
+				}
+				c.shmem = uint32(n)
 			case "expect":
 				for _, w := range strings.Fields(rest) {
 					n, err := strconv.ParseInt(w, 0, 32)

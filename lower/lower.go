@@ -654,7 +654,13 @@ func (u *unit) importGlobal(v *sema.VarSymbol) ir.Symbol {
 			return g
 		}
 	}
-	return u.mod.ImportGlobal(name, u.storageType(v.SymType))
+	imp := u.mod.ImportGlobal(name, u.storageType(v.SymType))
+	if v.Memory == sema.MemShared && u.devicePass() {
+		// extern __shared__ T name[]: dynamic workgroup storage, which
+		// the launch sizes and every such declaration begins at.
+		imp.Shared()
+	}
+	return imp
 }
 
 // globalSymbol is an object's symbol in the object file: an __asm label as

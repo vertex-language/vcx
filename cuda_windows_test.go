@@ -144,7 +144,7 @@ func (c *cudaDriver) function(mod uintptr, name string) (uintptr, error) {
 
 // launch runs f over grid×block work-items with the given arguments,
 // each a pointer to a host value of the parameter's type, and waits.
-func (c *cudaDriver) launch(f uintptr, grid, block [3]uint32, args ...unsafe.Pointer) error {
+func (c *cudaDriver) launch(f uintptr, grid, block [3]uint32, shmem uint32, args ...unsafe.Pointer) error {
 	params := make([]uintptr, len(args))
 	for i, a := range args {
 		params[i] = uintptr(a)
@@ -156,7 +156,7 @@ func (c *cudaDriver) launch(f uintptr, grid, block [3]uint32, args ...unsafe.Poi
 	r, _, _ := c.launchKernel.Call(f,
 		uintptr(grid[0]), uintptr(grid[1]), uintptr(grid[2]),
 		uintptr(block[0]), uintptr(block[1]), uintptr(block[2]),
-		0, 0, pp, 0)
+		uintptr(shmem), 0, pp, 0)
 	runtime.KeepAlive(params)
 	runtime.KeepAlive(args)
 	if err := c.check("cuLaunchKernel", r); err != nil {
@@ -209,7 +209,7 @@ func TestCUDACorpusRuns(t *testing.T) {
 			if r, _, _ := c.memsetD32.Call(uintptr(dptr), 0, uintptr(len(tc.expect))); r != 0 {
 				t.Fatal(c.check("cuMemsetD32", r))
 			}
-			if err := c.launch(f, tc.grid, tc.block, unsafe.Pointer(&dptr)); err != nil {
+			if err := c.launch(f, tc.grid, tc.block, tc.shmem, unsafe.Pointer(&dptr)); err != nil {
 				t.Fatalf("%v\n--- ptx ---\n%s", err, src)
 			}
 			got := make([]int32, len(tc.expect))
