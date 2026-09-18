@@ -106,3 +106,46 @@ func TestCUDACorpusAgainstNvcc(t *testing.T) {
 		})
 	}
 }
+
+// compute-sanitizer over the vcx-built programs: memcheck for an access
+// past a buffer or through a bad pointer, racecheck for a shared-memory
+// hazard a missing barrier would leave. Both come with the toolkit.
+func TestCUDAProgramsSanitized(t *testing.T) {
+	tk, ok := vcx.FindCUDAToolkit()
+	if !ok {
+		t.Skip("no CUDA toolkit")
+	}
+	sanitizer := filepath.Join(tk.Dir, "compute-sanitizer", "compute-sanitizer.exe")
+	if _, err := os.Stat(sanitizer); err != nil {
+		t.Skip("no compute-sanitizer in the toolkit")
+	}
+	if _, skip := driverPresent(); skip != "" {
+		t.Skip(skip)
+	}
+	files, err := filepath.Glob(filepath.Join("tests", "cuda", "host", "*.cu"))
+	if err != nil || len(files) == 0 {
+		t.Skip("no tests/cuda/host corpus")
+	}
+	sort.Strings(files)
+	dir := t.TempDir()
+	for _, path := range files {
+		t.Run(strings.TrimSuffix(filepath.Base(path), ".cu"), func(t *testing.T) {
+			_, archs := expectLines(t, path)
+			if src, err := os.ReadFile(path); err == nil && strings.Contains(string(src), "// sanitizer: skip") {
+				t.Skip("the program makes an error on purpose")
+			}
+			exe := filepath.Join(dir, strings.TrimSuffix(filepath.Base(path), ".cu")+".exe")
+			c := &vcx.Compiler{OffloadArchs: archs}
+			if err := c.Build(vcx.BuildParams{Output: exe, Inputs: []vcx.Input{vcx.File(path)}}); err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			for _, tool := range []string{"memcheck", "racecheck"} {
+				out, err := exec.Command(sanitizer, "--tool", tool, exe).CombinedOutput()
+				text := string(out)
+				if err != nil || !(strings.Contains(text, "ERROR SUMMARY: 0 errors") || strings.Contains(text, "0 hazards displayed (0 errors")) {
+					t.Fatalf("%s under %s: %v\n%s", path, tool, err, text)
+				}
+			}
+		})
+	}
+}

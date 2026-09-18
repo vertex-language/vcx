@@ -1,6 +1,7 @@
 // Errors: a launch with a block too large is refused and reported by
 // cudaGetLastError, which then clears; a good launch after it succeeds;
 // the device is counted and named without crashing.
+// sanitizer: skip -- the bad launch is the point
 // expect: bad launch: invalid argument
 // expect: cleared: no error
 // expect: good = 7
