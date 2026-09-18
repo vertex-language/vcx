@@ -633,7 +633,8 @@ func (u *unit) globalFor(v *sema.VarSymbol) (ir.Symbol, bool) {
 	// Only an extern object or a static data member can be defined in
 	// another unit; anything else undefined here is not an object at all.
 	if v.Defined || v.Template != nil || v.Storage != sema.StorageExtern && v.InClass == nil {
-		if u.offload() && !u.lowersGlobal(v) {
+		atNamespace := v.InClass != nil || v.SymScope != nil && (v.SymScope.Kind == sema.GlobalScope || v.SymScope.Kind == sema.NamespaceScope)
+		if v.Defined && atNamespace && u.offload() && !u.lowersGlobal(v) {
 			// The other pass's object: a host variable named in device
 			// code, or a __shared__ one named on the host.
 			if u.devicePass() {
