@@ -28,8 +28,8 @@ func TestCUDAPrograms(t *testing.T) {
 	}
 	for _, path := range files {
 		t.Run(strings.TrimSuffix(filepath.Base(path), ".cu"), func(t *testing.T) {
-			want := expectLines(t, path)
-			c := &vcx.Compiler{}
+			want, archs := expectLines(t, path)
+			c := &vcx.Compiler{OffloadArchs: archs}
 			out, err := c.Run(path)
 			if err != nil {
 				t.Fatalf("%s: %v\n--- stdout ---\n%s", path, err, out)
@@ -42,21 +42,25 @@ func TestCUDAPrograms(t *testing.T) {
 	}
 }
 
-// expectLines is the program's expected output, from its header.
-func expectLines(t *testing.T, path string) string {
+// expectLines is the program's expected output, from its header, and
+// the architectures its `// arch:` line asks to be built for.
+func expectLines(t *testing.T, path string) (string, []string) {
 	t.Helper()
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	var lines []string
+	var lines, archs []string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if rest, ok := strings.CutPrefix(line, "// expect:"); ok {
 			lines = append(lines, strings.TrimSpace(rest))
 		}
+		if rest, ok := strings.CutPrefix(line, "// arch:"); ok {
+			archs = append(archs, strings.Fields(rest)...)
+		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), archs
 }
