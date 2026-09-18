@@ -1,7 +1,8 @@
 # tests
 
-Eight corpora, asking eight different questions. Each is named for its
-question, and a file belongs in exactly one of them.
+Eight corpora, asking eight different questions, and three more for the
+GPU. Each is named for its question, and a file belongs in exactly one
+of them.
 
 ```
 go test ./...                                    # all of it
@@ -13,6 +14,9 @@ go test .        -run TestMangleCorpus -v
 go test .        -run TestCompilerCorpus -v
 go test .        -run TestLinkCorpus -v
 go test .        -run TestHeadersCorpus -v
+go test .        -run TestCUDACorpus -v          # tests/cuda/device: kernels, on the GPU where there is one
+go test .        -run TestCUDAPrograms -v        # tests/cuda/host: whole programs, v++ run
+go test .        -run 'TestHIPCorpus|TestHIPPrograms' -v   # tests/hip: to gfx942, not run
 ```
 
 ## One compiler, every target
@@ -346,6 +350,48 @@ the traits that are overload resolution in disguise. `<vector>` is next,
 and what it waits on is exceptions and `new[]`.
 
 Used by the root package, in `headers_test.go`.
+
+## cuda/device/
+
+Does a kernel written in CUDA compile to PTX, and does it compute? Each
+file is one kernel named `test` of the signature `__global__ void
+test(int *out)`, and its header says how it is launched and what it
+writes:
+
+```
+// grid: 2
+// block: 4
+// expect: 0 1 2 3 4 5 6 7
+```
+
+`TestCUDACorpusCompiles` lowers every file to PTX on any machine and
+checks for the kernel's entry. `TestCUDACorpusRuns` (`cuda_windows_test.go`)
+opens the driver in `nvcuda.dll` -- no toolkit, no cgo -- JITs the PTX,
+runs the kernel over a zeroed buffer, and compares what came back with
+the header, number by number. A machine without an NVIDIA driver skips.
+The expected values are worked out by hand, or by nvcc on a machine that
+has it; never restated from the lowering. A float result is written
+through `__float_as_int` or scaled to an integer so that every
+expectation is a whole number.
+
+## cuda/host/
+
+Does the whole program work? Each file has a `main` that allocates,
+launches, copies back and prints, and its header's `// expect:` lines are
+what it prints. `TestCUDAPrograms` builds each with `v++ run` -- the
+device pass, the host pass with the image embedded and registered, vcx's
+runtime over the driver, vcx's linker -- and compares standard output.
+Nothing but vcx is involved.
+
+## hip/
+
+The same two questions for AMD, as far as this machine can answer them:
+`hip/device` kernels are lowered to gfx942 code objects and checked for
+the kernel symbol and descriptor; `hip/host` programs are compiled through
+both passes and their host objects checked for the offload bundle and the
+registration. Neither runs, since that takes an AMD GPU and ROCm's
+runtime; the code objects disassemble with `llvm-objdump` and are read by
+the same tools a ROCm build's are.
 
 ## What is not here, and why
 

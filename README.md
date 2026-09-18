@@ -30,7 +30,8 @@ $ v++ env
 - **Dual ABI Parity**: Complete implementation of both the **Itanium C++ ABI** (Linux, macOS, bare-metal ELF) and the **Microsoft C++ ABI** (Windows MSVC layout, virtual base pointers/tables, name mangling).
 - **Direct Lowering to VIR**: Monomorphized templates, virtual tables, cleanup scopes, and control flow lower directly into typed SSA VIR modules without intermediate external layers.
 - **Native Relocatable Object Output**: Emits ELF, Mach-O, and PE/COFF relocatable object files directly via native Go encoders.
-- **Self-Contained Pipeline**: Zero reliance on host `clang`, `gcc`, `as`, or LLVM.
+- **Self-Contained Pipeline**: Zero reliance on host `clang`, `gcc`, `as`, or LLVM -- and the link is vcx's own, through the vertex-language ELF, Mach-O and PE linkers.
+- **CUDA and HIP, without a toolkit**: a `.cu` or `.hip` is compiled twice -- the kernels to PTX or an HSA code object, the host to an object that embeds and registers them -- and `v++ run main.cu` runs on the GPU through the driver alone, with vcx's own runtime standing in for cudart. The source is nvcc's and hipcc's: `__global__`, `<<<>>>`, `__shared__`, `atomicAdd`, `__shfl_down_sync`, `cudaMemcpy`.
 - **Rich Introspection CLI**: Built-in commands to inspect token streams, AST nodes, computed record memory layouts, and mangled symbol tables.
 - **Modular Go Library**: Every compilation stage is exposed as a composable, reusable Go API.
 
@@ -60,8 +61,18 @@ $ go build -o v++ ./cmd/v++
 # Type check a translation unit without code generation
 $ v++ check main.cpp
 
+# Compile and link an executable with vcx's own linker
+$ v++ build -o main main.cpp
+
 # Compile to a native relocatable object file
-$ v++ build -o main.o main.cpp
+$ v++ build -c -o main.o main.cpp
+
+# A CUDA program, built and run on the GPU with no toolkit installed
+$ v++ run vecadd.cu
+
+# The device pass alone: the PTX, or an AMD code object
+$ v++ build --emit ptx --offload-arch sm_75 kernels.cu
+$ v++ build --emit hsaco --offload-arch gfx942 kernels.hip
 
 # Inspect the lowered Vertex Intermediate Representation (VIR)
 $ v++ build --emit vir main.cpp
@@ -96,8 +107,8 @@ v++ <command> [flags] [files...]
 
 | Command | Description |
 | --- | --- |
-| `v++ build` | Compile inputs to an object file (`.o` / `.obj`). With `--emit vir`, outputs VIR text. |
-| `v++ run` | Compile and execute a source file. |
+| `v++ build` | Compile inputs and link an executable. `-c` stops at objects (`.o` / `.obj`); `--emit vir` prints VIR text; `--emit ptx` / `--emit hsaco` the device image of a CUDA or HIP unit. |
+| `v++ run` | Build a source file to a temporary executable and run it; arguments after the file are the program's. |
 | `v++ check` | Run preprocessing, parsing, and semantic analysis; emit diagnostics without generating code. |
 | `v++ layout` | Print the exact memory layout of every class/struct (sizes, base offsets, field offsets, vtables, vbtables). |
 | `v++ symbols` | Print the object-file mangled symbol names for all definitions in the file. |
@@ -114,7 +125,11 @@ v++ <command> [flags] [files...]
 - `-U <name>`: Undefine a preprocessor macro.
 - `-freestanding`: Compile for a freestanding environment (disables hosted standard library discovery).
 - `-o <path>`: Output artifact path (used with `v++ build`).
-- `--emit vir|obj`: Target output representation (`obj` produces relocatable object files; `vir` dumps IR).
+- `-c`: Compile to objects without linking; `-l <lib>` and `-L <dir>` name libraries for the link.
+- `--emit vir|obj|ptx|hsaco`: Target output representation (`obj` produces relocatable object files; `vir` dumps IR; `ptx` and `hsaco` the device image).
+- `-x cuda|hip`: The language, whatever the extension says; `.cu` and `.cuh` are CUDA and `.hip` is HIP on their own.
+- `--offload-arch <arch>`: The device kernels are compiled for: `sm_75`, `sm_90a`, `gfx942`, ... (default `sm_52` for CUDA; HIP has no default).
+- `--cuda-device-only`, `--cuda-host-only`: One pass of an offload unit rather than both.
 
 ### AST & Parsing Flags
 
@@ -195,6 +210,10 @@ vcx is one C++ compiler. The MSVC and GNU families are peers, and a target choos
 | `aarch64-macos` | AArch64 | macOS | Mach-O | Itanium (Apple arm64) | GNU |
 | `x86_64-elf` | x86_64 | Bare-metal | ELF | Itanium | GNU |
 | `i386-elf` | i386 | Bare-metal | ELF | Itanium | GNU |
+| `nvptx64-cuda` | NVPTX | CUDA device | PTX | Itanium | GNU |
+| `amdgcn-hsa` | AMDGCN | HSA device | ELF code object | Itanium | GNU |
+
+The two device targets are what the device pass of a CUDA or HIP unit is compiled for; they are not named with `-target`. The pass keeps the host's data model (a CUDA `long` is 32 bits on Windows, as nvcc has it) and headers, adds `__CUDA_ARCH__` or `__HIP_DEVICE_COMPILE__` and the device's builtins, and mangles with the Itanium ABI whatever the host uses, which is the name the host registers the kernel by.
 
 Target selection handles:
 - **Data models**: LP64 (Linux/macOS), LLP64 (Windows), ILP32 (i386), with Apple arm64's 64-bit `long double`.
@@ -295,20 +314,28 @@ vcx/
 ├── lower/              Lowering from elaborated AST to Vertex Intermediate Representation
 ├── mangle/             Symbol manglers for Itanium and Microsoft ABIs
 │
-├── include/            Compiler-provided freestanding standard headers
-│   └── gnu/            GNU-compatible stddef.h, stdint.h, limits.h, float.h, etc.
+├── offload/            The containers a device image travels in: NVIDIA's fat binary, the clang offload bundle
+├── runtime/            The runtimes an offload program links: cudart over the driver, HIP glue over libamdhip64
+│
+├── include/            Compiler-provided headers
+│   ├── gnu/            GNU-compatible stddef.h, stdint.h, limits.h, float.h, etc.
+│   ├── cuda/           The CUDA wrapper read before every .cu, and a minimal cuda_runtime.h
+│   └── hip/            The same for HIP
 │
 ├── compiler.go         Central Compiler driver orchestrating pipeline rungs
+├── build.go            Build and Run: objects, the link, the temporary executable
+├── link.go             The link, through the vertex-language ELF, Mach-O and PE linkers
+├── device.go           Offload languages, architectures, predefines, the embedded headers
 ├── input.go            Input abstraction (file on disk or in-memory text buffer)
 ├── target.go           Target triples, ABI selection, and container mapping
-├── codegen.go          Native object generation (ELF, Mach-O, PE/COFF)
+├── codegen.go          Native object generation (ELF, Mach-O, PE/COFF), PTX and HSA code objects
 ├── symbols.go          Mangled linker symbol table extraction
 ├── sysroot.go          Host toolset discovery (MSVC, Windows SDK, GCC/Clang paths)
 ├── predefines.go       MSVC-dialect builtin macro definitions
 ├── predefines_gnu.go   GNU/Clang-dialect builtin macro definitions
 ├── vendor.go           Compiler intrinsics, builtins, and vendor extensions
 │
-├── tests/              Comprehensive test suites (8 corpora)
+├── tests/              Comprehensive test suites (8 corpora, and 3 for the GPU)
 └── docs/               Grammar and architectural specifications
 ```
 
@@ -341,6 +368,18 @@ $ go test .        -run TestHeadersCorpus -v       # Real standard library heade
 
 ---
 
+## CUDA and HIP
+
+A `.cu` or `.hip` file -- or any file with `-x cuda` or `-x hip` -- is an offload unit, and vcx is the whole toolchain for it: no CUDA toolkit, no ROCm, no nvcc or hipcc. The design is clang's, with the two-pass compilation kept and the rest made vcx's own:
+
+- **Two passes.** The device pass lowers every `__global__` kernel and `__device__` function to VIR and on to PTX (`ir/lower/ptx`) or an HSA code object (`ir/lower/amdgpu`). The host pass lowers the host's functions, makes each kernel a launch stub of the kernel's host name, embeds the image as an NVIDIA fat binary (or a clang offload bundle for HIP), and emits a constructor that registers it with the runtime, each stub by its kernel's device name, and each `__device__` and `__constant__` object by its shadow.
+- **The language.** `__global__`, `__device__`, `__host__`, `__shared__` (at namespace and block scope), `__constant__`, `__managed__`; `f<<<grid, block, shmem, stream>>>(args)` with `dim3` or integer extents; `threadIdx`, `blockIdx`, `blockDim`, `gridDim`, `warpSize` read from the hardware; `__syncthreads`, the fences, the shuffles and votes, the atomics at block, device and system scope, the bit intrinsics, the vector types and `make_float4`, `constexpr` and `__host__ __device__` functions, kernel templates, structs by value into kernels. The device builtins are declared by clang's names -- `__nvvm_*`, `__builtin_amdgcn_*`, `__hip_atomic_*` -- so the vendors' own headers read unchanged once a toolkit is present.
+- **The headers.** `include/cuda` and `include/hip` ship the wrapper every unit reads before its first line (`__vcx_cuda_runtime_wrapper.h`, the way clang force-includes its own), and minimal `cuda_runtime.h` / `hip/hip_runtime.h` for the host API when no toolkit's is installed.
+- **The runtime.** `runtime/cuda/vcx_cudart.cpp` implements the cudart a compiled unit calls -- `__cudaRegisterFatBinary`, `cudaMalloc`, `cudaMemcpy`, `cudaMemcpyToSymbol`, `cudaLaunchKernel`, streams and events -- over the driver in `nvcuda.dll` or `libcuda.so`, which every NVIDIA driver ships. It is compiled by vcx at link time and linked in. HIP's `runtime/hip/vcx_hiprt.cpp` forwards to `libamdhip64`, which is ROCm's runtime and driver in one.
+- **What is not there yet.** Dynamic shared memory (`extern __shared__`), the transcendental math (`expf`, `sinf`, `powf` -- the single-instruction functions and the `__expf` approximations are), `__syncthreads_count`, `__half`, textures, dynamic parallelism, `-rdc`, and toolkit discovery (a machine with the CUDA toolkit or ROCm installed is not yet asked for its headers and libraries). A HIP program compiles through both passes and its code object disassembles with `llvm-objdump`; it has not been run, since no AMD GPU has been near this code.
+
+---
+
 ## Status
 
 `v++` has a functional front end and lowering pipeline:
@@ -353,6 +392,8 @@ $ go test .        -run TestHeadersCorpus -v       # Real standard library heade
 - **ABI Engine**: Computes exact class layouts, bitfields, inheritance hierarchies, virtual bases, and virtual tables for both Itanium and Microsoft ABIs.
 - **Lowering & Code Generation**: Lowers functions, locals, expressions, control flow, dynamic initialization, copy constructors, and polymorphic virtual dispatch to VIR and native object files.
 - **System Header Support**: Directly compiles and links against host library headers such as `<type_traits>`, `<utility>`, and `<new>`.
+- **Linking and Running**: `v++ build` links with the vertex-language linkers and the platform's own libraries; `v++ run` runs the result. Variadic functions work through cl's `__va_start`, so the ucrt's inline `printf` compiles on Windows.
+- **GPU Offload**: CUDA and HIP units through both passes; `tests/cuda/host` programs run on an NVIDIA GPU with nothing but vcx.
 
 ---
 
