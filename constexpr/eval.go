@@ -3,6 +3,7 @@ package constexpr
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"strconv"
 	"strings"
@@ -1092,7 +1093,48 @@ func (ctx *Context) evalNamedCast(c *ast.NamedCastExpr) (Value, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.Kind == token.BIT_CAST {
+		return ctx.bitCast(v, c)
+	}
 	return ctx.convertTo(v, c.Type), nil
+}
+
+// bitCast is __builtin_bit_cast between the scalars the evaluator holds
+// as values: a float's bits as an integer and back, an integer's width
+// kept. Anything with a class on either side is not evaluated here.
+func (ctx *Context) bitCast(v Value, c *ast.NamedCastExpr) (Value, error) {
+	target, ok := ctx.resolveTypeId(c.Type)
+	if !ok || target == nil {
+		return nil, fmt.Errorf("%w: __builtin_bit_cast to a type this evaluator cannot resolve", ErrNonConstexpr)
+	}
+	size, _ := ctx.Model.Sizeof(target)
+	switch x := v.(type) {
+	case FloatValue:
+		if types.IsInteger(types.Unqualify(target)) {
+			var bits uint64
+			if size == 4 {
+				bits = uint64(math.Float32bits(float32(x.Val)))
+			} else {
+				bits = math.Float64bits(x.Val)
+			}
+			return NewInt(int64(bits), target, ctx.Model), nil
+		}
+		if types.IsFloat(types.Unqualify(target)) {
+			return NewFloat(x.Val, target), nil
+		}
+	case IntValue:
+		if types.IsFloat(types.Unqualify(target)) {
+			bits := x.Val.Uint64()
+			if size == 4 {
+				return NewFloat(float64(math.Float32frombits(uint32(bits))), target), nil
+			}
+			return NewFloat(math.Float64frombits(bits), target), nil
+		}
+		if types.IsInteger(types.Unqualify(target)) || types.IsEnum(types.Unqualify(target)) {
+			return NewInt(x.Val.Int64(), target, ctx.Model), nil
+		}
+	}
+	return nil, fmt.Errorf("%w: __builtin_bit_cast of a %T is not evaluated", ErrNonConstexpr, v)
 }
 
 // convertTo applies a cast's conversion to an already-evaluated value,

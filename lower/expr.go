@@ -72,6 +72,9 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 		return fl.convert(fl.expr(e.X), fl.typeOf(e.X), fl.typeOf(e))
 
 	case *ast.NamedCastExpr:
+		if e.Kind == token.BIT_CAST {
+			return fl.bitCast(e)
+		}
 		if _, _, isRef := fl.castRef(e); isRef {
 			return fl.rvalue(e)
 		}
@@ -1568,6 +1571,74 @@ func (fl *fn) templateId(e *ast.TemplateName) ir.Value {
 		return fl.blk.I64.Const(n)
 	}
 	return fl.blk.I32.Const(n)
+}
+
+// bitCast is __builtin_bit_cast(T, x): x's bytes read as a T. Two
+// registers of one width are one bitcast verb; anything else goes
+// through storage, stored as x's type and loaded as T.
+func (fl *fn) bitCast(e *ast.NamedCastExpr) ir.Value {
+	b := fl.blk
+	to := fl.typeOf(e)
+	from := types.Unqualify(types.RemoveReference(fl.typeOf(e.X)))
+	if classOf(from) == nil && classOf(to) == nil {
+		v := fl.expr(e.X)
+		if v == nil {
+			return nil
+		}
+		switch x := v.(type) {
+		case ir.F32:
+			if fl.u.regType(to) == ir.TypeI32 {
+				return b.I32.BitcastF32(x)
+			}
+		case ir.I32:
+			if fl.u.regType(to) == ir.TypeF32 {
+				return b.F32.BitcastI32(x)
+			}
+		case ir.F64:
+			if fl.u.regType(to) == ir.TypeI64 {
+				return b.I64.BitcastF64(x)
+			}
+		case ir.I64:
+			switch fl.u.regType(to) {
+			case ir.TypeF64:
+				return b.F64.BitcastI64(x)
+			case ir.TypePtr:
+				return b.Ptr.FromI64(x)
+			}
+		case ir.Ptr:
+			if fl.u.regType(to) == ir.TypeI64 {
+				return b.I64.FromPtr(x)
+			}
+		}
+		if fl.u.regType(from) == fl.u.regType(to) {
+			return v
+		}
+		tmp := fl.alloc(from, "bit_cast")
+		fl.store(tmp, v, from)
+		return fl.load(tmp, to)
+	}
+	// A class on either side: the bytes move through a temporary of the
+	// target's type, which is the value of the cast.
+	tmp := fl.alloc(to, "bit_cast")
+	if classOf(from) != nil {
+		src, ok := fl.objectOf(e.X)
+		if !ok {
+			return nil
+		}
+		size, _ := fl.u.sizeAlign(to)
+		b.MemCpy(tmp, src, b.I64.Const(size))
+	} else {
+		v := fl.expr(e.X)
+		if v == nil {
+			return nil
+		}
+		fl.store(tmp, v, from)
+	}
+	if classOf(to) != nil {
+		fl.temporary(tmp, classOf(to))
+		return tmp
+	}
+	return fl.load(tmp, to)
 }
 
 // builtinCall lowers the expression builtins sema admitted (see

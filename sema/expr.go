@@ -239,7 +239,26 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 	case *ast.NamedCastExpr:
 		// Named cast value category and result type.
 		targetT := a.noteTypeId(e.Type)
-		a.CheckExpr(e.X)
+		src := a.CheckExpr(e.X)
+		if e.Kind == token.BIT_CAST {
+			// [bit.cast]: the two types are one size, and the result is
+			// a prvalue of the target, whatever the operand's category.
+			if !isDependentExpr(src) && !isDependentType(targetT) {
+				to, okTo := a.model.Sizeof(targetT)
+				from, okFrom := a.model.Sizeof(types.RemoveReference(src.Type))
+				if okTo && okFrom && to != from {
+					a.errorAt(e.Pos(), fmt.Sprintf("__builtin_bit_cast from %s (%d bytes) to %s (%d bytes): the sizes differ", src.Type, from, targetT, to))
+				}
+			}
+			if isDependentExpr(src) || isDependentType(targetT) {
+				return dependentExpr()
+			}
+			if n, err := a.NewConstContext().EvalInt(e); err == nil && (types.IsInteger(types.Unqualify(targetT)) || types.IsEnum(types.Unqualify(targetT))) {
+				a.noteConst(e, n)
+				return ExprInfo{Type: targetT, ValCat: PrValue, IsConst: true, ConstVal: n}
+			}
+			return ExprInfo{Type: targetT, ValCat: PrValue}
+		}
 		return castResult(targetT)
 
 	case *ast.FunctionalCastExpr:

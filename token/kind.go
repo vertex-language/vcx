@@ -144,6 +144,7 @@ const (
 	PUBLIC
 	REGISTER
 	REINTERPRET_CAST
+	BIT_CAST // __builtin_bit_cast: scanned as a keyword, and a NamedCastExpr's kind
 	REQUIRES
 	RETURN
 	SHORT
@@ -327,6 +328,7 @@ var names = [...]string{
 	PUBLIC:           "public",
 	REGISTER:         "register",
 	REINTERPRET_CAST: "reinterpret_cast",
+	BIT_CAST:         "__builtin_bit_cast",
 	REQUIRES:         "requires",
 	RETURN:           "return",
 	SHORT:            "short",

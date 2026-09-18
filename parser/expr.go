@@ -750,6 +750,27 @@ func (p *parser) parsePrimaryExpr() ast.Expr {
 		return p.parseParenOrFoldExpr()
 	}
 
+	// __builtin_bit_cast(T, x): a named cast with the type first, as
+	// std::bit_cast is written under it.
+	if (p.peek() == token.BIT_CAST || p.peek() == token.IDENT && p.text(p.cur) == "__builtin_bit_cast") && p.peekAt(1) == token.LPAREN {
+		start := p.pos()
+		kw := p.next()
+		lp := p.next()
+		typeId := p.parseTypeId()
+		p.expect(token.COMMA)
+		x := p.parseAssignmentExpr()
+		rp := p.expect(token.RPAREN)
+		return &ast.NamedCastExpr{
+			Span:    ast.Span{Lo: start, Hi: rp + 1},
+			Keyword: kw,
+			Kind:    token.BIT_CAST,
+			Type:    typeId,
+			Lparen:  lp,
+			X:       x,
+			Rparen:  rp,
+		}
+	}
+
 	// Builtin type trait: __is_base_of(A, B) -- one of the spellings the
 	// toolsets' headers use (see typeTraits), whose operands are types.
 	// Any other `__name(` is a call: `__std_exception_copy(&a, &b)`,
