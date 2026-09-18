@@ -538,6 +538,24 @@ cudaError_t cudaMemcpyFromSymbol(void *dst, const void *symbol, size_t count, si
   return check(drv.MemcpyDtoH(dst, p + offset, count));
 }
 
+cudaError_t cudaGetSymbolAddress(void **devPtr, const void *symbol) {
+  Var *v = findVar(symbol);
+  if (!v) return fail(cudaErrorInvalidValue);
+  CUdeviceptr p;
+  size_t size;
+  cudaError_t e = addressOf(v, &p, &size);
+  if (e) return e;
+  *devPtr = (void *)(size_t)p;
+  return cudaSuccess;
+}
+
+cudaError_t cudaGetSymbolSize(size_t *size, const void *symbol) {
+  Var *v = findVar(symbol);
+  if (!v) return fail(cudaErrorInvalidValue);
+  CUdeviceptr p;
+  return addressOf(v, &p, size);
+}
+
 /* ---- devices and errors --------------------------------------------------- */
 
 cudaError_t cudaDeviceSynchronize(void) {

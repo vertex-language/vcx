@@ -50,6 +50,14 @@ type Scope struct {
 	Symbols         map[string][]Symbol
 	UsingNamespaces []*Scope
 
+	// Instantiation marks the scope a template instance is declared in,
+	// which stands between the instance's body and the scope the
+	// template was declared in. The instance is the only thing in it,
+	// and it is not a scope of the program: a name the body looks up
+	// that finds the instance here goes on to the template's own scope,
+	// where the instance's overloads are, and takes them all.
+	Instantiation bool
+
 	// InlineNamespaces are the inline namespaces declared directly in this scope.
 	InlineNamespaces []*Scope
 

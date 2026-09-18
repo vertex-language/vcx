@@ -1,6 +1,6 @@
 // Several --offload-arch values in one fat binary: the runtime loads the
 // newest the device runs, and __CUDA_ARCH__ told each pass which it was.
-// arch: sm_52 sm_75 sm_90
+// arch: sm_75 sm_86 sm_90
 // expect: arch = 750
 #include <cuda_runtime.h>
 #include <stdio.h>

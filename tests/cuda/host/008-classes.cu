@@ -1,5 +1,6 @@
 // C++ in device code: a class template with a virtual-free hierarchy of
-// functors, references, a lambda in a kernel, a constexpr function, and
+// functors, references, a lambda in a kernel, a constexpr function (host
+// and device, which nvcc wants said), and
 // a device function taking a struct by reference.
 // expect: 20 42 6 100 7
 #include <cuda_runtime.h>
@@ -17,7 +18,7 @@ struct Scale {
   __device__ int operator()(int v) const { return v * k; }
 };
 
-constexpr int square(int x) { return x * x; }
+__host__ __device__ constexpr int square(int x) { return x * x; }
 
 __device__ void bump(Accum<int> &a, int v) { a.add(v); }
 

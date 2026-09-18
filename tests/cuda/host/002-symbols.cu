@@ -21,7 +21,7 @@ template <class T> __global__ void fill(T *out) {
 
 int main() {
   int three = 3;
-  cudaMemcpyToSymbol(&scale, &three, sizeof three, 0, cudaMemcpyHostToDevice);
+  cudaMemcpyToSymbol(scale, &three, sizeof three);
   int *d;
   cudaMalloc((void **)&d, 8 * sizeof(int));
   dim3 grid(2, 2), block(4, 4);
@@ -36,8 +36,8 @@ int main() {
   for (int i = 0; i < 8; i++) printf(" %d", table[i]);
   printf("\n");
   int n = 0, m = 0;
-  cudaMemcpyFromSymbol(&n, &counter, sizeof n, 0, cudaMemcpyDeviceToHost);
-  cudaMemcpyFromSymbol(&m, &maxid, sizeof m, 0, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&n, counter, sizeof n);
+  cudaMemcpyFromSymbol(&m, maxid, sizeof m);
   printf("counter = %d\nmaxid = %d\n", n, m);
   cudaFree(d);
   return 0;

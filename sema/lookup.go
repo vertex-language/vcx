@@ -11,10 +11,23 @@ func LookupUnqualified(scope *Scope, name string) []Symbol {
 		return nil
 	}
 
+	// The instances an instantiation scope held on the way up: they join
+	// the overload set the next scope supplies rather than hiding it.
+	var carried []Symbol
+	found := func(syms []Symbol) []Symbol {
+		if len(carried) == 0 {
+			return syms
+		}
+		return deduplicateSymbols(append(carried, syms...))
+	}
 	for cur := scope; cur != nil; cur = cur.Parent {
 		// 1. Direct local declarations in cur
 		if syms := cur.LookupLocal(name); len(syms) > 0 {
-			return syms
+			if cur.Instantiation && allFunctions(syms) {
+				carried = append(carried, syms...)
+				continue
+			}
+			return found(syms)
 		}
 
 		// 2. Class scope: look in base classes
@@ -22,16 +35,16 @@ func LookupUnqualified(scope *Scope, name string) []Symbol {
 			if r, ok := cur.Entity.(*types.Record); ok {
 				// Injected-class-name of the base class.
 				if rs := injectedBaseName(cur, r, name, map[*types.Record]bool{}); rs != nil {
-					return []Symbol{rs}
+					return found([]Symbol{rs})
 				}
 				if syms := lookupRecordMember(r, name, make(map[*types.Record]bool)); len(syms) > 0 {
-					return syms
+					return found(syms)
 				}
 				// A base's nested types, aliases and static members live in
 				// its class scope, not its record: char_traits<char16_t>
 				// names `char_type` from __char_traits_base.
 				if syms := lookupInheritedScopes(cur, r, name, map[*types.Record]bool{r: true}); len(syms) > 0 {
-					return syms
+					return found(syms)
 				}
 			}
 		}
@@ -46,12 +59,24 @@ func LookupUnqualified(scope *Scope, name string) []Symbol {
 				}
 			}
 			if len(gathered) > 0 {
-				return deduplicateSymbols(gathered)
+				return found(deduplicateSymbols(gathered))
 			}
 		}
 	}
 
-	return nil
+	return found(nil)
+}
+
+// allFunctions reports whether every symbol is a function: the only
+// kind an instantiation scope's instance can be, and the only kind an
+// enclosing scope's declarations of the same name overload with.
+func allFunctions(syms []Symbol) bool {
+	for _, s := range syms {
+		if _, isFn := s.(*FuncSymbol); !isFn {
+			return false
+		}
+	}
+	return len(syms) > 0
 }
 
 // LookupQualified performs C++ qualified lookup (e.g. N::name or Class::name).

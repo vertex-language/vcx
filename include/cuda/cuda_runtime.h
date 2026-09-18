@@ -68,6 +68,8 @@ cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, cudaMemcpy
 cudaError_t cudaMemset(void *devPtr, int value, size_t count);
 cudaError_t cudaMemcpyToSymbol(const void *symbol, const void *src, size_t count, size_t offset, cudaMemcpyKind kind);
 cudaError_t cudaMemcpyFromSymbol(void *dst, const void *symbol, size_t count, size_t offset, cudaMemcpyKind kind);
+cudaError_t cudaGetSymbolAddress(void **devPtr, const void *symbol);
+cudaError_t cudaGetSymbolSize(size_t *size, const void *symbol);
 cudaError_t cudaDeviceSynchronize(void);
 cudaError_t cudaDeviceReset(void);
 cudaError_t cudaGetLastError(void);
@@ -89,6 +91,35 @@ cudaError_t cudaEventElapsedTime(float *ms, cudaEvent_t start, cudaEvent_t end);
 cudaError_t cudaLaunchKernel(const void *func, dim3 gridDim, dim3 blockDim, void **args, size_t sharedMem, cudaStream_t stream);
 
 #if defined(__cplusplus)
+}
+#endif
+
+/* The C++ side of the symbol API, as the toolkit's cuda_runtime.h has
+ * it: the symbol is named, and its shadow's address is what the C
+ * function takes. */
+#if defined(__cplusplus)
+template <class T>
+static inline cudaError_t cudaMemcpyToSymbol(const T &symbol, const void *src, size_t count, size_t offset = 0,
+                                             cudaMemcpyKind kind = cudaMemcpyHostToDevice) {
+  return cudaMemcpyToSymbol((const void *)&symbol, src, count, offset, kind);
+}
+template <class T>
+static inline cudaError_t cudaMemcpyFromSymbol(void *dst, const T &symbol, size_t count, size_t offset = 0,
+                                               cudaMemcpyKind kind = cudaMemcpyDeviceToHost) {
+  return cudaMemcpyFromSymbol(dst, (const void *)&symbol, count, offset, kind);
+}
+template <class T>
+static inline cudaError_t cudaGetSymbolAddress(void **devPtr, const T &symbol) {
+  return cudaGetSymbolAddress(devPtr, (const void *)&symbol);
+}
+template <class T>
+static inline cudaError_t cudaGetSymbolSize(size_t *size, const T &symbol) {
+  return cudaGetSymbolSize(size, (const void *)&symbol);
+}
+template <class T>
+static inline cudaError_t cudaLaunchKernel(const T *func, dim3 gridDim, dim3 blockDim, void **args, size_t sharedMem = 0,
+                                           cudaStream_t stream = 0) {
+  return cudaLaunchKernel((const void *)func, gridDim, blockDim, args, sharedMem, stream);
 }
 #endif
 

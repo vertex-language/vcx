@@ -242,6 +242,7 @@ func (a *Analyzer) instantiateWithArgs(tmpl *FuncSymbol, args []types.TemplateAr
 
 	paramScope := a.bindTemplateArgs(info.Scope, info.declParams(), args)
 	instScope := NewScope(paramScope, BlockScope, nil)
+	instScope.Instantiation = true
 
 	saved := a.enterInstantiation(instScope)
 	if tmpl.InClass != nil {
