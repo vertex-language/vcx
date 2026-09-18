@@ -60,9 +60,6 @@ extern const int warpSize;
 /* ---- synchronization and fences -------------------------------------- */
 
 __VCX_DEVICE_INLINE void __syncthreads(void) { __nvvm_barrier0(); }
-__VCX_DEVICE_INLINE int __syncthreads_count(int p) { return __nvvm_barrier0_popc(p); }
-__VCX_DEVICE_INLINE int __syncthreads_and(int p) { return __nvvm_barrier0_and(p); }
-__VCX_DEVICE_INLINE int __syncthreads_or(int p) { return __nvvm_barrier0_or(p); }
 __VCX_DEVICE_INLINE void __syncwarp(unsigned mask = 0xffffffffu) { __nvvm_bar_warp_sync(mask); }
 __VCX_DEVICE_INLINE void __threadfence_block(void) { __nvvm_membar_cta(); }
 __VCX_DEVICE_INLINE void __threadfence(void) { __nvvm_membar_gl(); }
@@ -75,6 +72,31 @@ __VCX_DEVICE_INLINE void __threadfence_system(void) { __nvvm_membar_sys(); }
 /* ---- atomics ---------------------------------------------------------- */
 
 #include <__vcx_cuda_atomics.h>
+
+/* The reducing barriers, over a word of workgroup storage: every thread
+ * arrives, thread 0 clears the word, every thread adds or ands or ors
+ * its predicate in, and every thread reads the result before the word
+ * is reused. PTX has bar.red for this; VIR does not yet. */
+__VCX_DEVICE_INLINE int __vcx_sync_reduce(int p, int op) {
+  __shared__ int __vcx_sync_word;
+  __syncthreads();
+  if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) __vcx_sync_word = op == 1 ? 1 : 0;
+  __syncthreads();
+  if (op == 0) {
+    if (p) atomicAdd_block(&__vcx_sync_word, 1);
+  } else if (op == 1) {
+    if (!p) atomicAnd_block(&__vcx_sync_word, 0);
+  } else if (p) {
+    atomicOr_block(&__vcx_sync_word, 1);
+  }
+  __syncthreads();
+  int r = __vcx_sync_word;
+  __syncthreads();
+  return r;
+}
+__VCX_DEVICE_INLINE int __syncthreads_count(int p) { return __vcx_sync_reduce(p, 0); }
+__VCX_DEVICE_INLINE int __syncthreads_and(int p) { return __vcx_sync_reduce(p, 1); }
+__VCX_DEVICE_INLINE int __syncthreads_or(int p) { return __vcx_sync_reduce(p, 2); }
 
 /* ---- the device math library ------------------------------------------ */
 

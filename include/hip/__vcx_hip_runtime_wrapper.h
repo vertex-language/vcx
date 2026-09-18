@@ -128,6 +128,31 @@ __VCX_DEVICE_INLINE int __ffsll(long long x) { return x == 0 ? 0 : __builtin_ctz
 
 #include <hip/__vcx_hip_atomics.h>
 
+/* The reducing barriers, over a word of workgroup storage: every thread
+ * arrives, thread 0 clears the word, every thread adds or ands or ors
+ * its predicate in, and every thread reads the result before the word
+ * is reused. PTX has bar.red for this; VIR does not yet. */
+__VCX_DEVICE_INLINE int __vcx_sync_reduce(int p, int op) {
+  __shared__ int __vcx_sync_word;
+  __syncthreads();
+  if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) __vcx_sync_word = op == 1 ? 1 : 0;
+  __syncthreads();
+  if (op == 0) {
+    if (p) atomicAdd(&__vcx_sync_word, 1);
+  } else if (op == 1) {
+    if (!p) atomicAnd(&__vcx_sync_word, 0);
+  } else if (p) {
+    atomicOr(&__vcx_sync_word, 1);
+  }
+  __syncthreads();
+  int r = __vcx_sync_word;
+  __syncthreads();
+  return r;
+}
+__VCX_DEVICE_INLINE int __syncthreads_count(int p) { return __vcx_sync_reduce(p, 0); }
+__VCX_DEVICE_INLINE int __syncthreads_and(int p) { return __vcx_sync_reduce(p, 1); }
+__VCX_DEVICE_INLINE int __syncthreads_or(int p) { return __vcx_sync_reduce(p, 2); }
+
 /* ---- the device math library ------------------------------------------ */
 
 #include <hip/__vcx_hip_math.h>
