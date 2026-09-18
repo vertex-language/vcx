@@ -83,9 +83,10 @@ func (fl *fn) checkDeviceCall(callee *sema.FuncSymbol, at ast.Tok, launch bool) 
 		if callee.Space.OnDevice() {
 			return true
 		}
-		if callee.Space == sema.SpaceHost && callee.Body == nil && u.deviceMathVerb(callee) != "" {
-			// A math function the device library provides, declared
-			// by the host's <cmath> as well.
+		if callee.Space == sema.SpaceHost && u.deviceMathVerb(callee) != "" {
+			// A function the device library provides -- sqrtf, expf,
+			// printf -- declared, or defined inline, by the host's
+			// headers as well; the device's is what a kernel gets.
 			return true
 		}
 		u.errorf(at, "reference to __host__ function %q in %s function %q", callee.SymName, fl.sym.Space, fl.sym.SymName)
@@ -139,6 +140,8 @@ var deviceMath = map[string]string{
 	"sinhf": "lib", "sinh": "lib", "coshf": "lib", "cosh": "lib", "tanhf": "lib", "tanh": "lib",
 	"atanf": "lib", "atan": "lib", "atan2f": "lib", "atan2": "lib", "asinf": "lib", "asin": "lib",
 	"acosf": "lib", "acos": "lib", "ldexpf": "lib", "ldexp": "lib",
+	// Device printf: the driver's vprintf over a packed argument buffer.
+	"printf": "printf",
 }
 
 // deviceMathCall lowers a call to the device math library.
@@ -148,6 +151,9 @@ func (fl *fn) deviceMathCall(callee *sema.FuncSymbol, e *ast.CallExpr) ir.Value 
 	verb := deviceMath[name]
 	if verb == "lib" {
 		return fl.deviceLibCall(name, callee, e)
+	}
+	if verb == "printf" {
+		return fl.devicePrintf(e)
 	}
 	if verb == "" {
 		fl.u.errorf(e.Pos(), "%s is not in the device math library yet: the hardware has no instruction for it, and the polynomial is not written", name)
@@ -273,6 +279,80 @@ func (u *unit) deviceLib(name string) *sema.FuncSymbol {
 		}
 	}
 	return nil
+}
+
+// devicePrintf is printf in a kernel: on NVIDIA the driver's vprintf,
+// given the format and a buffer holding the arguments as a struct would
+// -- each promoted as C's varargs promote it, at its natural alignment.
+// HIP's printf goes through ROCm's hostcall and is not lowered.
+func (fl *fn) devicePrintf(e *ast.CallExpr) ir.Value {
+	b := fl.blk
+	if fl.u.model.DeviceISA != types.NVPTX {
+		fl.u.errorf(e.Pos(), "printf in device code is not lowered for AMD yet")
+		return nil
+	}
+	if len(e.Args) == 0 {
+		return nil
+	}
+	fmtv := fl.expr(e.Args[0])
+	fmtp, isPtr := fmtv.(ir.Ptr)
+	if !isPtr {
+		fl.u.errorf(e.Args[0].Pos(), "printf's format is a string")
+		return nil
+	}
+	type packed struct {
+		v    ir.Value
+		size int64
+	}
+	var vals []packed
+	var off int64
+	for _, a := range e.Args[1:] {
+		v := fl.expr(a)
+		if v == nil {
+			return nil
+		}
+		t := types.Unqualify(types.RemoveReference(fl.typeOf(a)))
+		var size int64
+		switch x := v.(type) {
+		case ir.I1:
+			v, size = b.I32.ZExtI1(x), 4
+		case ir.I32:
+			size = 4
+		case ir.F32:
+			v, size = b.F64.FCvtF32(x), 8
+		case ir.I64, ir.F64, ir.Ptr:
+			size = 8
+		default:
+			fl.u.errorf(a.Pos(), "printf cannot take a %s on the device", t)
+			return nil
+		}
+		off = (off + size - 1) &^ (size - 1)
+		vals = append(vals, packed{v, size})
+		off += size
+	}
+	args := b.Ptr.Const()
+	if off > 0 {
+		buf := fl.entry.Ptr.Alloc(uint64(off), 8).Named("printf_args")
+		var at int64
+		for _, p := range vals {
+			at = (at + p.size - 1) &^ (p.size - 1)
+			dst := b.Ptr.Add(buf, b.I64.Const(at))
+			switch x := p.v.(type) {
+			case ir.I32:
+				b.I32.Store(x, dst)
+			case ir.I64:
+				b.I64.Store(x, dst)
+			case ir.F64:
+				b.F64.Store(x, dst)
+			case ir.Ptr:
+				b.Ptr.Store(x, dst)
+			}
+			at += p.size
+		}
+		args = buf
+	}
+	vprintf := fl.u.rtImport("vprintf", ir.NewSig().Param(ir.TypePtr).Param(ir.TypePtr).Ret(ir.TypeI32))
+	return b.Call(vprintf, fmtp, args).I32(0)
 }
 
 // scalarArgs evaluates a call's arguments converted to the callee's

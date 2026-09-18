@@ -850,7 +850,7 @@ func (fl *fn) callRaw(e *ast.CallExpr, callee *sema.FuncSymbol) ir.Value {
 	if e.IsLaunch() && !fl.pushLaunch(e) {
 		return nil
 	}
-	if callee.Body == nil && fl.u.deviceMathVerb(callee) != "" {
+	if fl.u.deviceMathVerb(callee) != "" && (callee.Body == nil || callee.Space == sema.SpaceHost) {
 		return fl.deviceMathCall(callee, e)
 	}
 	var target ir.Callee
@@ -965,6 +965,20 @@ func (fl *fn) finishCall(e *ast.CallExpr, callee *sema.FuncSymbol, target ir.Cal
 		}
 		if v == nil {
 			return nil
+		}
+		if want == nil {
+			// An argument past the parameters, to a variadic: the
+			// default promotions, [expr.call]/12 -- a float travels
+			// as a double, a narrow integer as an int.
+			from := types.Unqualify(types.RemoveReference(fl.typeOf(a)))
+			switch {
+			case types.IsFloat(from) && fl.u.regType(from) == ir.TypeF32:
+				want = types.Typ(types.Double)
+			case types.IsInteger(from) || types.IsEnum(from) || types.IsBool(from):
+				if size, _ := fl.u.sizeAlign(from); size < 4 {
+					want = types.Typ(types.Int)
+				}
+			}
 		}
 		args = append(args, fl.convert(v, fl.typeOf(a), want))
 	}
