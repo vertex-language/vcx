@@ -140,6 +140,9 @@ var deviceMath = map[string]string{
 	"sinhf": "lib", "sinh": "lib", "coshf": "lib", "cosh": "lib", "tanhf": "lib", "tanh": "lib",
 	"atanf": "lib", "atan": "lib", "atan2f": "lib", "atan2": "lib", "asinf": "lib", "asin": "lib",
 	"acosf": "lib", "acos": "lib", "ldexpf": "lib", "ldexp": "lib",
+	// The classifications, which <cmath> defines inline on the host over
+	// the float's bits: the GNU builtins' lowering, by name.
+	"isnan": "class", "isinf": "class", "isfinite": "class", "isnormal": "class", "signbit": "class",
 	// Device printf: the driver's vprintf over a packed argument buffer.
 	"printf": "printf",
 }
@@ -154,6 +157,13 @@ func (fl *fn) deviceMathCall(callee *sema.FuncSymbol, e *ast.CallExpr) ir.Value 
 	}
 	if verb == "printf" {
 		return fl.devicePrintf(e)
+	}
+	if verb == "class" {
+		if v, ok := fl.gnuBuiltinCall("__builtin_"+name, e); ok {
+			return v
+		}
+		fl.u.errorf(e.Pos(), "internal: no lowering for %s on the device", name)
+		return nil
 	}
 	if verb == "" {
 		fl.u.errorf(e.Pos(), "%s is not in the device math library yet: the hardware has no instruction for it, and the polynomial is not written", name)
@@ -246,6 +256,13 @@ func (fl *fn) deviceMathCall(callee *sema.FuncSymbol, e *ast.CallExpr) ir.Value 
 // wrapper defined, called with the arguments converted to the C
 // function's parameter types.
 func (fl *fn) deviceLibCall(name string, callee *sema.FuncSymbol, e *ast.CallExpr) ir.Value {
+	// std::exp(float) is exp by name and expf by type: the library's
+	// float version is the one a float parameter asks for.
+	if !strings.HasSuffix(name, "f") && len(callee.FuncType.Params) > 0 {
+		if bt, ok := types.Unqualify(callee.FuncType.Params[0].Type).(*types.Basic); ok && bt.K == types.Float {
+			name += "f"
+		}
+	}
 	lib := fl.u.deviceLib(name)
 	if lib == nil {
 		fl.u.errorf(e.Pos(), "%s is in the device math library, but no __vcx_%s is declared: the runtime wrapper header was not read", name, name)
