@@ -25,8 +25,8 @@ type ppFlags struct {
 	keepComments bool
 
 	// The offload flags, as nvcc and hipcc spell them.
-	language    string
-	offloadArch string
+	language     string
+	offloadArchs stringList
 	deviceOnly  bool
 	hostOnly    bool
 
@@ -41,8 +41,8 @@ func (p *ppFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&p.std, "std", "c++23", "language standard: c++20, c++23, c++26")
 	fs.BoolVar(&p.freestanding, "freestanding", false, "freestanding environment (no library runtime)")
 	fs.StringVar(&p.language, "x", "", "language of the inputs: c++, cuda, hip (default: by extension)")
-	fs.StringVar(&p.offloadArch, "offload-arch", "", "device to compile kernels for: sm_75, gfx942, ... (default sm_52 for CUDA)")
-	fs.StringVar(&p.offloadArch, "arch", "", "same as --offload-arch")
+	fs.Var(&p.offloadArchs, "offload-arch", "device to compile kernels for: sm_75, gfx942, ... (repeatable; default sm_52 for CUDA)")
+	fs.Var(&p.offloadArchs, "arch", "same as --offload-arch")
 	fs.BoolVar(&p.deviceOnly, "cuda-device-only", false, "compile only the device pass of a CUDA or HIP unit")
 	fs.BoolVar(&p.deviceOnly, "offload-device-only", false, "same as --cuda-device-only")
 	fs.BoolVar(&p.hostOnly, "cuda-host-only", false, "compile only the host pass of a CUDA or HIP unit")
@@ -82,7 +82,7 @@ func (p *ppFlags) compiler() (*vcx.Compiler, error) {
 		Undefs:       p.undefs,
 		Freestanding: p.freestanding,
 		Language:     lang,
-		OffloadArch:  p.offloadArch,
+		OffloadArchs: p.offloadArchs,
 		DeviceOnly:   p.deviceOnly,
 		HostOnly:     p.hostOnly,
 	}

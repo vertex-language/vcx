@@ -76,8 +76,11 @@ type Compiler struct {
 
 	// OffloadArch is the device an offload unit's kernels are compiled
 	// for -- sm_75, gfx942 -- as --offload-arch names it. Empty is sm_52
-	// for CUDA; HIP has no default.
-	OffloadArch string
+	// for CUDA; HIP has no default. Several, separated by commas or
+	// given in OffloadArchs, put an image for each in the fat binary,
+	// and the runtime picks the newest the device runs.
+	OffloadArch  string
+	OffloadArchs []string
 
 	// DeviceOnly compiles only the device pass of an offload unit, and
 	// HostOnly only the host pass: --cuda-device-only and
@@ -532,18 +535,33 @@ func (c *Compiler) IR(in Input) (*ir.Module, []Diagnostic, error) {
 }
 
 // deviceImages runs the device pass of an offload unit for each
-// architecture asked for and is the images the host pass embeds.
+// architecture asked for and is the images the host pass embeds. The
+// passes are separate compilations: __CUDA_ARCH__ differs, and a body
+// may read it.
 func (c *Compiler) deviceImages(in Input, p pass) ([]offload.Image, []Diagnostic, error) {
-	dp := p.toDevice()
-	mod, diags, err := c.irFor(in, dp, nil)
-	if err != nil || mod == nil || HasErrors(diags) {
-		return nil, diags, err
-	}
-	data, err := emitObject(mod, dp.tgt, dp.arch)
+	archs, err := c.offloadArchs(p.lang)
 	if err != nil {
-		return nil, diags, err
+		return nil, nil, err
 	}
-	return []offload.Image{imageOf(dp.arch, data)}, diags, nil
+	var images []offload.Image
+	var diags []Diagnostic
+	for _, arch := range archs {
+		dp := p
+		dp.arch = arch
+		dp.model.DeviceISA = arch.ISA()
+		dp = dp.toDevice()
+		mod, more, err := c.irFor(in, dp, nil)
+		diags = append(diags, more...)
+		if err != nil || mod == nil || HasErrors(diags) {
+			return nil, diags, err
+		}
+		data, err := emitObject(mod, dp.tgt, dp.arch)
+		if err != nil {
+			return nil, diags, err
+		}
+		images = append(images, imageOf(dp.arch, data))
+	}
+	return images, diags, nil
 }
 
 // imageOf describes a device image for the container it travels in.

@@ -278,18 +278,24 @@ struct FatbinWrapper {
   void *filename;
 };
 
-// findImage is the PTX text in a fat binary, or null.
-static const char *findImage(const void *data) {
+// findImage is the PTX text in a fat binary for the device: the newest
+// architecture at or below the device's, or null.
+static const char *findImage(const void *data, unsigned sm) {
   const FatbinHeader *h = (const FatbinHeader *)data;
   if (h->magic != 0xBA55ED50u) return 0;
   const char *p = (const char *)data + h->headerSize;
   const char *end = p + h->size;
+  const char *best = 0;
+  unsigned bestArch = 0;
   while (p + sizeof(FatbinEntry) <= end) {
     const FatbinEntry *e = (const FatbinEntry *)p;
-    if (e->kind == 1) return p + e->headerSize;
+    if (e->kind == 1 && e->arch <= sm && (best == 0 || e->arch > bestArch)) {
+      best = p + e->headerSize;
+      bestArch = e->arch;
+    }
     p += e->headerSize + e->size;
   }
-  return 0;
+  return best;
 }
 
 static cudaError_t loadModule(Fatbin *fb) {
@@ -297,10 +303,14 @@ static cudaError_t loadModule(Fatbin *fb) {
   if (fb->loadFailed) return fail(cudaErrorInvalidDeviceFunction);
   cudaError_t e = ensureContext();
   if (e) return e;
+  int major = 0, minor = 0;
+  drv.DeviceGetAttribute(&major, 75, device);
+  drv.DeviceGetAttribute(&minor, 76, device);
   const FatbinWrapper *w = (const FatbinWrapper *)fb->wrapper;
-  const char *image = w && w->magic == 0x466243B1 ? findImage(w->data) : 0;
+  const char *image = w && w->magic == 0x466243B1 ? findImage(w->data, (unsigned)(major * 10 + minor)) : 0;
   if (!image) {
     fb->loadFailed = 1;
+    fprintf(stderr, "vcx cudart: no device image for sm_%d%d in the fat binary\n", major, minor);
     return fail(cudaErrorInvalidDeviceFunction);
   }
   static char log[4096];

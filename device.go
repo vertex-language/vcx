@@ -139,17 +139,50 @@ func ParseOffloadArch(s string) (OffloadArch, error) {
 	return OffloadArch{}, fmt.Errorf("unknown offload arch %q (an sm_NN or a gfxNNN)", s)
 }
 
-// defaultOffloadArch is the device compiled for when none is named: the
-// oldest NVIDIA SM every CUDA 12 driver still runs, as nvcc's own default
-// is; a HIP unit has no default, since no AMD GPU runs another's code.
+// offloadArch is the first device compiled for: what the single-image
+// paths -- --emit ptx, the device-only pass -- use.
 func (c *Compiler) offloadArch(lang Language) (OffloadArch, error) {
-	if c.OffloadArch != "" {
-		return ParseOffloadArch(c.OffloadArch)
+	archs, err := c.offloadArchs(lang)
+	if err != nil {
+		return OffloadArch{}, err
 	}
-	if lang == LangHIP {
-		return OffloadArch{}, fmt.Errorf("a HIP unit names its device with --offload-arch (gfx942, gfx90a, ...); there is no AMD GPU every kernel runs on")
+	return archs[0], nil
+}
+
+// offloadArchs is every device compiled for, in order, without repeats.
+// None named is the oldest NVIDIA SM every CUDA 12 driver still runs,
+// as nvcc's own default is; a HIP unit has no default, since no AMD GPU
+// runs another's code. One fat binary holds one vendor's images.
+func (c *Compiler) offloadArchs(lang Language) ([]OffloadArch, error) {
+	var names []string
+	for _, s := range append(strings.Split(c.OffloadArch, ","), c.OffloadArchs...) {
+		if s = strings.TrimSpace(s); s != "" {
+			names = append(names, s)
+		}
 	}
-	return OffloadArch{Name: "sm_52", SM: ptx.SM52}, nil
+	if len(names) == 0 {
+		if lang == LangHIP {
+			return nil, fmt.Errorf("a HIP unit names its device with --offload-arch (gfx942, gfx90a, ...); there is no AMD GPU every kernel runs on")
+		}
+		return []OffloadArch{{Name: "sm_52", SM: ptx.SM52}}, nil
+	}
+	var out []OffloadArch
+	seen := map[string]bool{}
+	for _, name := range names {
+		arch, err := ParseOffloadArch(name)
+		if err != nil {
+			return nil, err
+		}
+		if seen[arch.Name] {
+			continue
+		}
+		seen[arch.Name] = true
+		if len(out) > 0 && out[0].ISA() != arch.ISA() {
+			return nil, fmt.Errorf("--offload-arch %s and %s are two vendors' devices; one program is built for one", out[0].Name, arch.Name)
+		}
+		out = append(out, arch)
+	}
+	return out, nil
 }
 
 // offloadPredefines are the macros that say which pass of an offload
