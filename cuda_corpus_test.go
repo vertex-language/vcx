@@ -81,7 +81,12 @@ func cudaCases(t *testing.T) []cudaCase {
 				for _, w := range strings.Fields(rest) {
 					n, err := strconv.ParseInt(w, 0, 32)
 					if err != nil {
-						t.Fatalf("%s: expect %q: %v", path, w, err)
+						// A hex spelling of a word with its top bit set.
+						u, uerr := strconv.ParseUint(w, 0, 32)
+						if uerr != nil {
+							t.Fatalf("%s: expect %q: %v", path, w, err)
+						}
+						n = int64(int32(uint32(u)))
 					}
 					c.expect = append(c.expect, int32(n))
 				}
