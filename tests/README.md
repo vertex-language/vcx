@@ -389,7 +389,9 @@ the programs to executables -- and held to the same headers
 (`TestCUDACorpusAgainstNvcc`, `TestCUDAProgramsAgainstNvcc`), and the
 programs run on NVIDIA's cudart as well as vcx's. That is the oracle:
 what nvcc prints is what the header says, and what vcx prints is what
-nvcc prints.
+nvcc prints. The toolkit's compute-sanitizer runs memcheck and
+racecheck over every vcx-built program too (`TestCUDAProgramsSanitized`);
+a program that errs on purpose says `// sanitizer: skip`.
 
 ## hip/
 
