@@ -188,8 +188,9 @@ func ModelForTarget(arch, os string) Model {
 		m.ABI = ItaniumAArch64
 		m.VaList = VaListAArch64
 		switch os {
-		case "linux":
-			// AAPCS64 on Linux: plain char and wchar_t are both unsigned.
+		case "linux", "android":
+			// AAPCS64 on Linux and Android: plain char and wchar_t are
+			// both unsigned.
 			m.CharSigned = false
 			m.WCharKind = UInt
 		case "macos", "darwin":

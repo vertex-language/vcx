@@ -34,6 +34,8 @@ func irTarget(t Target) (ir.Target, error) {
 		return ir.X86_64Linux, nil
 	case t.Arch == "arm64" && t.OS == "macos":
 		return ir.AArch64MacOS, nil
+	case t.Arch == "arm64" && t.OS == "android":
+		return ir.AArch64Android, nil
 	case t.Arch == "arm64":
 		return ir.AArch64Linux, nil
 	case t.Arch == "i386":

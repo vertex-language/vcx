@@ -28,6 +28,12 @@ func (t Target) Predefines() []preprocessor.Predefine {
 		def("__gnu_linux__", "1")
 		def("__unix__", "1")
 		def("__ELF__", "1")
+	case "android":
+		// Linux underneath, bionic above: no __gnu_linux__, which says glibc.
+		def("__linux__", "1")
+		def("__unix__", "1")
+		def("__ELF__", "1")
+		def("__ANDROID__", "1")
 	case "macos":
 		def("__APPLE__", "1")
 		def("__MACH__", "1")

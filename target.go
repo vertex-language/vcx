@@ -98,6 +98,13 @@ var targets = map[string]Target{
 		Container: ContainerELF,
 		ABI:       ABIItanium,
 	},
+	"aarch64-android": {
+		Name:      "aarch64-android",
+		Arch:      "arm64",
+		OS:        "android",
+		Container: ContainerELF,
+		ABI:       ABIItanium,
+	},
 	"x86_64-windows": {
 		Name:      "x86_64-windows",
 		Arch:      "amd64",

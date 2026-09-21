@@ -122,7 +122,7 @@ func (t Target) gnuTypeChoices(m types.Model) gnuTypes {
 	if t.OS == "macos" {
 		g.int64 = types.LongLong
 	}
-	if t.OS == "linux" {
+	if t.OS == "linux" || t.OS == "android" {
 		g.wint = types.UInt
 	}
 	return g
