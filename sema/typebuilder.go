@@ -53,6 +53,7 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 		sawChar32   bool
 		sawWChar    bool
 		sawInt      bool
+		sawInt128   bool
 		sawShort    bool
 		sawLong     int
 		sawSigned   bool
@@ -99,6 +100,10 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 				sawInt = true
 			case token.INT64:
 				sawLong = 2
+			case token.INT128:
+				// __int128 has no standard spelling and no `long`
+				// ladder to sit on: it is its own width.
+				sawInt128 = true
 			case token.SIGNED:
 				sawSigned = true
 			case token.UNSIGNED:
@@ -368,6 +373,12 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 		base = types.Typ(types.Char32)
 	case sawWChar:
 		base = types.Typ(types.WChar)
+	case sawInt128:
+		if sawUnsigned {
+			base = types.Typ(types.UInt128)
+		} else {
+			base = types.Typ(types.Int128)
+		}
 	case sawFloat:
 		base = types.Typ(types.Float)
 	case sawDouble:

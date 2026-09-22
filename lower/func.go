@@ -188,6 +188,8 @@ func (fl *fn) returnDefault() {
 
 func (fl *fn) zeroOf(t types.Type) ir.Value {
 	switch fl.u.regType(t) {
+	case ir.TypeI128:
+		return fl.blk.I128.Const(0)
 	case ir.TypeI64:
 		return fl.blk.I64.Const(0)
 	case ir.TypeF32:
@@ -384,6 +386,8 @@ func (fl *fn) store(dst ir.Ptr, v ir.Value, t types.Type) {
 		}
 	case ir.I64:
 		b.I64.Store(val, dst)
+	case ir.I128:
+		b.I128.Store(val, dst)
 	case ir.F32:
 		b.F32.Store(val, dst)
 	case ir.F64:
@@ -405,6 +409,8 @@ func (fl *fn) load(src ir.Ptr, t types.Type) ir.Value {
 	}
 	b := fl.blk
 	switch fl.u.regType(t) {
+	case ir.TypeI128:
+		return b.I128.Load(src)
 	case ir.TypeI64:
 		return b.I64.Load(src)
 	case ir.TypeF32:

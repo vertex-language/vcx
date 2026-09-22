@@ -84,6 +84,14 @@ func emitObject(m *ir.Module, t Target, arch OffloadArch) ([]byte, error) {
 	if m == nil {
 		return nil, fmt.Errorf("no module to emit")
 	}
+	// __int128 before any backend sees it: no target holds one in a
+	// register, and the IR's legalizer rewrites each into the pair of
+	// i64 halves every backend already has (see ir.Module.LegalizeI128).
+	// The division helpers it names are spelled the platform's way.
+	m.LegalizeI128Opts(ir.I128Options{SymbolPrefix: symbolPrefix(t)})
+	if err := m.Err(); err != nil {
+		return nil, err
+	}
 	switch t.Arch {
 	case "amd64":
 		return amd64Object(m, t)

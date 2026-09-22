@@ -518,6 +518,8 @@ func (u *unit) declareParam(f *ir.Func, p *sema.VarSymbol) ir.Value {
 	switch u.regType(p.SymType) {
 	case ir.TypeI1:
 		return f.ParamI1(name)
+	case ir.TypeI128:
+		return f.ParamI128(name)
 	case ir.TypeI64:
 		return f.ParamI64(name)
 	case ir.TypeF32:
@@ -542,6 +544,8 @@ func (u *unit) declareResult(f *ir.Func, ret types.Type) {
 		f.ReturnsI32()
 	case ir.TypeI64:
 		f.ReturnsI64()
+	case ir.TypeI128:
+		f.ReturnsI128()
 	case ir.TypeF32:
 		f.ReturnsF32()
 	case ir.TypeF64:
@@ -753,6 +757,8 @@ func (u *unit) initializeGlobal(v *sema.VarSymbol, g *ir.Global) {
 // record's real shape arrives with the field access that needs it.
 func (u *unit) ftype(t types.Type, size int64) ir.FType {
 	switch u.regType(t) {
+	case ir.TypeI128:
+		return ir.StoreI128.FType()
 	case ir.TypeI64:
 		return ir.StoreI64.FType()
 	case ir.TypeF32:
@@ -769,6 +775,8 @@ func (u *unit) ftype(t types.Type, size int64) ir.FType {
 		return ir.StoreI16.FType()
 	case 8:
 		return ir.StoreI64.FType()
+	case 16:
+		return ir.StoreI128.FType()
 	default:
 		return ir.StoreI32.FType()
 	}

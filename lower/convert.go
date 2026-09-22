@@ -69,6 +69,11 @@ func (fl *fn) convert(v ir.Value, from, to types.Type) ir.Value {
 				return b.F64.UCvtI32(val)
 			}
 			return b.F64.SCvtI32(val)
+		case ir.TypeI128:
+			if from != nil && !isSigned(from) {
+				return b.I128.ZExtI32(val)
+			}
+			return b.I128.SExtI32(val)
 		}
 
 	case ir.I64:
@@ -90,6 +95,35 @@ func (fl *fn) convert(v ir.Value, from, to types.Type) ir.Value {
 				return b.F64.UCvtI64(val)
 			}
 			return b.F64.SCvtI64(val)
+		case ir.TypeI128:
+			if from != nil && !isSigned(from) {
+				return b.I128.ZExtI64(val)
+			}
+			return b.I128.SExtI64(val)
+		}
+
+	// __int128. Widening reads the source's signedness, narrowing keeps
+	// the low half, and the float conversions are the runtime's.
+	case ir.I128:
+		switch want {
+		case ir.TypeI128:
+			return val
+		case ir.TypeI64:
+			return b.I64.WrapI128(val)
+		case ir.TypeI32:
+			return fl.narrow(b.I32.WrapI128(val), to)
+		case ir.TypePtr:
+			return b.Ptr.FromI64(b.I64.WrapI128(val))
+		case ir.TypeF32:
+			if from != nil && !isSigned(from) {
+				return b.F32.UCvtI128(val)
+			}
+			return b.F32.SCvtI128(val)
+		case ir.TypeF64:
+			if from != nil && !isSigned(from) {
+				return b.F64.UCvtI128(val)
+			}
+			return b.F64.SCvtI128(val)
 		}
 
 	case ir.F64:
@@ -111,6 +145,11 @@ func (fl *fn) convert(v ir.Value, from, to types.Type) ir.Value {
 				return b.I64.UCvtF64(val)
 			}
 			return b.I64.SCvtF64(val)
+		case ir.TypeI128:
+			if !isSigned(to) {
+				return b.I128.UCvtF64(val)
+			}
+			return b.I128.SCvtF64(val)
 		}
 
 	case ir.F32:

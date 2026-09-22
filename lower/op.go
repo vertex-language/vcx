@@ -161,6 +161,10 @@ func (fl *fn) arith(op token.Kind, at ast.Tok, l, r ir.Value, common types.Type)
 		if ri, ok := r.(ir.I64); ok {
 			return fl.binaryI64(op, at, li, ri, signed)
 		}
+	case ir.I128:
+		if ri, ok := r.(ir.I128); ok {
+			return fl.binaryI128(op, at, li, ri, signed)
+		}
 	case ir.F64:
 		if ri, ok := r.(ir.F64); ok {
 			return fl.binaryF64(op, at, li, ri)
@@ -289,6 +293,69 @@ func (fl *fn) binaryI64(op token.Kind, at ast.Tok, l, r ir.I64, signed bool) ir.
 		return fl.fromBool(n.ULe(l, r))
 	case token.GTR:
 		// Lower `>` as `<` with swapped operands.
+		if signed {
+			return fl.fromBool(n.SLt(r, l))
+		}
+		return fl.fromBool(n.ULt(r, l))
+	case token.GEQ:
+		if signed {
+			return fl.fromBool(n.SLe(r, l))
+		}
+		return fl.fromBool(n.ULe(r, l))
+	}
+	fl.u.errorf(at, "lowering does not handle %s yet", op)
+	return nil
+}
+
+// binaryI128 is __int128 arithmetic. The namespace is i64's without the
+// overflow predicates and the rotates, which C has no operator for.
+func (fl *fn) binaryI128(op token.Kind, at ast.Tok, l, r ir.I128, signed bool) ir.Value {
+	n := fl.blk.I128
+	switch op {
+	case token.ADD:
+		return n.Add(l, r)
+	case token.SUB:
+		return n.Sub(l, r)
+	case token.MUL:
+		return n.Mul(l, r)
+	case token.QUO:
+		if signed {
+			return n.SDiv(l, r)
+		}
+		return n.UDiv(l, r)
+	case token.REM:
+		if signed {
+			return n.SRem(l, r)
+		}
+		return n.URem(l, r)
+	case token.AND:
+		return n.And(l, r)
+	case token.OR:
+		return n.Or(l, r)
+	case token.XOR:
+		return n.Xor(l, r)
+	case token.SHL:
+		return n.Shl(l, r)
+	case token.SHR:
+		if signed {
+			return n.SShr(l, r)
+		}
+		return n.UShr(l, r)
+	case token.EQL:
+		return fl.fromBool(n.Eq(l, r))
+	case token.NEQ:
+		return fl.fromBool(n.Ne(l, r))
+	case token.LSS:
+		if signed {
+			return fl.fromBool(n.SLt(l, r))
+		}
+		return fl.fromBool(n.ULt(l, r))
+	case token.LEQ:
+		if signed {
+			return fl.fromBool(n.SLe(l, r))
+		}
+		return fl.fromBool(n.ULe(l, r))
+	case token.GTR:
 		if signed {
 			return fl.fromBool(n.SLt(r, l))
 		}
@@ -479,6 +546,8 @@ func (fl *fn) unary(e *ast.UnaryExpr) ir.Value {
 			return fl.blk.I32.Sub(fl.blk.I32.Const(0), val)
 		case ir.I64:
 			return fl.blk.I64.Sub(fl.blk.I64.Const(0), val)
+		case ir.I128:
+			return fl.blk.I128.Neg(val)
 		case ir.F64:
 			return fl.blk.F64.Neg(val)
 		case ir.F32:
@@ -491,6 +560,8 @@ func (fl *fn) unary(e *ast.UnaryExpr) ir.Value {
 			return fl.blk.I32.Not(val)
 		case ir.I64:
 			return fl.blk.I64.Not(val)
+		case ir.I128:
+			return fl.blk.I128.Not(val)
 		}
 	}
 

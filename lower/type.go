@@ -67,7 +67,14 @@ func (u *unit) regType(t types.Type) ir.RegType {
 // model. `long` is not i64 by name -- it is four bytes on Windows and eight
 // on Linux, which is the whole reason the model is asked.
 func (u *unit) intReg(t types.Type) ir.RegType {
-	if sz, ok := u.model.Sizeof(t); ok && sz > 4 {
+	sz, ok := u.model.Sizeof(t)
+	switch {
+	case ok && sz > 8:
+		// __int128. No target holds one in a register; the IR's
+		// legalizer turns it into a pair of i64 before any backend
+		// sees it (see ir.Module.LegalizeI128).
+		return ir.TypeI128
+	case ok && sz > 4:
 		return ir.TypeI64
 	}
 	return ir.TypeI32
@@ -81,7 +88,8 @@ func isSigned(t types.Type) bool {
 	case *types.Basic:
 		switch t.K {
 		case types.UChar, types.UShort, types.UInt, types.ULong,
-			types.ULongLong, types.Bool, types.Char8, types.Char16, types.Char32:
+			types.ULongLong, types.UInt128, types.Bool,
+			types.Char8, types.Char16, types.Char32:
 			return false
 		}
 		return true
