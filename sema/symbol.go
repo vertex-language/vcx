@@ -42,6 +42,10 @@ type VarSymbol struct {
 	// InClass is the class of a static data member.
 	InClass *types.Record
 
+	// Align is the alignment an alignas specifier asked for, or zero. It
+	// is the object's own, over and above its type's.
+	Align int64
+
 	// Memory is where the object lives in an offload unit (see MemSpace).
 	Memory MemSpace
 

@@ -730,6 +730,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			ExternC:    a.externC,
 			AsmLabel:   a.asmLabel(init),
 			Inline:     declInfo.Inline,
+			Align:      a.alignasOf(append(append([]*ast.AttrGroup{}, d.Attrs...), d.Specs.Aligns...)),
 			Memory:     a.memSpaceOf(d.Specs.AllAttrs(d.Attrs), init.Pos(), fullType),
 			// Defined unless extern without an initializer.
 			Defined: declInfo.Storage != StorageExtern || init.Value != nil || init.Braced != nil,

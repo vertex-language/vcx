@@ -136,7 +136,7 @@ func (fl *fn) rangeForClass(s *ast.RangeForStmt, proto *sema.RangeProtocol) {
 	}
 	fl.endFullExpr()
 
-	varSlot := fl.alloc(sym.SymType, sym.SymName)
+	varSlot := fl.allocVar(sym)
 	fl.slots[sym] = varSlot
 
 	head := fl.block("range_head")

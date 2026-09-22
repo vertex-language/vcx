@@ -138,7 +138,7 @@ func (fl *fn) structuredBinding(sb *ast.StructuredBinding) {
 			continue
 		}
 		// Tuple-like element: bind get<i>(hidden) result as a reference.
-		slot := fl.alloc(sym.SymType, sym.SymName)
+		slot := fl.allocVar(sym)
 		fl.slots[sym] = slot
 		get := sym.Binding.Get
 		target := fl.u.callee(get)
@@ -183,7 +183,7 @@ func (fl *fn) declareLocal(init *ast.InitDeclarator) {
 		return
 	}
 
-	slot := fl.alloc(sym.SymType, sym.SymName)
+	slot := fl.allocVar(sym)
 	fl.slots[sym] = slot
 	defer fl.endFullExpr()
 
@@ -1041,7 +1041,7 @@ func (fl *fn) rangeForStmt(s *ast.RangeForStmt) {
 	idxSlot := fl.alloc(types.Typ(types.LongLong), "__i")
 	fl.blk.I64.Store(fl.blk.I64.Const(0), idxSlot)
 
-	varSlot := fl.alloc(sym.SymType, sym.SymName)
+	varSlot := fl.allocVar(sym)
 	fl.slots[sym] = varSlot
 
 	head := fl.block("range_head")

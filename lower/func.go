@@ -347,6 +347,16 @@ func (fl *fn) alloc(t types.Type, name string) ir.Ptr {
 	return fl.entry.Ptr.Alloc(uint64(size), uint64(align)).Named(name)
 }
 
+// allocVar is alloc for a declared object, whose alignas -- its own,
+// beyond its type's -- the slot has to honour.
+func (fl *fn) allocVar(sym *sema.VarSymbol) ir.Ptr {
+	size, align := fl.u.sizeAlign(sym.SymType)
+	if sym.Align > align {
+		align = sym.Align
+	}
+	return fl.entry.Ptr.Alloc(uint64(size), uint64(align)).Named(sym.SymName)
+}
+
 // block starts a fresh block and makes it current.
 func (fl *fn) block(name string) *ir.Block {
 	fl.nblocks++
