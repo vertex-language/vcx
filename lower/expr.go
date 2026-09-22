@@ -1612,6 +1612,13 @@ func (fl *fn) typeTrait(e *ast.TypeTraitExpr) ir.Value {
 // the constant sema folded it to. An instance that is not a constant --
 // a mutable one, or one of class type -- has no object to load yet.
 func (fl *fn) templateId(e *ast.TemplateName) ir.Value {
+	if f, known := fl.u.res.Info.FloatConsts[e]; known {
+		// A floating instance: `pi<double>`.
+		if fl.u.regType(fl.typeOf(e)) == ir.TypeF32 {
+			return fl.blk.F32.Const(f)
+		}
+		return fl.blk.F64.Const(f)
+	}
 	n, known := fl.u.res.Info.Consts[e]
 	if !known {
 		fl.u.errorf(e.Pos(), "lowering does not handle a variable template instance that is not a constant yet")

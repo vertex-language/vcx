@@ -115,6 +115,10 @@ type Info struct {
 	// Consts records evaluated constant values of expressions.
 	Consts map[ast.Expr]int64
 
+	// FloatConsts is the same for the ones whose value is not an integer:
+	// `template <class T> constexpr T pi = ...` read as pi<double>.
+	FloatConsts map[ast.Expr]float64
+
 	// Defs maps AST declaration nodes to the symbols they introduce.
 	Defs map[ast.Node]Symbol
 }
@@ -146,6 +150,7 @@ func newInfo() *Info {
 		Ranges:         map[*ast.RangeForStmt]*RangeProtocol{},
 		TypeIds:        map[*ast.TypeId]types.Type{},
 		Consts:         map[ast.Expr]int64{},
+		FloatConsts:    map[ast.Expr]float64{},
 	}
 }
 

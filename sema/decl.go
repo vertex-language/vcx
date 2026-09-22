@@ -629,6 +629,30 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			}
 		}
 
+		// [basic.scope.pdecl]/1: a variable's name is in scope from the end
+		// of its declarator, so its own initializer can name it. A
+		// recursive variable template needs that -- `squares<N> = N * N +
+		// squares<N - 1>` names itself -- and the name is not there yet,
+		// because the symbol is built below from what the initializer
+		// says. A non-defining declaration goes in first and the real one
+		// completes it (see Scope.insert).
+		if name != "" && a.templateOwner == d && a.curTemplateParams != nil && !a.instantiating &&
+			(init.Value != nil || init.Braced != nil) && !mentionsAuto(fullType) {
+			declared := fullType
+			if declInfo.Constexpr && declared != nil && !types.IsReference(declared) && !isDependentType(declared) {
+				declared = constObject(declared)
+			}
+			a.declScope().Insert(&VarSymbol{
+				SymName:   name,
+				SymType:   declared,
+				SymPos:    init.Pos(),
+				SymScope:  a.curScope,
+				Storage:   declInfo.Storage,
+				Constexpr: declInfo.Constexpr,
+				Template:  &VarTemplate{Params: a.curTemplateParams, Decl: d, Scope: a.curScope},
+			})
+		}
+
 		if init.Braced != nil {
 			// List-initialization.
 			if rec := types.AsRecord(types.Unqualify(fullType)); rec == nil || !hasUserConstructor(rec) {

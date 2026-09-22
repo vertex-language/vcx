@@ -2111,6 +2111,10 @@ func (a *Analyzer) foldConstant(e ast.Expr, info ExprInfo, sym Symbol) ExprInfo 
 		}
 		a.noteConst(e, n)
 		info.IsConst, info.ConstVal = true, n
+	case constexpr.FloatValue:
+		if a.info != nil && a.inRequires == 0 {
+			a.info.FloatConsts[e] = val.Val
+		}
 	}
 	return info
 }
