@@ -312,6 +312,10 @@ func (fl *fn) declareStaticLocal(init *ast.InitDeclarator, sym *sema.VarSymbol) 
 	fl.blk = initBlk
 	fl.blk.I32.Store8(fl.blk.I32.Const(1), gp)
 	fl.initializeObject(obj, sym, init)
+	// [stmt.dcl]/4: destroyed at exit, in the reverse of the order the
+	// initializations completed -- so registered here, inside the guard,
+	// where the object has just been built and only once.
+	fl.registerStaticDtor(obj, sym.SymType)
 	if fl.blk != nil {
 		fl.blk.Br(join.To())
 	}

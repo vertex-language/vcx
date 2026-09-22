@@ -136,6 +136,10 @@ type unit struct {
 	ntypes      int
 	srets       map[*sema.FuncSymbol]ir.Ptr
 
+	// atexitFn and dso register static objects' destructors (itanium.go).
+	atexitFn ir.Callee
+	dso      ir.Symbol
+
 	// dynCast and badCast are the Itanium runtime's cast helpers,
 	// imported on first use (see itanium.go).
 	dynCast ir.Callee

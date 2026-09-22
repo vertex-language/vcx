@@ -70,6 +70,38 @@ func (u *unit) noteDynamicInit(v *sema.VarSymbol, g *ir.Global) {
 	}
 }
 
+// initGlobal runs one namespace-scope object's dynamic initializer.
+func (fl *fn) initGlobal(obj ir.Ptr, di dynamicInit) {
+	u := fl.u
+	if ctor := u.res.Info.Ctors[di.decl]; ctor != nil {
+		fl.construct(obj, classOf(di.sym.SymType), ctor, di.decl)
+		return
+	}
+	if di.decl.Braced != nil {
+		fl.initList(obj, di.sym.SymType, di.decl.Braced)
+		fl.endFullExpr()
+		return
+	}
+	if rec := classOf(di.sym.SymType); rec != nil {
+		if di.decl.Value != nil {
+			fl.exprInto(obj, di.decl.Value, rec)
+		} else {
+			fl.defaultConstruct(obj, rec, di.decl.Pos())
+		}
+		fl.endFullExpr()
+		return
+	}
+	if arr, isArr := types.Unqualify(di.sym.SymType).(*types.Array); isArr && di.decl.Value != nil {
+		if lit, isLit := unparen(di.decl.Value).(*ast.StringLit); isLit {
+			fl.initArrayFromString(obj, arr, lit)
+			return
+		}
+	}
+	if v := fl.expr(di.sym.Init); v != nil {
+		fl.store(obj, fl.convert(v, fl.typeOf(di.sym.Init), di.sym.SymType), di.sym.SymType)
+	}
+}
+
 // declOf is the declarator a namespace-scope variable was defined by.
 func (u *unit) declOf(v *sema.VarSymbol) *ast.InitDeclarator {
 	if u.declsOf == nil {
@@ -114,33 +146,10 @@ func (u *unit) defineInitializer() {
 
 	for _, di := range inits {
 		obj := fl.blk.Ptr.GetAddr(di.g)
-		if ctor := u.res.Info.Ctors[di.decl]; ctor != nil {
-			fl.construct(obj, classOf(di.sym.SymType), ctor, di.decl)
-			continue
-		}
-		if di.decl.Braced != nil {
-			fl.initList(obj, di.sym.SymType, di.decl.Braced)
-			fl.endFullExpr()
-			continue
-		}
-		if rec := classOf(di.sym.SymType); rec != nil {
-			if di.decl.Value != nil {
-				fl.exprInto(obj, di.decl.Value, rec)
-			} else {
-				fl.defaultConstruct(obj, rec, di.decl.Pos())
-			}
-			fl.endFullExpr()
-			continue
-		}
-		if arr, isArr := types.Unqualify(di.sym.SymType).(*types.Array); isArr && di.decl.Value != nil {
-			if lit, isLit := unparen(di.decl.Value).(*ast.StringLit); isLit {
-				fl.initArrayFromString(obj, arr, lit)
-				continue
-			}
-		}
-		if v := fl.expr(di.sym.Init); v != nil {
-			fl.store(obj, fl.convert(v, fl.typeOf(di.sym.Init), di.sym.SymType), di.sym.SymType)
-		}
+		fl.initGlobal(obj, di)
+		// Destroyed at exit, registered after it is built so that the
+		// runtime's reverse order is the reverse of construction.
+		fl.registerStaticDtor(obj, di.sym.SymType)
 	}
 	if fl.blk != nil {
 		fl.blk.Return()

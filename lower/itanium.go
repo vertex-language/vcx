@@ -534,3 +534,51 @@ func (fl *fn) dynamicCastBody(src ir.Ptr, srcClass, dstClass *types.Record, toVo
 	fl.blk = ok
 	return out
 }
+
+// cxaAtexit is the Itanium runtime's registration of a static object's
+// destructor:
+//
+//	int __cxa_atexit(void (*f)(void*), void* p, void* dso);
+//
+// The runtime runs what is registered in reverse, interleaved with the
+// plain atexit handlers, which is the order [basic.start.term]/4 asks for:
+// one list, walked backwards.
+func (u *unit) cxaAtexit() ir.Callee {
+	if u.atexitFn == nil {
+		sig := ir.NewSig().Param(ir.TypePtr).Param(ir.TypePtr).Param(ir.TypePtr).Ret(ir.TypeI32)
+		u.atexitFn = u.mod.ImportFunc(u.symbolName("__cxa_atexit"), sig)
+	}
+	return u.atexitFn
+}
+
+// dsoHandle identifies this image, which __cxa_atexit records so that
+// unloading a library runs that library's registrations and no others.
+func (u *unit) dsoHandle() ir.Symbol {
+	if u.dso == nil {
+		u.dso = u.mod.ImportGlobal(u.symbolName("__dso_handle"), ir.StorePtr.FType())
+	}
+	return u.dso
+}
+
+// registerStaticDtor arranges for a static-duration object's destructor to
+// run at exit, after the constructor that built it: without this a global
+// or a function-local static with a destructor is never destroyed.
+//
+// An array of such objects wants a helper that walks it in reverse, which
+// is not written yet; an array is left unregistered rather than registered
+// with a function that would destroy only its first element.
+func (fl *fn) registerStaticDtor(obj ir.Ptr, t types.Type) {
+	if fl.blk == nil || !fl.u.model.ABI.IsItanium() {
+		return
+	}
+	rec := classOf(t)
+	if rec == nil || !fl.u.needsDestructor(rec) {
+		return
+	}
+	dtor := fl.u.destructor(rec)
+	if dtor == nil {
+		return
+	}
+	b := fl.blk
+	b.Call(fl.u.cxaAtexit(), b.Ptr.GetAddr(dtor), obj, b.Ptr.GetAddr(fl.u.dsoHandle()))
+}
