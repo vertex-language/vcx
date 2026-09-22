@@ -617,6 +617,18 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			continue
 		}
 
+		// [dcl.type.class.deduct]: a declaration that names a class
+		// template without arguments takes them from its initializer.
+		// `Wrapper w(2.5)` is a Wrapper<double>, and the deduction has to
+		// happen before anything else reads the type -- the list check
+		// below, the constructor resolved further down, and the symbol
+		// the declaration introduces all want the specialization.
+		if rec := types.AsRecord(types.Unqualify(fullType)); rec != nil && a.isClassTemplatePrimary(rec) && !a.dependentContext() {
+			if t := a.deduceDeclaredClass(rec, init); t != nil {
+				fullType = types.Qualify(t, types.QualsOf(fullType))
+			}
+		}
+
 		if init.Braced != nil {
 			// List-initialization.
 			if rec := types.AsRecord(types.Unqualify(fullType)); rec == nil || !hasUserConstructor(rec) {
@@ -1859,6 +1871,38 @@ func (a *Analyzer) explicitness(declInfo DeclSpecInfo) bool {
 	}
 	n, err := a.NewConstContext().EvalInt(declInfo.ExplicitCond)
 	return err == nil && n != 0
+}
+
+// deduceDeclaredClass is the specialization a declaration's initializer
+// deduces for a class template named without arguments, or nil where it
+// deduces none.
+func (a *Analyzer) deduceDeclaredClass(primary *types.Record, init *ast.InitDeclarator) types.Type {
+	var exprs []ast.Expr
+	switch {
+	case len(init.Args) > 0:
+		exprs = init.Args
+	case init.Braced != nil:
+		for _, item := range init.Braced.Items {
+			e, isExpr := item.(ast.Expr)
+			if !isExpr {
+				return nil
+			}
+			exprs = append(exprs, e)
+		}
+	case init.Value != nil:
+		exprs = []ast.Expr{init.Value}
+	default:
+		return nil
+	}
+	args := make([]Argument, 0, len(exprs))
+	for _, e := range exprs {
+		info := a.CheckExpr(e)
+		if isDependentExpr(info) {
+			return nil
+		}
+		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
+	}
+	return a.deduceClassTemplateArgs(a.curScope.recordSymbol(primary), args, init.Pos())
 }
 
 // checkDelegatingInit resolves a mem-initializer that names the constructor's

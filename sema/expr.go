@@ -3199,6 +3199,15 @@ func (a *Analyzer) deduceClassTemplateArgs(rs *RecordSymbol, args []Argument, at
 		return nil
 	}
 	info := rs.ClassTemplate
+	// [over.match.class.deduct]/1: the copy deduction candidate, W(W<T>)
+	// -> W<T>. Without it `W d = W(1.5)` deduces T from the constructor
+	// against a W<double> argument and comes out a W<W<double>>.
+	if len(args) == 1 {
+		if rec := types.AsRecord(types.Unqualify(types.RemoveReference(args[0].Type))); rec != nil &&
+			rec.TemplateArgs != nil && primaryOf(rec) == rs.Record {
+			return rec
+		}
+	}
 	for _, g := range info.Guides {
 		sig, b, ok := specializeNamed(g.Func, templateParamSymbolNames(g.Params), nil, args)
 		if !ok || !argumentsConvert(sig, args) {
