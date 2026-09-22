@@ -361,10 +361,36 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 			a.CheckStmt(s.Body)
 		}
 		for _, h := range s.Handlers {
-			if h.Body != nil {
-				a.CheckStmt(h.Body)
-			}
+			a.checkCatch(h)
 		}
+	}
+}
+
+// checkCatch checks one handler with its parameter in scope. The
+// exception the handler names is an object of that handler's own, and is
+// declared nowhere else ([except.handle]/2).
+func (a *Analyzer) checkCatch(h *ast.CatchClause) {
+	saved := a.curScope
+	a.curScope = NewScope(saved, BlockScope, nil)
+	defer func() { a.curScope = saved }()
+
+	if p := h.Param; p != nil && p.Decl != nil {
+		info := BuildDeclSpecs(p.Specs, a.curScope, a.unit)
+		t := BuildDeclarator(p.Decl, info.Type, a.curScope, a.unit)
+		if name := NameString(p.Decl.DeclName(), a.unit); name != "" && t != nil {
+			sym := &VarSymbol{
+				SymName:  name,
+				SymType:  t,
+				SymPos:   h.Pos(),
+				SymScope: a.curScope,
+				Defined:  true,
+			}
+			a.curScope.Insert(sym)
+			a.recordDef(p, sym)
+		}
+	}
+	if h.Body != nil {
+		a.CheckStmt(h.Body)
 	}
 }
 

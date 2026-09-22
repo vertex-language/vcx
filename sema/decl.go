@@ -1358,6 +1358,17 @@ func (a *Analyzer) checkFuncDecl(d *ast.FuncDecl) {
 		Defaults:  extractDefaults(d.Decl),
 	}
 	fnSym.Explicit = a.explicitness(declInfo)
+	// A conditional noexcept -- `noexcept(sizeof(T) < 4)` -- is noexcept
+	// only where the condition holds, and inside a template that is
+	// decided once per instantiation. The type builder has no evaluator
+	// and reads any specifier as noexcept, so the condition is settled
+	// here, where there is one.
+	if fd := funcDeclaratorOf(d.Decl); fd != nil && fd.Noexcept != nil && fd.Noexcept.Cond != nil &&
+		fnSym.FuncType != nil && !a.dependentContext() {
+		if n, err := a.NewConstContext().EvalInt(fd.Noexcept.Cond); err == nil {
+			fnSym.FuncType.Noexcept = n != 0
+		}
+	}
 	a.checkParamDefaults(funcDeclaratorOf(d.Decl), nil)
 	fnSym.Constraints = a.constraintsOf(d, d.Decl)
 	fnSym.ConstraintScope = a.curScope

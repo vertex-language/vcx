@@ -125,6 +125,14 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 	case *ast.FunctionalCastExpr:
 		return fl.functionalCast(e)
 
+	case *ast.NoexceptExpr:
+		// A constant the analysis decided; the operand is unevaluated.
+		if n, known := fl.u.res.Info.Consts[e]; known {
+			return fl.blk.I32.Const(n)
+		}
+		fl.u.errorf(e.Pos(), "lowering has no value for noexcept")
+		return nil
+
 	case *ast.SizeofExpr, *ast.AlignofExpr:
 		// sizeof and alignof constants.
 		return fl.sizeofExpr(e)

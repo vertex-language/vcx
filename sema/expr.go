@@ -276,6 +276,22 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		a.CheckExpr(e.X)
 		return ExprInfo{Type: a.noteTypeId(e.Type), ValCat: PrValue}
 
+	case *ast.NoexceptExpr:
+		// [expr.unary.noexcept]: whether the operand could throw. The
+		// operand is checked -- which is what resolves the calls the
+		// answer is read off -- but it is an unevaluated operand, and
+		// has to be checked as one: libc++'s declval refuses to be
+		// instantiated anywhere else.
+		a.unevaluated++
+		a.CheckExpr(e.X)
+		a.unevaluated--
+		n := int64(0)
+		if a.isNoexcept(e.X) {
+			n = 1
+		}
+		a.noteConst(e, n)
+		return ExprInfo{Type: types.Typ(types.Bool), ValCat: PrValue, IsConst: true, ConstVal: n}
+
 	case *ast.TypeidExpr:
 		// [expr.typeid]/1: an lvalue of type const std::type_info.
 		if e.Type != nil {
