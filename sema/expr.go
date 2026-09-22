@@ -126,6 +126,16 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		}
 		v, err := a.expandFold(a.NewConstContext(), e)
 		if err != nil {
+			// Not a constant: a fold over values is ordinary code, and
+			// `(v * ... * 1)` multiplies the arguments it was given.
+			// Written out, it is the expression it always stood for.
+			if tree, ok := a.expandFoldExpr(e); ok {
+				info := a.CheckExpr(tree)
+				if a.info != nil {
+					a.info.Rewrites[e] = tree
+				}
+				return info
+			}
 			a.errorAt(e.Pos(), fmt.Sprintf("fold expression is not a constant expression: %v", err))
 			return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
 		}
@@ -2210,6 +2220,84 @@ func dedupeInstances(viable []*FuncSymbol, templateOf map[*FuncSymbol]*FuncSymbo
 		}
 	}
 	return out
+}
+
+// expandFoldExpr writes a fold out as the expression it stands for: the
+// pattern once per element of the pack, combined with the operator, and
+// the initial value at the end the ellipsis leans away from.
+//
+// A unary fold over an empty pack is only well-formed for &&, || and the
+// comma, whose identities are true, false and void ([temp.variadic]/10).
+func (a *Analyzer) expandFoldExpr(f *ast.FoldExpr) (ast.Expr, bool) {
+	pattern, init := f.Left, f.Right
+	leftFold := false
+	if pattern == nil || !a.mentionsPack(pattern) {
+		pattern, init = f.Right, f.Left
+		leftFold = true
+	}
+	if pattern == nil || !a.mentionsPack(pattern) {
+		return nil, false
+	}
+	if f.Left != nil && f.Right != nil {
+		// A binary fold: the init sits on the side the ellipsis leans
+		// away from, and the combining runs from the init outwards.
+		leftFold = init == f.Left
+	}
+	elems, ok := a.expandOne(&ast.PackExpansion{Span: f.Span, X: pattern, Ellipsis: f.Ellipsis})
+	if !ok {
+		return nil, false
+	}
+
+	seq := elems
+	if init != nil {
+		if leftFold {
+			seq = append([]ast.Expr{init}, elems...)
+		} else {
+			seq = append(append([]ast.Expr{}, elems...), init)
+		}
+	}
+	if len(seq) == 0 {
+		return a.emptyFoldValue(f)
+	}
+
+	join := func(x, y ast.Expr) ast.Expr {
+		return &ast.BinaryExpr{
+			Span:  ast.Span{Lo: x.Pos(), Hi: y.End()},
+			X:     x,
+			OpPos: f.OpPos,
+			Op:    f.Op,
+			Y:     y,
+		}
+	}
+	if leftFold {
+		out := seq[0]
+		for _, next := range seq[1:] {
+			out = join(out, next)
+		}
+		return out, true
+	}
+	out := seq[len(seq)-1]
+	for i := len(seq) - 2; i >= 0; i-- {
+		out = join(seq[i], out)
+	}
+	return out, true
+}
+
+// emptyFoldValue is what a unary fold over an empty pack comes to.
+func (a *Analyzer) emptyFoldValue(f *ast.FoldExpr) (ast.Expr, bool) {
+	switch f.Op {
+	case token.LAND:
+		return &ast.BasicLit{Span: f.Span, Kind: token.TRUE, Text: "true"}, true
+	case token.LOR:
+		return &ast.BasicLit{Span: f.Span, Kind: token.FALSE, Text: "false"}, true
+	}
+	return nil, false
+}
+
+// mentionsPack reports whether an expression names a parameter pack, of
+// types or of values.
+func (a *Analyzer) mentionsPack(e ast.Expr) bool {
+	return len(a.packsIn(e)) > 0 || len(a.valuePacksIn(e)) > 0
 }
 
 // canonicalFunc is the declaration a candidate stands for. Lookup clones a
