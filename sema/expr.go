@@ -2176,6 +2176,42 @@ func (a *Analyzer) resolveAmong(candidates []*FuncSymbol, explicit []types.Type,
 }
 
 // resolveAmongOn performs overload resolution including member function candidates.
+// dedupeInstances keeps one candidate per template and signature. A
+// candidate's origin is the template it was specialized from -- the entry
+// templateOf holds for a signature specialized here, or TemplateOf for a
+// symbol an earlier instantiation registered. A real instance wins over a
+// pattern specialized on the spot.
+func dedupeInstances(viable []*FuncSymbol, templateOf map[*FuncSymbol]*FuncSymbol) []*FuncSymbol {
+	type key struct {
+		origin *FuncSymbol
+		sig    string
+	}
+	best := map[key]int{}
+	out := viable[:0:0]
+	for _, v := range viable {
+		origin := templateOf[v]
+		if origin == nil {
+			origin = v.TemplateOf
+		}
+		if origin == nil {
+			out = append(out, v)
+			continue
+		}
+		k := key{origin, v.FuncType.String()}
+		at, seen := best[k]
+		if !seen {
+			best[k] = len(out)
+			out = append(out, v)
+			continue
+		}
+		// Prefer the instance a previous instantiation registered.
+		if templateOf[v] == nil && v.TemplateOf != nil {
+			out[at] = v
+		}
+	}
+	return out
+}
+
 // canonicalFunc is the declaration a candidate stands for. Lookup clones a
 // symbol to record which class a using-declaration brought it into; that
 // clone ranks, but the function called and defined is the original.
@@ -2272,6 +2308,14 @@ func (a *Analyzer) resolveAmongOn(candidates []*FuncSymbol, object *Argument, ex
 		}
 		return nil, fmt.Errorf("no candidate matches: template argument deduction failed for every one")
 	}
+
+	// One function reached twice: a template, and an instance of it that
+	// lookup found beside it once something had instantiated it. The
+	// template specializes to that same signature, so the two can only
+	// tie -- and a tie is reported as an ambiguity. The instance is the
+	// one kept: it is a function with a body, where the template is a
+	// pattern still waiting to be given one.
+	viable = dedupeInstances(viable, templateOf)
 
 	// Constraint checking and ordering.
 	viable = a.satisfiedOnly(viable, instanceArgs, templateOf)
@@ -2503,6 +2547,20 @@ func (a *Analyzer) moreConstrained(viable []*FuncSymbol, object *Argument, args 
 
 // expandPackArgs expands pack expansion expressions in an argument list.
 func (a *Analyzer) expandPackArgs(args []ast.Expr) []ast.Expr {
+	// `sum(r...)`: a name followed by an ellipsis is read as a name while
+	// the argument is parsed, because a declaration spells its pack that
+	// way too. In an expression it is a pack expansion, and expands like
+	// one -- so it is made into one here, once, where both the analysis
+	// and lowering see it.
+	for i, arg := range args {
+		pn, isPackName := arg.(*ast.PackName)
+		if !isPackName {
+			continue
+		}
+		if inner, isExpr := pn.Name.(ast.Expr); isExpr {
+			args[i] = &ast.PackExpansion{Span: pn.Span, X: inner, Ellipsis: pn.Ellipsis}
+		}
+	}
 	expanded := false
 	for _, arg := range args {
 		if _, isPack := arg.(*ast.PackExpansion); isPack {
