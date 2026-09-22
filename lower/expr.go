@@ -246,6 +246,11 @@ func (fl *fn) lvalue(e ast.Expr) (ir.Ptr, types.Type, bool) {
 		}
 		// Inside a member function, a non-static member implicitly accesses (*this).name.
 		if fl.hasThis && fl.sym.InClass != nil {
+			if _, _, ok := fl.u.fieldOffset(fl.sym.InClass, v.SymName); !ok {
+				if at, t, found := fl.virtualBaseMember(fl.this, fl.sym.InClass, v.SymName); found {
+					return fl.throughRef(at, t)
+				}
+			}
 			if off, t, ok := fl.u.fieldOffset(fl.sym.InClass, v.SymName); ok {
 				base := fl.this
 				if off != 0 {
@@ -402,6 +407,9 @@ func (fl *fn) memberAddr(e *ast.MemberExpr) (ir.Ptr, types.Type, bool) {
 	name := sema.NameString(e.Sel, fl.u.unit)
 	off, field, ok := fl.u.fieldOffset(rec, name)
 	if !ok {
+		if at, t, found := fl.virtualBaseMember(base, rec, name); found {
+			return fl.throughRef(at, t)
+		}
 		if v, isVar := fl.u.res.Info.Uses[e.Sel].(*sema.VarSymbol); isVar && v.InClass != nil {
 			if g, known := fl.u.globalFor(v); known {
 				return fl.throughRef(fl.blk.Ptr.GetAddr(g), v.SymType)

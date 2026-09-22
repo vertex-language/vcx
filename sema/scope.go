@@ -337,14 +337,44 @@ func (s *Scope) insert(sym Symbol) (Symbol, error) {
 }
 
 // LookupLocal searches for a name only in this exact scope (ignoring parent and using directives).
+//
+// A using-declaration's symbols join what the scope declares under the same
+// name rather than being shadowed by it: `using Base::f` beside a derived
+// `f` makes one overload set of both ([namespace.udecl]/13). The exception
+// is a function the scope declares with the same parameters, which hides
+// the one brought in instead of colliding with it ([namespace.udecl]/14).
 func (s *Scope) LookupLocal(name string) []Symbol {
-	if syms, ok := s.Symbols[name]; ok {
+	syms := s.Symbols[name]
+	using := s.UsingDecls[name]
+	switch {
+	case len(using) == 0:
 		return syms
+	case len(syms) == 0:
+		return using
 	}
-	if syms, ok := s.UsingDecls[name]; ok {
-		return syms
+	out := make([]Symbol, 0, len(syms)+len(using))
+	out = append(out, syms...)
+	for _, u := range using {
+		if !hiddenByLocal(u, syms) {
+			out = append(out, u)
+		}
 	}
-	return nil
+	return out
+}
+
+// hiddenByLocal reports whether a using-declared symbol is a function the
+// scope already declares with the same parameters.
+func hiddenByLocal(brought Symbol, declared []Symbol) bool {
+	fn, isFn := brought.(*FuncSymbol)
+	if !isFn {
+		return false
+	}
+	for _, d := range declared {
+		if df, ok := d.(*FuncSymbol); ok && types.SameSignature(df.FuncType, fn.FuncType) {
+			return true
+		}
+	}
+	return false
 }
 
 // AddUsingNamespace imports symbols from ns into unqualified lookups in this scope.

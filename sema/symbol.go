@@ -128,6 +128,21 @@ type FuncSymbol struct {
 	Friend    bool
 	InClass   *types.Record
 
+	// ObjectClass is the class a using-declaration made this a member of.
+	// [over.match.funcs]/4: a base's function brought into a derived class
+	// takes an implicit object parameter of the derived class, so that it
+	// ranks against the derived class's own overloads on equal footing --
+	// without it `using B::f` beside a derived f(int) makes every call
+	// ambiguous, each candidate winning on a different parameter. The
+	// function called is still InClass's.
+	ObjectClass *types.Record
+
+	// UsingOf is the declaration a lookup-time clone stands for. Only
+	// lookup makes such a clone, to carry ObjectClass; it is not a
+	// function of its own, and lowering keys definitions by identity, so
+	// resolution hands back the original (see canonicalFunc).
+	UsingOf *FuncSymbol
+
 	// Access is the member's access when InClass is set.
 	Access types.Access
 

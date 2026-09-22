@@ -37,7 +37,7 @@ func LookupUnqualified(scope *Scope, name string) []Symbol {
 				if rs := injectedBaseName(cur, r, name, map[*types.Record]bool{}); rs != nil {
 					return found([]Symbol{rs})
 				}
-				if syms := lookupRecordMember(r, name, make(map[*types.Record]bool)); len(syms) > 0 {
+				if syms := lookupRecordMember(r, name, make(map[*types.Record]bool), cur); len(syms) > 0 {
 					return found(syms)
 				}
 				// A base's nested types, aliases and static members live in
@@ -92,7 +92,7 @@ func LookupQualified(target any, name string) []Symbol {
 		}
 		if t.Kind == ClassScope {
 			if r, ok := t.Entity.(*types.Record); ok {
-				return lookupRecordMember(r, name, make(map[*types.Record]bool))
+				return lookupRecordMember(r, name, make(map[*types.Record]bool), t)
 			}
 		}
 		if t.Kind == NamespaceScope || t.Parent == nil {
@@ -122,10 +122,10 @@ func LookupQualified(target any, name string) []Symbol {
 				return syms
 			}
 		}
-		return lookupRecordMember(t.Record, name, make(map[*types.Record]bool))
+		return lookupRecordMember(t.Record, name, make(map[*types.Record]bool), t.ClassScope)
 
 	case *types.Record:
-		return lookupRecordMember(t, name, make(map[*types.Record]bool))
+		return lookupRecordMember(t, name, make(map[*types.Record]bool), nil)
 
 	case *EnumSymbol:
 		return lookupEnumMember(t.Enum, name)
@@ -279,7 +279,14 @@ func lookupEnumMember(e *types.Enum, name string) []Symbol {
 	return nil
 }
 
-func lookupRecordMember(r *types.Record, name string, visited map[*types.Record]bool) []Symbol {
+// lookupRecordMember finds a name in a class and, failing that, its bases.
+//
+// from is any scope of the analysis, used to reach the class's own scope --
+// where a using-declaration's symbols are kept. They belong to the overload
+// set the class declares ([namespace.udecl]/13), so `using Base::f` beside
+// a derived f makes one set of both, and without them the derived f hides
+// every base overload of the name.
+func lookupRecordMember(r *types.Record, name string, visited map[*types.Record]bool, from *Scope) []Symbol {
 	if r == nil || visited[r] {
 		return nil
 	}
@@ -323,14 +330,34 @@ func lookupRecordMember(r *types.Record, name string, visited map[*types.Record]
 		}
 	}
 
+	// 3. Names a using-declaration brought into the class, which join the
+	// ones it declares rather than being hidden by them.
+	if from != nil {
+		if rs := from.recordSymbol(r); rs != nil && rs.ClassScope != nil {
+			for _, u := range rs.ClassScope.UsingDecls[name] {
+				if hiddenByLocal(u, results) {
+					continue
+				}
+				if fn, isFn := u.(*FuncSymbol); isFn && fn.InClass != nil && fn.InClass != r {
+					// Ranked as a member of the class that brought it in.
+					sub := *fn
+					sub.ObjectClass = r
+					sub.UsingOf = fn
+					u = &sub
+				}
+				results = append(results, u)
+			}
+		}
+	}
+
 	if len(results) > 0 {
 		return results
 	}
 
-	// 3. Base classes
+	// 4. Base classes
 	for _, b := range r.Bases {
 		if bRec, ok := types.Unqualify(b.Type).(*types.Record); ok {
-			baseSyms := lookupRecordMember(bRec, name, visited)
+			baseSyms := lookupRecordMember(bRec, name, visited, from)
 			results = append(results, baseSyms...)
 		}
 	}

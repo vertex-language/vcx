@@ -405,3 +405,51 @@ func isVirtualMember(fn *sema.FuncSymbol) bool {
 	}
 	return false
 }
+
+// virtualBaseMember is the address of a member a class reaches only through
+// a virtual base, with the type it has there.
+//
+// How far a virtual base sits from the subobject that shares it is not
+// known while lowering: it depends on the most derived class, which a
+// base's own code cannot see. Itanium keeps that distance in the table, one
+// vbase_offset per virtual base in front of the address point, so the
+// object itself answers -- the same code serves a Left standing alone and a
+// Left inside a Diamond.
+func (fl *fn) virtualBaseMember(obj ir.Ptr, rec *types.Record, name string) (ir.Ptr, types.Type, bool) {
+	if rec == nil || fl.blk == nil || !fl.u.model.ABI.IsItanium() {
+		return ir.Ptr{}, nil, false
+	}
+	for _, vb := range types.VirtualBases(rec) {
+		off, field, ok := fl.u.fieldOffset(vb, name)
+		if !ok {
+			continue
+		}
+		idx, known := types.VBaseIndex(rec, vb)
+		if !known {
+			continue
+		}
+		at, ok := fl.virtualBaseAddr(obj, idx)
+		if !ok {
+			continue
+		}
+		if off != 0 {
+			at = fl.blk.Ptr.Add(at, fl.blk.I64.Const(off))
+		}
+		return at, field, true
+	}
+	return ir.Ptr{}, nil, false
+}
+
+// virtualBaseAddr is the address of the idx'th virtual base of the object
+// at obj, read from the vbase_offset the object's table carries. The
+// entries sit in front of the address point, after the offset-to-top and
+// the type-info: entry 0 is three pointers back, entry k one further.
+func (fl *fn) virtualBaseAddr(obj ir.Ptr, idx int) (ir.Ptr, bool) {
+	b := fl.blk
+	if b == nil {
+		return ir.Ptr{}, false
+	}
+	vptr := b.Ptr.Load(obj)
+	slot := b.Ptr.Add(vptr, b.I64.Const(-(int64(idx)+3)*fl.u.model.SizePtr))
+	return b.Ptr.Add(obj, b.I64.Load(slot)), true
+}

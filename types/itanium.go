@@ -719,3 +719,19 @@ func (m Model) primaryHolderOffset(r, vb *Record, info recordInfo) (int64, bool)
 	walk(r, 0, info)
 	return found, ok
 }
+
+// VBaseIndex is where a virtual base's offset sits among the vbase_offset
+// entries in front of a class's table: entry 0 is the one nearest the
+// address point, and entry k is k pointers further in front of it. It
+// reports false for a class that does not reach vb virtually.
+//
+// The order is the one the tables are built in (see primaryAndSecondary),
+// so that a subobject's own table answers for the class it serves.
+func VBaseIndex(r, vb *Record) (int, bool) {
+	for i, b := range itaniumVBases(r) {
+		if b == vb {
+			return i, true
+		}
+	}
+	return 0, false
+}

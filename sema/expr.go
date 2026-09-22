@@ -1142,12 +1142,21 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 				}
 				memberName = NameString(qn.Name, a.unit)
 			}
-			syms := lookupRecordMember(rec, memberName, make(map[*types.Record]bool))
+			syms := lookupRecordMember(rec, memberName, make(map[*types.Record]bool), a.curScope)
 			for _, s := range syms {
 				if fn, isFn := s.(*FuncSymbol); isFn {
 					if reg := a.methodSyms[fn.Method]; reg != nil {
 						if reg.TemplateOf != nil {
 							continue
+						}
+						if fn.ObjectClass != nil && reg.ObjectClass != fn.ObjectClass {
+							// The registered symbol carries the member's
+							// full declaration; keep which class brought
+							// it in, which only lookup knows.
+							sub := *reg
+							sub.ObjectClass = fn.ObjectClass
+							sub.UsingOf = reg
+							reg = &sub
 						}
 						fn = reg
 					}
@@ -1163,6 +1172,7 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 			a.errorAt(c.Pos(), err.Error())
 			return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
 		}
+		resolved = canonicalFunc(resolved)
 		a.ensureInstantiated(resolved)
 		if mentionsAuto(resolved.FuncType.Ret) {
 			a.deduceMemberReturn(resolved)
@@ -1397,7 +1407,7 @@ func (a *Analyzer) checkMemberExpr(m *ast.MemberExpr) ExprInfo {
 	}
 
 	memberName := NameString(m.Sel, a.unit)
-	syms := lookupRecordMember(rec, memberName, make(map[*types.Record]bool))
+	syms := lookupRecordMember(rec, memberName, make(map[*types.Record]bool), a.curScope)
 	if len(syms) == 0 {
 		if rs := a.curScope.recordSymbol(rec); rs != nil {
 			syms = LookupQualified(rs, memberName)
@@ -1869,7 +1879,7 @@ func (a *Analyzer) memberRef(qn *ast.QualifiedName) *MemberRef {
 		return nil
 	}
 	name := NameString(qn.Name, a.unit)
-	for _, sym := range lookupRecordMember(rec, name, make(map[*types.Record]bool)) {
+	for _, sym := range lookupRecordMember(rec, name, make(map[*types.Record]bool), a.curScope) {
 		switch s := sym.(type) {
 		case *VarSymbol:
 			if s.InClass != nil || s.Storage == StorageStatic {
@@ -2135,6 +2145,16 @@ func (a *Analyzer) resolveAmong(candidates []*FuncSymbol, explicit []types.Type,
 }
 
 // resolveAmongOn performs overload resolution including member function candidates.
+// canonicalFunc is the declaration a candidate stands for. Lookup clones a
+// symbol to record which class a using-declaration brought it into; that
+// clone ranks, but the function called and defined is the original.
+func canonicalFunc(fn *FuncSymbol) *FuncSymbol {
+	for fn != nil && fn.UsingOf != nil {
+		fn = fn.UsingOf
+	}
+	return fn
+}
+
 func (a *Analyzer) resolveAmongOn(candidates []*FuncSymbol, object *Argument, explicit []types.Type, args []Argument, at ast.Tok) (*FuncSymbol, error) {
 	instanceArgs := make(map[*FuncSymbol][]types.TemplateArg)
 	templateOf := make(map[*FuncSymbol]*FuncSymbol)

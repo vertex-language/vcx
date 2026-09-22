@@ -379,13 +379,21 @@ func implicitObjectConversion(fn *FuncSymbol, object Argument) (ConversionSequen
 	// a template's as written, still spelled `X<T>` -- has no
 	// conversion to rank; the cv-qualifiers still decide.
 	rec := types.AsRecord(types.Unqualify(object.Type))
-	if rec == nil || rec != fn.InClass && !types.IsBaseOf(fn.InClass, rec) {
+	owner := fn.InClass
+	if fn.ObjectClass != nil {
+		owner = fn.ObjectClass
+	}
+	if rec == nil || rec != owner && !types.IsBaseOf(owner, rec) {
 		if types.IsConst(object.Type) && fn.FuncType.Quals&types.QConst == 0 && fn.FuncType.RefQual != types.RefQualRValue {
 			return ConversionSequence{}, false
 		}
 		return ConversionSequence{From: object.Type, To: object.Type, Rank: RankExactMatch, Valid: true}, true
 	}
-	var param types.Type = types.Qualify(fn.InClass, fn.FuncType.Quals)
+	objClass := fn.InClass
+	if fn.ObjectClass != nil {
+		objClass = fn.ObjectClass
+	}
+	var param types.Type = types.Qualify(objClass, fn.FuncType.Quals)
 	isLValue := object.IsLValue
 	switch fn.FuncType.RefQual {
 	case types.RefQualRValue:

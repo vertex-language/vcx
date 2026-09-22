@@ -11,10 +11,33 @@ import (
 // Default-initialization of a class object: invokes a declared default constructor
 // or performs memberwise/basewise default initialization.
 
-// defaultConstruct default-initializes the object of class rec at obj.
+// defaultConstruct default-initializes the complete object of class rec at
+// obj, virtual bases included.
 func (fl *fn) defaultConstruct(obj ir.Ptr, rec *types.Record, at ast.Tok) bool {
+	return fl.defaultConstructIn(obj, rec, at, true)
+}
+
+// defaultConstructIn default-initializes an object of class rec at obj.
+//
+// complete distinguishes the whole object from a base subobject of one,
+// which is what decides the virtual bases: they belong to the most derived
+// class and are built once, by it, before anything else ([class.base.init]
+// /13.1). A base's own initialization must leave them alone, or the shared
+// base would be built once per path to it.
+func (fl *fn) defaultConstructIn(obj ir.Ptr, rec *types.Record, at ast.Tok, complete bool) bool {
 	if fl.blk == nil {
 		return false
+	}
+	if complete {
+		for vb, off := range fl.u.model.VirtualBaseOffsets(rec) {
+			sub := obj
+			if off != 0 {
+				sub = fl.blk.Ptr.Add(obj, fl.blk.I64.Const(off))
+			}
+			if !fl.defaultConstructIn(sub, vb, at, false) {
+				return false
+			}
+		}
 	}
 	// A constructor of its own taking no arguments, or all defaults.
 	for _, m := range rec.Methods {
@@ -41,7 +64,7 @@ func (fl *fn) defaultConstruct(obj ir.Ptr, rec *types.Record, at ast.Tok) bool {
 		if baseOffs[i] != 0 {
 			sub = fl.blk.Ptr.Add(obj, fl.blk.I64.Const(baseOffs[i]))
 		}
-		if !fl.defaultConstruct(sub, br, at) {
+		if !fl.defaultConstructIn(sub, br, at, false) {
 			return false
 		}
 	}
