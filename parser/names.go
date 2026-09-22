@@ -67,6 +67,15 @@ func (p *parser) note(name string, k nameKind) {
 	if name == "" || len(p.names) == 0 {
 		return
 	}
+	// A name declared with a template-head keeps that kind against a
+	// later overload without one: `pick<int>(1)` opens template
+	// arguments whichever `pick` the call ends up naming, and a plain
+	// `const char* pick(int)` beside the templates must not make the `<`
+	// a comparison again. One kind is kept per name, so the overload set
+	// is remembered by its widest member.
+	if k == nameValue && p.names[len(p.names)-1][name] == nameTemplate {
+		return
+	}
 	p.names[len(p.names)-1][name] = k
 }
 

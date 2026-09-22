@@ -2192,6 +2192,13 @@ func (a *Analyzer) resolveAmongOn(candidates []*FuncSymbol, object *Argument, ex
 	viable := candidates[:0:0]
 	var whyNot []string
 	for _, cand := range candidates {
+		if len(explicit) > 0 && cand.Template == nil && cand.TemplateOf == nil {
+			// A template-id names specializations and nothing else: a
+			// function that is no template has no template arguments to
+			// be given ([temp.arg.explicit]/1), so `pick<int>(1)` does
+			// not reach a plain `pick(int)` beside the templates.
+			continue
+		}
 		if cand.Template == nil && a.dependentContext() && isDependent(cand.FuncType) {
 			// A member of a class template as written: its signature mentions
 			// the class's parameters, which no call deduces. Deducing them
