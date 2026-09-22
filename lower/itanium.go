@@ -2,6 +2,7 @@ package lower
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/vertex-language/ir"
 
@@ -581,4 +582,123 @@ func (fl *fn) registerStaticDtor(obj ir.Ptr, t types.Type) {
 	}
 	b := fl.blk
 	b.Call(fl.u.cxaAtexit(), b.Ptr.GetAddr(dtor), obj, b.Ptr.GetAddr(fl.u.dsoHandle()))
+}
+
+// typeInfoSymbol is the std::type_info object of any type: the one this
+// unit emits for a class, and the runtime's for everything else -- the
+// fundamental types' objects live in libc++abi.
+func (u *unit) typeInfoSymbol(t types.Type) ir.Symbol {
+	if t == nil {
+		return nil
+	}
+	bare := types.Unqualify(t)
+	if rec := classOf(bare); rec != nil {
+		return u.typeInfo(rec)
+	}
+	if ptr, isPtr := bare.(*types.Pointer); isPtr && !runtimeHasTypeInfo(bare) && u.model.SizePtr == 8 {
+		return u.pointerTypeInfo(bare, ptr)
+	}
+	name, err := mangle.TypeInfoOf(u.opt.ABI, bare)
+	if err != nil {
+		return nil
+	}
+	if s, done := u.typeInfoRefs[name]; done {
+		return s
+	}
+	if u.typeInfoRefs == nil {
+		u.typeInfoRefs = map[string]ir.Symbol{}
+	}
+	s := u.mod.ImportGlobal(u.symbolName(name), ir.StorePtr.FType())
+	u.typeInfoRefs[name] = s
+	return s
+}
+
+// runtimeHasTypeInfo reports whether libc++abi already defines a type's
+// type_info. The Itanium ABI has the runtime provide them for the
+// fundamental types and for pointers to them; everything else is the
+// compiler's to emit.
+func runtimeHasTypeInfo(t types.Type) bool {
+	bare := types.Unqualify(t)
+	if p, isPtr := bare.(*types.Pointer); isPtr {
+		e := types.Unqualify(p.Elem)
+		return types.IsArithmetic(e) || types.IsVoid(e) || types.IsNullptr(e)
+	}
+	return types.IsArithmetic(bare) || types.IsVoid(bare) || types.IsNullptr(bare)
+}
+
+// pointerTypeInfo emits the type_info of a pointer type the runtime does
+// not provide -- a pointer to a class, most of the time.
+//
+// A __pointer_type_info is the runtime class's table, the name string, the
+// cv-qualifiers of the type pointed to, and that type's own type_info.
+func (u *unit) pointerTypeInfo(bare types.Type, ptr *types.Pointer) ir.Symbol {
+	name, err := mangle.TypeInfoOf(u.opt.ABI, bare)
+	if err != nil {
+		return nil
+	}
+	if s, done := u.typeInfoRefs[name]; done {
+		return s
+	}
+	pointee := u.typeInfoSymbol(ptr.Elem)
+	if pointee == nil {
+		return nil
+	}
+	enc := strings.TrimPrefix(name, "_ZTI")
+	str := u.mod.Global(u.symbolName("_ZTS"+enc), ir.RO, ir.Array(uint64(len(enc)+1), ir.StoreI8.FType())).Export().Comdat()
+	str.Init(ir.Str(enc + "\x00"))
+
+	// __pbase_type_info's flags are the pointee's cv-qualifiers: const is
+	// bit 0, volatile bit 1.
+	var flags int64
+	if types.IsConst(ptr.Elem) {
+		flags |= 1
+	}
+	if types.IsVolatile(ptr.Elem) {
+		flags |= 2
+	}
+	g := u.mod.Global(u.symbolName(name), ir.RO, ir.Array(4, ir.StorePtr.FType())).Export().Comdat()
+	g.Align(8)
+	if u.typeInfoRefs == nil {
+		u.typeInfoRefs = map[string]ir.Symbol{}
+	}
+	u.typeInfoRefs[name] = g
+	g.Init(ir.List(
+		ir.RelocInit(u.cxxabiTable("__pointer_type_info")).Plus(ir.Int(16)),
+		ir.RelocInit(str),
+		ir.Lit(ir.Int(flags)),
+		ir.RelocInit(pointee),
+	))
+	return g
+}
+
+// typeidExpr lowers typeid.
+//
+// For a type, and for an expression whose type is not polymorphic, the
+// answer is settled here: the type_info object of the type as written,
+// and the operand is not evaluated. For a glvalue of polymorphic class
+// type it is the object's own dynamic type ([expr.typeid]/3), which its
+// table carries one word in front of the address point.
+func (fl *fn) typeidExpr(e *ast.TypeidExpr) ir.Value {
+	if e.X != nil {
+		operand := types.Unqualify(types.RemoveReference(fl.typeOf(e.X)))
+		if rec := classOf(operand); rec != nil && types.IsPolymorphic(rec) {
+			if p, _, ok := fl.lvalueQuiet(e.X); ok {
+				b := fl.blk
+				vptr := b.Ptr.Load(p)
+				return b.Ptr.Load(b.Ptr.Add(vptr, b.I64.Const(-fl.u.model.SizePtr)))
+			}
+		}
+		return fl.typeInfoAddr(operand, e.Pos())
+	}
+	return fl.typeInfoAddr(fl.u.res.Info.TypeIds[e.Type], e.Pos())
+}
+
+// typeInfoAddr is the address of a type's type_info object.
+func (fl *fn) typeInfoAddr(t types.Type, at ast.Tok) ir.Value {
+	sym := fl.u.typeInfoSymbol(t)
+	if sym == nil {
+		fl.u.errorf(at, "lowering: no type information for %s", t)
+		return nil
+	}
+	return fl.blk.Ptr.GetAddr(sym)
 }

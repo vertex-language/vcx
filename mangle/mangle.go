@@ -210,6 +210,18 @@ func TypeInfoName(abi ABI, rec *types.Record) (string, error) {
 	return "_ZTI" + enc, err
 }
 
+// TypeInfoOf is the type_info symbol of any type: `_ZTI` and the type's
+// own encoding, so `_ZTIi` for int and `_ZTIP1A` for A*. The fundamental
+// types' objects are the runtime's; a class's is the one the unit emits.
+func TypeInfoOf(abi ABI, t types.Type) (string, error) {
+	if abi != Itanium {
+		return "", fmt.Errorf("mangle: Itanium type information under another scheme")
+	}
+	m := newItanium()
+	m.typ(t)
+	return "_ZTI" + m.sb.String(), m.err
+}
+
 // TypeNameName is the symbol of a class's type name string; see TypeInfoName.
 func TypeNameName(abi ABI, rec *types.Record) (string, error) {
 	enc, err := TypeName(abi, rec)

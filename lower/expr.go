@@ -73,6 +73,9 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 
 	case *ast.VaArgExpr:
 		return fl.vaArg(e)
+
+	case *ast.TypeidExpr:
+		return fl.typeidExpr(e)
 	case *ast.NamedCastExpr:
 		if e.Kind == token.BIT_CAST {
 			return fl.bitCast(e)

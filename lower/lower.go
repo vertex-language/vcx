@@ -136,6 +136,10 @@ type unit struct {
 	ntypes      int
 	srets       map[*sema.FuncSymbol]ir.Ptr
 
+	// typeInfoRefs are the runtime's type_info objects this unit names,
+	// for the types whose objects it does not emit itself (itanium.go).
+	typeInfoRefs map[string]ir.Symbol
+
 	// atexitFn and dso register static objects' destructors (itanium.go).
 	atexitFn ir.Callee
 	dso      ir.Symbol

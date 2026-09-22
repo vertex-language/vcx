@@ -243,6 +243,20 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		a.CheckExpr(e.X)
 		return ExprInfo{Type: a.noteTypeId(e.Type), ValCat: PrValue}
 
+	case *ast.TypeidExpr:
+		// [expr.typeid]/1: an lvalue of type const std::type_info.
+		if e.Type != nil {
+			a.noteTypeId(e.Type)
+		} else if e.X != nil {
+			a.CheckExpr(e.X)
+		}
+		rec := a.typeInfoRecord()
+		if rec == nil {
+			a.errorAt(e.Pos(), "typeid needs <typeinfo>, which declares std::type_info")
+			return ExprInfo{Type: types.Typ(types.Int), ValCat: LValue}
+		}
+		return ExprInfo{Type: types.AddConst(rec), ValCat: LValue}
+
 	case *ast.NamedCastExpr:
 		// Named cast value category and result type.
 		targetT := a.noteTypeId(e.Type)
@@ -1785,6 +1799,23 @@ func hasSpec(specs []ast.DeclSpec, k token.Kind) bool {
 		}
 	}
 	return false
+}
+
+// typeInfoRecord is std::type_info, which <typeinfo> declares, or nil where
+// the program has not included it.
+func (a *Analyzer) typeInfoRecord() *types.Record {
+	for _, s := range LookupUnqualified(a.globalScope, "std") {
+		ns, isNS := s.(*NamespaceSymbol)
+		if !isNS || ns.InnerScope == nil {
+			continue
+		}
+		for _, m := range ns.InnerScope.LookupNamespaceMember("type_info") {
+			if rs, isRec := m.(*RecordSymbol); isRec && rs.Record != nil {
+				return rs.Record
+			}
+		}
+	}
+	return nil
 }
 
 // noteTypeId builds a type-id in expression position and records it.
