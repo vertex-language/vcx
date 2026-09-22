@@ -1160,11 +1160,24 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 		if rec != nil {
 			memberName := NameString(mem.Sel, a.unit)
 			// Qualified member access c.A::f() starts lookup in base A.
-			if qn, qualified := mem.Sel.(*ast.QualifiedName); qualified && len(qn.Qual) > 0 {
+			sel := mem.Sel
+			if qn, qualified := sel.(*ast.QualifiedName); qualified && len(qn.Qual) > 0 {
 				if base := findBaseNamed(rec, NameString(qn.Qual[len(qn.Qual)-1], a.unit)); base != nil {
 					rec = base
 				}
 				memberName = NameString(qn.Name, a.unit)
+				sel = qn.Name
+			}
+			// `c.template as<int>(v)`: the arguments the call names are
+			// the member template's, and without them To has nothing to
+			// be deduced from -- it appears in no parameter.
+			if tn, isTemplate := sel.(*ast.TemplateName); isTemplate {
+				memberName = NameString(tn.Name, a.unit)
+				var dependent bool
+				explicit, dependent = a.explicitTemplateArgs(tn)
+				if dependent {
+					return dependentExpr()
+				}
 			}
 			syms := lookupRecordMember(rec, memberName, make(map[*types.Record]bool), a.curScope)
 			for _, s := range syms {
