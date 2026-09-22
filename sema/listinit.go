@@ -97,6 +97,21 @@ func (a *Analyzer) checkListInit(list *ast.InitList, target types.Type) {
 		}
 		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
 	}
+	// [over.match.list]/1: a class with an initializer-list constructor
+	// gives it the whole list as one argument, and that is considered
+	// before any other constructor -- `Stats s{4, 8, 15}` is one call
+	// taking three elements, not a call of three arguments.
+	if ctor, elem := a.initListConstructor(rec, args); ctor != nil {
+		for _, item := range list.Items {
+			a.checkListItem(item, elem)
+		}
+		a.ensureInstantiated(ctor)
+		if a.info != nil {
+			a.info.ListCtors[list] = ctor
+			a.info.InitLists[list] = elem
+		}
+		return
+	}
 	ctor, err := a.chooseConstructor(rec, args)
 	if err != nil {
 		a.errorAt(list.Pos(), fmt.Sprintf("no matching constructor for %s: %v", rec.Name, err))
@@ -362,4 +377,41 @@ func (a *Analyzer) listConversion(list *ast.InitList, target types.Type) Convers
 		return bad
 	}
 	return ok(RankUserDefined)
+}
+
+// initListConstructor is the constructor a braced list hands itself to
+// whole: one taking std::initializer_list<E>, with E the element type it
+// reports beside it. It is nil where the class has none, or where some
+// element does not convert to E.
+func (a *Analyzer) initListConstructor(rec *types.Record, args []Argument) (*FuncSymbol, types.Type) {
+	for _, fn := range a.memberFuncs(rec, rec.Name) {
+		if fn.FuncType == nil || len(fn.FuncType.Params) != 1 || fn.Deleted {
+			continue
+		}
+		elem, isList := initListElem(fn.FuncType.Params[0].Type)
+		if !isList {
+			continue
+		}
+		fits := true
+		for _, arg := range args {
+			if !ClassifyConversion(arg.Type, elem, arg.IsLValue).Valid {
+				fits = false
+				break
+			}
+		}
+		if fits {
+			return fn, elem
+		}
+	}
+	return nil, nil
+}
+
+// initListElem is E where t is std::initializer_list<E>, however it is
+// spelled -- by value, or by reference to const.
+func initListElem(t types.Type) (types.Type, bool) {
+	rec := types.AsRecord(types.Unqualify(types.RemoveReference(t)))
+	if rec == nil || rec.Name != "initializer_list" || len(rec.TemplateArgs) != 1 || !rec.TemplateArgs[0].IsType {
+		return nil, false
+	}
+	return rec.TemplateArgs[0].Type, true
 }

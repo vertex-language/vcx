@@ -82,6 +82,11 @@ type Info struct {
 	// when the class has constructors and is no aggregate ([dcl.init.list]/3.7).
 	ListCtors map[*ast.InitList]*FuncSymbol
 
+	// InitLists marks the lists whose constructor takes a
+	// std::initializer_list, with the element type it holds. Lowering
+	// builds the list object rather than passing the items as arguments.
+	InitLists map[*ast.InitList]types.Type
+
 	// MemInits maps member initializers to resolved constructors.
 	MemInits map[*ast.MemInit]*FuncSymbol
 
@@ -140,6 +145,7 @@ func newInfo() *Info {
 		Conversions:    map[ast.Expr]*FuncSymbol{},
 		Braced:         map[*ast.InitList]*ast.InitList{},
 		ListCtors:      map[*ast.InitList]*FuncSymbol{},
+		InitLists:      map[*ast.InitList]types.Type{},
 		MemInits:       map[*ast.MemInit]*FuncSymbol{},
 		Rewrites:       map[ast.Expr]ast.Expr{},
 		Arrows:         map[*ast.MemberExpr][]*FuncSymbol{},

@@ -266,6 +266,24 @@ func (a *Analyzer) resolveConstructor(init *ast.InitDeclarator, rec *types.Recor
 		return
 	}
 
+	// [over.match.list]/1: a braced initializer goes to the class's
+	// initializer-list constructor whole, ahead of any other.
+	if init.Braced != nil {
+		if ctor, elem := a.initListConstructor(rec, args); ctor != nil {
+			for _, item := range init.Braced.Items {
+				if e, isExpr := item.(ast.Expr); isExpr {
+					a.checkListItem(e, elem)
+				}
+			}
+			a.ensureInstantiated(ctor)
+			if a.info != nil {
+				a.info.Ctors[init] = ctor
+				a.info.InitLists[init.Braced] = elem
+			}
+			return
+		}
+	}
+
 	chosen, err := a.resolveAmong(ctors, nil, args, init.Pos())
 	if err != nil {
 		if len(argExprs) > 0 {

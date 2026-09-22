@@ -379,6 +379,12 @@ func (fl *fn) initializeObject(slot ir.Ptr, sym *sema.VarSymbol, init *ast.InitD
 
 // construct calls a constructor on freshly reserved storage.
 func (fl *fn) construct(obj ir.Ptr, rec *types.Record, ctor *sema.FuncSymbol, init *ast.InitDeclarator) {
+	if init.Braced != nil {
+		if elem := fl.u.res.Info.InitLists[init.Braced]; elem != nil {
+			fl.constructFromInitList(obj, rec, ctor, elem, init.Braced)
+			return
+		}
+	}
 	var argExprs []ast.Expr
 	switch {
 	case len(init.Args) > 0:
@@ -475,9 +481,21 @@ func (fl *fn) initList(dst ir.Ptr, t types.Type, list *ast.InitList) {
 		list = braced
 	}
 	if rec := classOf(t); rec != nil {
+		// [dcl.init.list]/5: a braced list initializing an
+		// initializer_list itself builds the object over an array of its
+		// elements, rather than calling anything.
+		if elem := fl.u.res.Info.InitLists[list]; elem != nil && fl.u.res.Info.ListCtors[list] == nil {
+			arr, n, esize := fl.initListArray(elem, list)
+			fl.writeInitList(dst, rec, arr, n, esize, list)
+			return
+		}
 		// A class with constructors is no aggregate: the list's items are
 		// the arguments of the constructor it chose.
 		if ctor := fl.u.res.Info.ListCtors[list]; ctor != nil {
+			if elem := fl.u.res.Info.InitLists[list]; elem != nil {
+				fl.constructFromInitList(dst, rec, ctor, elem, list)
+				return
+			}
 			var args []ast.Expr
 			for _, item := range list.Items {
 				if e, isExpr := item.(ast.Expr); isExpr {
@@ -606,6 +624,78 @@ func (fl *fn) initList(dst ir.Ptr, t types.Type, list *ast.InitList) {
 		}
 		fl.store(at, fl.zeroOf(arr.Elem), arr.Elem)
 	}
+}
+
+// constructFromInitList builds the std::initializer_list a braced list
+// stands for and runs the constructor that takes it.
+//
+// The elements live in an array on the frame: [dcl.init.list]/6 gives
+// that array the lifetime of the initializer_list object, and here the
+// object never outlives the full-expression it is built in. The object
+// itself is where the elements start and how far they run -- which of
+// those two the second member holds is the library's choice, so it is
+// read off the field: libc++ and libstdc++ keep a size, the Microsoft
+// one keeps the end pointer.
+func (fl *fn) constructFromInitList(dst ir.Ptr, rec *types.Record, ctor *sema.FuncSymbol, elem types.Type, list *ast.InitList) {
+	arr, n, esize := fl.initListArray(elem, list)
+
+	lrec := classOf(types.RemoveReference(ctor.FuncType.Params[0].Type))
+	obj := fl.alloc(lrec, "")
+	if !fl.writeInitList(obj, lrec, arr, n, esize, list) {
+		return
+	}
+
+	target := fl.u.callee(ctor)
+	if target == nil {
+		fl.u.errorf(list.Pos(), "lowering has no symbol for the constructor of %s", rec.Name)
+		return
+	}
+	fl.blk.Call(target, dst, obj)
+}
+
+// initListArray lays the elements of a braced list out on the frame and
+// returns the array, the count and the element size.
+func (fl *fn) initListArray(elem types.Type, list *ast.InitList) (ir.Ptr, int64, int64) {
+	n := int64(len(list.Items))
+	esize, _ := fl.u.sizeAlign(elem)
+	arr := fl.alloc(&types.Array{Elem: elem, Len: n}, "__initlist")
+	for i, item := range list.Items {
+		at := arr
+		if off := int64(i) * esize; off != 0 {
+			at = fl.blk.Ptr.Add(arr, fl.blk.I64.Const(off))
+		}
+		if !fl.initArrayElement(at, elem, item) {
+			fl.valueInitElem(at, elem, esize)
+		}
+	}
+	return arr, n, esize
+}
+
+// writeInitList fills an initializer_list object: where the elements
+// start, and how far they run. Which of those two the second member
+// holds is the library's choice, so it is read off the field -- libc++
+// and libstdc++ keep a size, the Microsoft one keeps the end pointer.
+func (fl *fn) writeInitList(obj ir.Ptr, lrec *types.Record, arr ir.Ptr, n, esize int64, at ast.Node) bool {
+	if lrec == nil || len(lrec.Fields) < 2 {
+		fl.u.errorf(at.Pos(), "lowering: std::initializer_list is not the two members this expects")
+		return false
+	}
+	offs := make([]int64, len(lrec.Fields))
+	fl.u.model.LayoutWithBases(lrec, offs, make([]int64, len(lrec.Bases)))
+	field := func(i int) ir.Ptr {
+		if offs[i] == 0 {
+			return obj
+		}
+		return fl.blk.Ptr.Add(obj, fl.blk.I64.Const(offs[i]))
+	}
+	fl.store(field(0), arr, lrec.Fields[0].Type)
+	second := lrec.Fields[1].Type
+	if types.IsPointer(types.Unqualify(second)) {
+		fl.store(field(1), fl.blk.Ptr.Add(arr, fl.blk.I64.Const(n*esize)), second)
+	} else {
+		fl.store(field(1), fl.convert(fl.blk.I64.Const(n), types.Typ(types.LongLong), second), second)
+	}
+	return true
 }
 
 // initArrayElement initializes one array element from an initializer-list
