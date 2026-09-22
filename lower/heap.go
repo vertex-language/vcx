@@ -63,9 +63,18 @@ func (fl *fn) newExpr(e *ast.NewExpr) ir.Value {
 			fl.u.errorf(e.Pos(), "lowering has no allocation function for this placement new")
 			return nil
 		}
-		if align := fl.u.overAlignment(elem); align != 0 {
-			res = fl.blk.Call(fl.u.operatorNewAligned(), fl.blk.I64.Const(size), fl.blk.I64.Const(align))
-		} else {
+		switch op := fl.u.classAllocator(classOf(elem), "operator new", 1); {
+		case op != nil:
+			// The class's own allocation function, which a
+			// new-expression on that class prefers to the global one.
+			target := fl.u.callee(op)
+			if target == nil {
+				return nil
+			}
+			res = fl.blk.Call(target, fl.convert(fl.blk.I64.Const(size), fl.u.sizeT(), op.FuncType.Params[0].Type))
+		case fl.u.overAlignment(elem) != 0:
+			res = fl.blk.Call(fl.u.operatorNewAligned(), fl.blk.I64.Const(size), fl.blk.I64.Const(fl.u.overAlignment(elem)))
+		default:
 			res = fl.blk.Call(fl.u.operatorNew(), fl.blk.I64.Const(size))
 		}
 	}
@@ -178,9 +187,19 @@ func (fl *fn) newArray(e *ast.NewExpr, elem types.Type, count ast.Expr) ir.Value
 		total = b.I64.Add(total, b.I64.Const(cookie))
 	}
 	var res ir.Results
-	if align := fl.u.overAlignment(elem); align != 0 {
-		res = b.Call(fl.u.operatorNewArrayAligned(), total, b.I64.Const(align))
-	} else {
+	switch op := fl.u.classAllocator(classOf(elem), "operator new[]", 1); {
+	case op != nil:
+		// The class's own array allocation function. The size it is
+		// given is the whole allocation, cookie included, which is what
+		// total already is.
+		target := fl.u.callee(op)
+		if target == nil {
+			return nil
+		}
+		res = b.Call(target, fl.convert(total, fl.u.sizeT(), op.FuncType.Params[0].Type))
+	case fl.u.overAlignment(elem) != 0:
+		res = b.Call(fl.u.operatorNewArrayAligned(), total, b.I64.Const(fl.u.overAlignment(elem)))
+	default:
 		res = b.Call(fl.u.operatorNewArray(), total)
 	}
 	if res.Len() == 0 {
@@ -386,6 +405,30 @@ func (fl *fn) deallocate(p ir.Ptr, ptrType types.Type, array bool) {
 	if ptr, isPtr := types.Unqualify(types.RemoveReference(ptrType)).(*types.Pointer); isPtr {
 		elem = ptr.Elem
 	}
+	// A class's own deallocation function, which a delete-expression on
+	// that class prefers to the global one. For a single object the sized
+	// form is chosen where the class declares it; for an array the size
+	// the standard passes is the whole allocation, cookie included, which
+	// is not what sizeAlign gives, so only the plain form is taken here.
+	if rec := classOf(elem); rec != nil {
+		name := "operator delete"
+		if array {
+			name = "operator delete[]"
+		}
+		if op := fl.u.classAllocator(rec, name, 2); op != nil && !array {
+			if target := fl.u.callee(op); target != nil {
+				size, _ := fl.u.sizeAlign(elem)
+				fl.blk.Call(target, p, fl.convert(fl.blk.I64.Const(size), fl.u.sizeT(), op.FuncType.Params[1].Type))
+				return
+			}
+		}
+		if op := fl.u.classAllocator(rec, name, 1); op != nil {
+			if target := fl.u.callee(op); target != nil {
+				fl.blk.Call(target, p)
+				return
+			}
+		}
+	}
 	align := int64(0)
 	if elem != nil {
 		align = fl.u.overAlignment(elem)
@@ -400,6 +443,31 @@ func (fl *fn) deallocate(p ir.Ptr, ptrType types.Type, array bool) {
 	default:
 		fl.blk.Call(fl.u.operatorDelete(), p)
 	}
+}
+
+// classAllocator is a class's own operator new or operator delete with a
+// given number of parameters: the one a new- or delete-expression on that
+// class calls in place of the global ([expr.new]/9, [expr.delete]/7). The
+// name is looked up in the class and then its bases, as any other member
+// is, so a class that declares none uses what it inherits.
+func (u *unit) classAllocator(rec *types.Record, name string, params int) *sema.FuncSymbol {
+	if rec == nil {
+		return nil
+	}
+	for _, m := range rec.Methods {
+		if m.Name != name || m.Deleted || m.Template || len(m.Func.Params) != params {
+			continue
+		}
+		if sym := u.declaredFor(&sema.FuncSymbol{SymName: m.Name, FuncType: m.Func, InClass: rec}); sym != nil {
+			return sym
+		}
+	}
+	for _, b := range rec.Bases {
+		if sym := u.classAllocator(classOf(b.Type), name, params); sym != nil {
+			return sym
+		}
+	}
+	return nil
 }
 
 // overAlignment is a type's alignment when it exceeds what the plain

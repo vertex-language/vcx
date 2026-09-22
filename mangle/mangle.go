@@ -235,6 +235,14 @@ func VBTableName(abi ABI, rec *types.Record, base []*types.Record) (string, erro
 	return newMSVC().vbtable(rec, base)
 }
 
+// isOperatorName reports whether a name is an operator-function-id with a
+// code of its own, as against a conversion function -- which is also
+// spelled `operator` and a space, and is named for its target type.
+func isOperatorName(name string) bool {
+	_, ok := operators[name]
+	return ok
+}
+
 // operators maps a C++ operator-function-id, spelled as the analysis names
 // it, to its code under each scheme. The two columns are unrelated
 // alphabets that happen to cover the same list.

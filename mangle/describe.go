@@ -41,6 +41,10 @@ func Describe(fn *sema.FuncSymbol) *Function {
 			f.Kind = Ctor
 		case fn.SymName == "~"+fn.InClass.Name:
 			f.Kind = Dtor
+		case isOperatorName(fn.SymName):
+			// `operator new` and the other allocation functions are
+			// spelled with a space too, and are not conversions: their
+			// own codes name them.
 		case strings.HasPrefix(fn.SymName, "operator "):
 			// A conversion function is named for its target type.
 			f.Kind = Conversion
