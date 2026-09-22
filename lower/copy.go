@@ -34,6 +34,16 @@ func (u *unit) copyAssignment(rec *types.Record) *sema.FuncSymbol {
 // when ctor, assigning otherwise) has to go member by member: something
 // below it has a user-provided copy of that kind, or a virtual base.
 func (u *unit) memberwise(rec *types.Record, ctor bool) bool {
+	// A polymorphic class is never copied as bytes: its table pointer
+	// belongs to the object being initialized, not to the one being read.
+	// Copying a derived object into a base slices it, and the base must
+	// come away with its own table ([class.mem] -- the copy is of the
+	// base subobject, and its dynamic type is the base); an assignment
+	// must leave the target's table alone entirely. The synthesized copy
+	// does both, member by member.
+	if u.vtablesOf(rec) != nil {
+		return true
+	}
 	for _, b := range rec.Bases {
 		br := classOf(b.Type)
 		if br == nil {

@@ -16,10 +16,14 @@ type DeclSpecInfo struct {
 	Consteval bool
 	Virtual   bool
 	Explicit  bool
-	Friend    bool
-	Typedef   bool
-	Quals     types.Qual
-	Trailing  bool
+	// ExplicitCond is the condition of `explicit(expr)`, which decides
+	// Explicit once it can be evaluated. Nil for a plain `explicit`,
+	// whose Explicit is already settled here.
+	ExplicitCond ast.Expr
+	Friend       bool
+	Typedef      bool
+	Quals        types.Qual
+	Trailing     bool
 
 	// Unresolved names an unqualified type-name in the decl-specifier-seq
 	// that lookup did not find, with the token it was written at. The type
@@ -123,13 +127,17 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 				info.Consteval = true
 			case token.VIRTUAL:
 				info.Virtual = true
-			case token.EXPLICIT:
-				info.Explicit = true
 			case token.FRIEND:
 				info.Friend = true
 			case token.TYPEDEF:
 				info.Typedef = true
 			}
+
+		case *ast.ExplicitSpec:
+			// `explicit`, or `explicit(cond)` whose condition the
+			// analyzer evaluates -- there is no evaluator here.
+			info.Explicit = true
+			info.ExplicitCond = s.Cond
 
 		case *ast.NamedTypeSpec:
 			var syms []Symbol

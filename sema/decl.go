@@ -1302,6 +1302,7 @@ func (a *Analyzer) checkFuncDecl(d *ast.FuncDecl) {
 		ExternC:   a.externC,
 		Defaults:  extractDefaults(d.Decl),
 	}
+	fnSym.Explicit = a.explicitness(declInfo)
 	a.checkParamDefaults(funcDeclaratorOf(d.Decl), nil)
 	fnSym.Constraints = a.constraintsOf(d, d.Decl)
 	fnSym.ConstraintScope = a.curScope
@@ -1314,7 +1315,7 @@ func (a *Analyzer) checkFuncDecl(d *ast.FuncDecl) {
 			Access:    a.curAccess,
 			Virtual:   declInfo.Virtual,
 			Static:    fnSym.Static,
-			Explicit:  declInfo.Explicit,
+			Explicit:  fnSym.Explicit,
 			Friend:    declInfo.Friend,
 			Defaulted: fnSym.Defaulted,
 			Deleted:   fnSym.Deleted,
@@ -1846,6 +1847,18 @@ func (a *Analyzer) checkMemInits(d *ast.FuncDecl) {
 			a.info.MemInits[mi] = chosen
 		}
 	}
+}
+
+// explicitness settles `explicit` and `explicit(cond)`. A condition that
+// is not a constant -- one that depends on a template parameter not yet
+// substituted -- leaves the declaration non-explicit, which is what lets
+// `explicit(!is_convertible_v<U, T>)` convert for the U that satisfy it.
+func (a *Analyzer) explicitness(declInfo DeclSpecInfo) bool {
+	if !declInfo.Explicit || declInfo.ExplicitCond == nil {
+		return declInfo.Explicit
+	}
+	n, err := a.NewConstContext().EvalInt(declInfo.ExplicitCond)
+	return err == nil && n != 0
 }
 
 // checkDelegatingInit resolves a mem-initializer that names the constructor's

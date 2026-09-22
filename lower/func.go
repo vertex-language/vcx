@@ -127,10 +127,19 @@ func (u *unit) defineFunc(sym *sema.FuncSymbol, f *ir.Func) {
 		}
 	}
 
+	// [class.cdtor]/4: while a destructor runs, the object is of the
+	// destructor's own class, so its table goes back before the body --
+	// a virtual call in ~Base() reaches Base's override, not the derived
+	// one whose storage is already gone.
+	isDtor := sym.InClass != nil && sym.SymName == "~"+sym.InClass.Name
+	if isDtor && fl.hasThis {
+		fl.installVPtr(fl.this, sym.InClass)
+	}
+
 	fl.stmt(sym.Body)
 
 	// Destroy members and bases in reverse order after a destructor's body.
-	if sym.InClass != nil && sym.SymName == "~"+sym.InClass.Name {
+	if isDtor {
 		fl.destroyMembersAndBases(sym)
 	}
 

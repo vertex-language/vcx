@@ -72,6 +72,11 @@ type Context struct {
 	// ResolveType converts an AST type-id into a types.Type (for sizeof/alignof).
 	ResolveType func(*ast.TypeId) (types.Type, bool)
 
+	// ResolveDeclType is the declared type of a local declaration, which
+	// its initializer's type is not: `long long a = 1` holds a long long,
+	// and the arithmetic that follows is 64-bit whatever the 1 was.
+	ResolveDeclType func(*ast.SimpleDecl, *ast.InitDeclarator) (types.Type, bool)
+
 	// ResolveTypeExpr resolves an expression naming a type (e.g. for functional casts T(x)).
 	ResolveTypeExpr func(ast.Expr) (types.Type, bool)
 
@@ -1744,9 +1749,26 @@ func (ctx *Context) evalDeclStmt(ds *ast.DeclStmt) (FlowSignal, Value, error) {
 			}
 		}
 
-		var typ types.Type = types.Typ(types.Int)
-		if initVal != nil {
-			typ = initVal.Type()
+		// The declared type governs: a value keeps the width and
+		// signedness the declaration gave it, not the initializer's.
+		// Without this `long long a = 1` is an int, and every later
+		// a * 2 truncates to 32 bits.
+		var typ types.Type
+		if ctx.ResolveDeclType != nil {
+			if t, ok := ctx.ResolveDeclType(sd, init); ok && t != nil {
+				typ = types.Unqualify(t)
+				if initVal != nil && !types.IsReference(typ) {
+					if _, isArr := typ.(*types.Array); !isArr {
+						initVal = ctx.convertToType(initVal, typ)
+					}
+				}
+			}
+		}
+		if typ == nil {
+			typ = types.Typ(types.Int)
+			if initVal != nil {
+				typ = initVal.Type()
+			}
 		}
 		ctx.DeclareVar(name, typ, initVal, false)
 	}

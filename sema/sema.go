@@ -407,6 +407,21 @@ func (a *Analyzer) NewConstContext() *constexpr.Context {
 		}
 		return nil, fmt.Errorf("variable %q not found or not constant", name)
 	}
+	ctx.ResolveDeclType = func(sd *ast.SimpleDecl, init *ast.InitDeclarator) (types.Type, bool) {
+		if sd == nil || init == nil || init.Decl == nil {
+			return nil, false
+		}
+		base := BuildDeclSpecs(sd.Specs, a.curScope, a.unit).Type
+		if base == nil {
+			return nil, false
+		}
+		t := BuildDeclarator(init.Decl, base, a.curScope, a.unit)
+		if t == nil || mentionsAuto(t) || isDependentType(t) {
+			// `auto` and a dependent type are the initializer's to decide.
+			return nil, false
+		}
+		return t, true
+	}
 	ctx.ResolveTrait = a.resolveTrait
 	ctx.ExpandFold = func(f *ast.FoldExpr) (constexpr.Value, error) {
 		return a.expandFold(ctx, f)
