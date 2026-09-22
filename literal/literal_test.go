@@ -23,7 +23,7 @@ func TestSplit(t *testing.T) {
 		{`u8R"()"`, UTF8, true, ""},
 	}
 	for _, c := range cases {
-		enc, isRaw, body, err := split(c.raw)
+		enc, isRaw, body, _, err := split(c.raw)
 		if err != nil {
 			t.Errorf("%s: %v", c.raw, err)
 			continue
@@ -33,7 +33,7 @@ func TestSplit(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{`"abc`, `R"(abc)x"`, `Q"abc"`} {
-		if _, _, _, err := split(bad); err == nil {
+		if _, _, _, _, err := split(bad); err == nil {
 			t.Errorf("%s: accepted", bad)
 		}
 	}

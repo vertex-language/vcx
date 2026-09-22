@@ -4,6 +4,7 @@ import (
 	"github.com/vertex-language/ir"
 
 	"github.com/vertex-language/vcx/ast"
+	"github.com/vertex-language/vcx/literal"
 	"github.com/vertex-language/vcx/sema"
 	"github.com/vertex-language/vcx/token"
 	"github.com/vertex-language/vcx/types"
@@ -116,6 +117,9 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 		return fl.incDec(e.X, e.Op, e.Pos(), false)
 
 	case *ast.StringLit:
+		if fn := fl.u.res.Info.UserLiterals[e]; fn != nil {
+			return fl.userStringLiteral(e, fn)
+		}
 		return fl.stringLit(e)
 
 	case *ast.FunctionalCastExpr:
@@ -154,6 +158,9 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 
 // basicLit lowers literal values using the constant evaluator.
 func (fl *fn) basicLit(e *ast.BasicLit) ir.Value {
+	if fn := fl.u.res.Info.UserLiterals[e]; fn != nil {
+		return fl.userLiteral(e, fn)
+	}
 	t := fl.typeOf(e)
 	switch e.Kind {
 	case token.TRUE:
@@ -1327,6 +1334,70 @@ func (fl *fn) calleeNamesType(e *ast.CallExpr) bool {
 		return fl.u.res.Info.Uses[f] == nil
 	}
 	return false
+}
+
+// userLiteral calls the literal operator a ud-suffix named.
+//
+// The literal itself is the argument, in the form [over.literal] gives
+// it: an integer as unsigned long long, a floating one as long double.
+// Its spelling was trimmed to the number when the suffix was resolved,
+// so what is lowered here is an ordinary literal.
+func (fl *fn) userLiteral(e *ast.BasicLit, fn *sema.FuncSymbol) ir.Value {
+	target := fl.u.callee(fn)
+	if target == nil || len(fn.FuncType.Params) != 1 {
+		fl.u.errorf(e.Pos(), "lowering has no symbol for the literal operator")
+		return nil
+	}
+	from := types.Type(types.Typ(types.ULongLong))
+	if e.Kind == token.FLOAT_LIT {
+		from = types.Typ(types.LongDouble)
+	}
+	var v ir.Value
+	if e.Kind == token.FLOAT_LIT {
+		f, err := fl.u.evalFloat(e)
+		if err != nil {
+			fl.u.errorf(e.Pos(), "lowering could not evaluate the literal: %v", err)
+			return nil
+		}
+		v = fl.blk.F64.Const(f)
+	} else {
+		n, err := fl.u.evalInt(e)
+		if err != nil {
+			fl.u.errorf(e.Pos(), "lowering could not evaluate the literal: %v", err)
+			return nil
+		}
+		v = fl.blk.I64.Const(n)
+	}
+	res := fl.blk.Call(target, fl.convert(v, from, fn.FuncType.Params[0].Type))
+	if res.Len() == 0 {
+		return nil
+	}
+	return res.Value(0)
+}
+
+// userStringLiteral calls the literal operator a string's ud-suffix
+// named, with the characters and how many there are.
+func (fl *fn) userStringLiteral(e *ast.StringLit, fn *sema.FuncSymbol) ir.Value {
+	target := fl.u.callee(fn)
+	if target == nil || len(fn.FuncType.Params) != 2 {
+		fl.u.errorf(e.Pos(), "lowering has no symbol for the literal operator")
+		return nil
+	}
+	p := fl.stringLit(e)
+	if p == nil {
+		return nil
+	}
+	s, err := literal.Decode(fl.u.unit, e)
+	if err != nil {
+		fl.u.errorf(e.Pos(), "lowering could not read the literal: %v", err)
+		return nil
+	}
+	n := fl.convert(fl.blk.I64.Const(int64(len(s.Units))), types.Typ(types.LongLong), fn.FuncType.Params[1].Type)
+	res := fl.blk.Call(target, p, n)
+	if res.Len() == 0 {
+		return nil
+	}
+	return res.Value(0)
 }
 
 // convertedScalar lowers user-defined conversion functions or lambda conversion

@@ -30,6 +30,11 @@ func (e Encoding) String() string {
 type String struct {
 	Enc   Encoding
 	Units []uint32
+
+	// Suffix is the ud-suffix written after the closing quote, or empty.
+	// The literal's value is the characters before it; what the suffix
+	// makes of them is the literal operator's business ([lex.ext]).
+	Suffix string
 }
 
 // Bytes returns the narrow byte representation.
@@ -62,9 +67,12 @@ func Decode(u ast.Unit, e *ast.StringLit) (String, error) {
 	seenEnc := false
 	for _, seg := range e.Segs {
 		raw := u.Text(seg.Lo)
-		enc, rawStr, body, err := split(raw)
+		enc, rawStr, body, suffix, err := split(raw)
 		if err != nil {
 			return s, err
+		}
+		if suffix != "" {
+			s.Suffix = suffix
 		}
 		if enc != Narrow {
 			if seenEnc && enc != s.Enc {
@@ -114,13 +122,20 @@ func encode(r uint32, enc Encoding) []uint32 {
 
 // split takes a literal's spelling apart: the encoding prefix, whether it
 // is raw, and the body between the quotes (or the raw delimiters).
-func split(raw string) (enc Encoding, isRaw bool, body string, err error) {
+func split(raw string) (enc Encoding, isRaw bool, body, suffix string, err error) {
+	// A ud-suffix follows the closing quote: `"hello"_len`. It is taken
+	// off before the quotes are read, so that what is decoded is the
+	// string the program wrote.
+	if end := strings.LastIndexByte(raw, '"'); end > 0 && end+1 < len(raw) &&
+		isIdentStart(raw[end+1]) && strings.IndexByte(raw[:end], '"') >= 0 {
+		suffix, raw = raw[end+1:], raw[:end+1]
+	}
 	i := 0
 	for i < len(raw) && raw[i] != '"' {
 		i++
 	}
 	if i >= len(raw) || raw[len(raw)-1] != '"' {
-		return 0, false, "", fmt.Errorf("malformed string literal %s", raw)
+		return 0, false, "", "", fmt.Errorf("malformed string literal %s", raw)
 	}
 	prefix := raw[:i]
 	if len(prefix) > 0 && prefix[len(prefix)-1] == 'R' {
@@ -139,7 +154,7 @@ func split(raw string) (enc Encoding, isRaw bool, body string, err error) {
 	case "L":
 		enc = Wide
 	default:
-		return 0, false, "", fmt.Errorf("unknown string literal prefix %q", prefix)
+		return 0, false, "", "", fmt.Errorf("unknown string literal prefix %q", prefix)
 	}
 	body = raw[i+1 : len(raw)-1]
 	if isRaw {
@@ -152,11 +167,11 @@ func split(raw string) (enc Encoding, isRaw bool, body string, err error) {
 		delim := body[:open]
 		tail := ")" + delim
 		if open >= len(body) || len(body) < open+1+len(tail) || body[len(body)-len(tail):] != tail {
-			return 0, false, "", fmt.Errorf("malformed raw string literal %s", raw)
+			return 0, false, "", "", fmt.Errorf("malformed raw string literal %s", raw)
 		}
 		body = body[open+1 : len(body)-len(tail)]
 	}
-	return enc, isRaw, body, nil
+	return enc, isRaw, body, suffix, nil
 }
 
 // unescape resolves string escape sequences. Characters
@@ -289,4 +304,10 @@ func Char(spelling string) (value uint32, enc Encoding, multi bool, err error) {
 		value = value<<8 | u&0xff
 	}
 	return value, enc, true, nil
+}
+
+// isIdentStart reports whether a byte can begin an identifier, which is
+// what tells a ud-suffix from the rest of a malformed literal.
+func isIdentStart(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }

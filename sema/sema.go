@@ -117,6 +117,10 @@ type Info struct {
 	// TypeIds maps type-ids in expression context to their built types.
 	TypeIds map[*ast.TypeId]types.Type
 
+	// UserLiterals maps a literal written with a ud-suffix to the literal
+	// operator it calls ([lex.ext]).
+	UserLiterals map[ast.Expr]*FuncSymbol
+
 	// Consts records evaluated constant values of expressions.
 	Consts map[ast.Expr]int64
 
@@ -156,6 +160,7 @@ func newInfo() *Info {
 		Ranges:         map[*ast.RangeForStmt]*RangeProtocol{},
 		TypeIds:        map[*ast.TypeId]types.Type{},
 		Consts:         map[ast.Expr]int64{},
+		UserLiterals:   map[ast.Expr]*FuncSymbol{},
 		FloatConsts:    map[ast.Expr]float64{},
 	}
 }

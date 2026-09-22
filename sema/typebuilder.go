@@ -5,6 +5,7 @@ import (
 	"github.com/vertex-language/vcx/constexpr"
 	"github.com/vertex-language/vcx/token"
 	"github.com/vertex-language/vcx/types"
+	"strings"
 )
 
 // DeclSpecInfo records the semantic interpretation of a decl-specifier-seq.
@@ -667,6 +668,22 @@ func NameString(name ast.Name, u ast.Unit) string {
 		}
 		return "operator" + u.Text(n.OpPos)
 
+	case *ast.LiteralOperatorName:
+		// `operator""_kb` is looked up by the suffix it defines, which is
+		// how a literal written with that suffix finds it.
+		//
+		// Written without a space the whole of `""_kb` is one token, a
+		// string literal carrying a ud-suffix, so the suffix is read off
+		// it; written with one it is the identifier that follows.
+		if n.Suffix != nil {
+			return literalOperatorName(n.Suffix.Text(u))
+		}
+		text := u.Text(n.String)
+		if i := strings.LastIndexByte(text, '"'); i >= 0 && i+1 < len(text) {
+			return literalOperatorName(text[i+1:])
+		}
+		return ""
+
 	case *ast.DestructorName:
 		return "~" + NameString(n.Name, u)
 	case *ast.DecltypeName:
@@ -1239,3 +1256,7 @@ func namesValueTemplate(n ast.Node, scope *Scope, u ast.Unit) bool {
 	}
 	return false
 }
+
+// literalOperatorName is the name a literal operator is declared and
+// looked up under: `operator""` and the ud-suffix, with no space.
+func literalOperatorName(suffix string) string { return `operator""` + suffix }

@@ -214,6 +214,11 @@ func (m *itanium) unqualifiedName(f *Function) {
 				break
 			}
 			m.sb.WriteString(op.itanium)
+		} else if suffix, isLiteral := strings.CutPrefix(f.Name, `operator""`); isLiteral {
+			// [lex.ext]: a literal operator is `li` and the ud-suffix it
+			// defines, as a source-name.
+			m.sb.WriteString("li")
+			m.sourceName(suffix)
 		} else if strings.HasPrefix(f.Name, "operator") {
 			m.fail("no Itanium code for %q", f.Name)
 		} else {

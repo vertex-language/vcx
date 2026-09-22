@@ -76,6 +76,29 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 			a.errorAt(e.Pos(), err.Error())
 			return ExprInfo{Type: &types.Array{Elem: types.Qualify(types.Typ(types.Char), types.QConst), Incomplete: true}, ValCat: LValue}
 		}
+		if s.Suffix != "" {
+			// [lex.ext]: the literal is the operator's, which takes the
+			// characters and how many there are.
+			fns := literalOperators(a.curScope, s.Suffix)
+			if len(fns) == 0 {
+				a.errorAt(e.Pos(), fmt.Sprintf("no literal operator %s for the suffix %q", literalOperatorName(s.Suffix), s.Suffix))
+				return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
+			}
+			args := []Argument{
+				{Type: &types.Pointer{Elem: types.Qualify(types.Typ(s.ElemKind()), types.QConst)}},
+				{Type: a.sizeT()},
+			}
+			chosen, err := ResolveOverload(fns, args)
+			if err != nil {
+				a.errorAt(e.Pos(), fmt.Sprintf("no literal operator %s takes this literal: %v", literalOperatorName(s.Suffix), err))
+				return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
+			}
+			a.ensureInstantiated(chosen)
+			if a.info != nil {
+				a.info.UserLiterals[e] = chosen
+			}
+			return ExprInfo{Type: chosen.FuncType.Ret, ValCat: PrValue}
+		}
 		return ExprInfo{
 			Type:   &types.Array{Elem: types.Qualify(types.Typ(s.ElemKind()), types.QConst), Len: int64(len(s.Units) + 1)},
 			ValCat: LValue,
@@ -544,6 +567,9 @@ func (a *Analyzer) noteConst(e ast.Expr, n int64) {
 }
 
 func (a *Analyzer) checkBasicLit(lit *ast.BasicLit) ExprInfo {
+	if info, isUD := a.checkUserLiteral(lit); isUD {
+		return info
+	}
 	switch lit.Kind {
 	case token.INT_LIT:
 		text := lit.Spelling(a.unit)
@@ -2130,6 +2156,92 @@ func (a *Analyzer) foldConstant(e ast.Expr, info ExprInfo, sym Symbol) ExprInfo 
 		}
 	}
 	return info
+}
+
+// checkUserLiteral resolves a numeric literal written with a ud-suffix to
+// the literal operator it names ([lex.ext]).
+//
+// The suffix is read off the spelling, because the parser keeps the
+// literal as one token: a trailing identifier beginning with an
+// underscore is a ud-suffix, and nothing else is. That is narrower than
+// the grammar, which lets any identifier be one, but every suffix a
+// program may define begins with an underscore -- the rest are reserved
+// to the library -- so the ones this misses are the ones it must not
+// take from a standard suffix like `f` or `ull`.
+//
+// The literal's own spelling is trimmed to the number, so that everything
+// downstream reads a number and not a number with a name stuck to it.
+func (a *Analyzer) checkUserLiteral(lit *ast.BasicLit) (ExprInfo, bool) {
+	if lit.Kind != token.INT_LIT && lit.Kind != token.FLOAT_LIT {
+		return ExprInfo{}, false
+	}
+	text := lit.Spelling(a.unit)
+	num, suffix := splitUDSuffix(text)
+	if suffix == "" {
+		return ExprInfo{}, false
+	}
+	fns := literalOperators(a.curScope, suffix)
+	if len(fns) == 0 {
+		a.errorAt(lit.Pos(), fmt.Sprintf("no literal operator %s for the suffix %q", literalOperatorName(suffix), suffix))
+		return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}, true
+	}
+	lit.Text = num
+
+	// [over.literal]: an integer literal is offered as unsigned long long
+	// and a floating one as long double, which is the form that takes
+	// every value the literal can have.
+	argT := types.Typ(types.ULongLong)
+	if lit.Kind == token.FLOAT_LIT {
+		argT = types.Typ(types.LongDouble)
+	}
+	chosen, err := ResolveOverload(fns, []Argument{{Type: argT}})
+	if err != nil {
+		a.errorAt(lit.Pos(), fmt.Sprintf("no literal operator %s takes this literal: %v", literalOperatorName(suffix), err))
+		return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}, true
+	}
+	a.ensureInstantiated(chosen)
+	if a.info != nil {
+		a.info.UserLiterals[lit] = chosen
+	}
+	info := ExprInfo{Type: chosen.FuncType.Ret, ValCat: PrValue}
+	if chosen.Constexpr {
+		if n, err := a.NewConstContext().EvalInt(lit); err == nil {
+			_ = n
+		}
+	}
+	return info, true
+}
+
+// literalOperators is every literal operator in scope for a suffix.
+func literalOperators(scope *Scope, suffix string) []*FuncSymbol {
+	var out []*FuncSymbol
+	for _, sym := range LookupUnqualified(scope, literalOperatorName(suffix)) {
+		if fn, isFn := sym.(*FuncSymbol); isFn {
+			out = append(out, fn)
+		}
+	}
+	return out
+}
+
+// splitUDSuffix separates a numeric literal's spelling from its
+// ud-suffix: the trailing identifier that begins with an underscore.
+func splitUDSuffix(text string) (num, suffix string) {
+	i := len(text)
+	for i > 0 {
+		c := text[i-1]
+		if c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+			i--
+			continue
+		}
+		break
+	}
+	// Within that trailing run, the suffix starts at its first underscore.
+	for j := i; j < len(text); j++ {
+		if text[j] == '_' {
+			return text[:j], text[j:]
+		}
+	}
+	return text, ""
 }
 
 // classOfType is the class a type is, or nil.
