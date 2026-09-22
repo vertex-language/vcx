@@ -427,6 +427,18 @@ func (m *itanium) typ(t types.Type) {
 	case *types.Enum:
 		m.className(append(Scopes(t.Scopes...), Scope{Name: t.Name}))
 		return
+	case *types.TemplateRef:
+		// A template template argument is the template's own name, with
+		// no argument list: `unwrap<Box, int>` names Box itself.
+		if t.Primary != nil {
+			m.className(recordScopes(t.Primary))
+			return // className entered the candidate itself
+		}
+		if t.Name == "" {
+			m.fail("no Itanium spelling for an unnamed template argument")
+			return
+		}
+		m.sourceName(t.Name)
 	case *types.TemplateParam:
 		// Reference to the function template parameter (`T_`, `T0_`, etc.).
 		m.sb.WriteString(templateParamRef(t))

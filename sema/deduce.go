@@ -167,24 +167,69 @@ func deduce(param, arg types.Type, out Binding) bool {
 		// arguments are matched pairwise. The argument is the
 		// specialization's class, instantiated, which carries the
 		// arguments it was made for; or the same dependent spelling.
-		if _, isClass := p.Type.(*types.Record); !isClass {
+		if isAliasSpelling(p) {
 			// Alias template specializations are non-deduced contexts.
 			return true
 		}
 		var name string
 		var args []types.TemplateArg
+		var primary *types.Record
 		switch a := types.Unqualify(types.RemoveReference(arg)).(type) {
 		case *types.TemplateSpecialization:
 			name, args = a.Name, a.Args
+			primary, _ = a.Type.(*types.Record)
 		case *types.Record:
 			if a.TemplateArgs == nil {
 				return false
 			}
 			name, args = a.Name, a.TemplateArgs
+			primary = a
 		default:
 			return false
 		}
-		if name != p.Name || len(args) != len(p.Args) {
+		if tp, isParam := p.Type.(*types.TemplateParam); isParam {
+			// `Holder<T>` with Holder a template template parameter:
+			// Holder is deduced as the argument's own template, and the
+			// arguments are matched pairwise as for any specialization.
+			// Without this the whole thing read as an alias, which is a
+			// non-deduced context, and Holder was never bound.
+			if primary == nil || tp.Name == "" {
+				return false
+			}
+			ref := &types.TemplateRef{Name: name, Primary: primaryOf(primary)}
+			if prev, seen := out[tp.Name]; seen {
+				if prev == nil || !prev.Equal(ref) {
+					return false
+				}
+			} else {
+				out[tp.Name] = ref
+			}
+		} else if name != p.Name {
+			return false
+		}
+		args = flattenPacks(args)
+		if n := len(p.Args); n > 0 && isPackParam(p.Args[n-1]) {
+			// The pattern's own pack takes the rest of the arguments:
+			// `H<A...>` against `Box<int>` binds A to one argument.
+			if len(args) < n-1 {
+				return false
+			}
+			tp, isParam := p.Args[n-1].Type.(*types.TemplateParam)
+			if !isParam || tp.Name == "" {
+				return false
+			}
+			rest := &types.Pack{Elems: append([]types.TemplateArg(nil), args[n-1:]...)}
+			if prev, seen := out[tp.Name]; seen {
+				if prev == nil || !prev.Equal(rest) {
+					return false
+				}
+			} else {
+				out[tp.Name] = rest
+			}
+			args = args[:n-1]
+			p = &types.TemplateSpecialization{Name: p.Name, Args: p.Args[:n-1], Type: p.Type}
+		}
+		if len(args) != len(p.Args) {
 			return false
 		}
 		for i := range p.Args {
