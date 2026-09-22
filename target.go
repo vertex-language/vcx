@@ -35,6 +35,10 @@ const (
 	// ContainerPTX is NVIDIA's textual ISA: what a CUDA device
 	// compilation produces, which the driver assembles at load time.
 	ContainerPTX
+
+	// ContainerMetallib is Apple's GPU library: AIR bitcode, one module
+	// per function, which Metal loads with newLibraryWithURL:.
+	ContainerMetallib
 )
 
 func (c Container) String() string {
@@ -47,6 +51,8 @@ func (c Container) String() string {
 		return "pe"
 	case ContainerPTX:
 		return "ptx"
+	case ContainerMetallib:
+		return "metallib"
 	}
 	return "unknown"
 }
@@ -164,12 +170,19 @@ var targets = map[string]Target{
 		Container: ContainerELF,
 		ABI:       ABIItanium,
 	},
+	"air64-apple": {
+		Name:      "air64-apple",
+		Arch:      "air64",
+		OS:        "apple",
+		Container: ContainerMetallib,
+		ABI:       ABIItanium,
+	},
 }
 
 // Device reports whether t is a GPU: a target no host program runs on,
 // whose code is a kernel image the host loads.
 func (t Target) Device() bool {
-	return t.Arch == "nvptx64" || t.Arch == "amdgcn"
+	return t.Arch == "nvptx64" || t.Arch == "amdgcn" || t.Arch == "air64"
 }
 
 // DefaultTarget returns the host machine's native target.
@@ -208,6 +221,8 @@ func TargetByName(name string) (Target, error) {
 		name = "nvptx64-cuda"
 	case "amdgcn", "amdgcn-amd-amdhsa", "amdgcn-hsa":
 		name = "amdgcn-hsa"
+	case "air64", "air64-apple-macosx", "air64-apple":
+		name = "air64-apple"
 	}
 
 	if t, ok := targets[name]; ok {

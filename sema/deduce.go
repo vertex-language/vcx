@@ -363,6 +363,11 @@ func specializeNamed(fn *types.Func, paramNames []string, explicit []types.Type,
 			// `std::max<size_type>(2 * __cap, 1)` passes an int.
 			continue
 		}
+		if args[i].List != nil {
+			// [temp.deduct.call]/1: a braced list deduces nothing, except for
+			// an initializer_list or array parameter, which is not done yet.
+			continue
+		}
 		if !deduceArg(fn.Params[i].Type, args[i], b) {
 			return fn, nil, false
 		}

@@ -453,6 +453,14 @@ func (fl *fn) unary(e *ast.UnaryExpr) ir.Value {
 			return nil
 		}
 		return fl.load(slot, t)
+
+	case token.NOT:
+		// The operand is evaluated once, as a condition.
+		c := fl.truth(e.X)
+		if c == nil {
+			return nil
+		}
+		return fl.fromBool(fl.blk.I1.Not(*c))
 	}
 
 	v := fl.expr(e.X)
@@ -464,13 +472,6 @@ func (fl *fn) unary(e *ast.UnaryExpr) ir.Value {
 	case token.ADD:
 		// Unary plus is identity after promotion.
 		return v
-
-	case token.NOT:
-		c := fl.truth(e.X)
-		if c == nil {
-			return nil
-		}
-		return fl.fromBool(fl.blk.I1.Not(*c))
 
 	case token.SUB:
 		switch val := v.(type) {
@@ -575,8 +576,36 @@ func (fl *fn) compare(e *ast.BinaryExpr) (*ir.I1, bool) {
 			return nil, false
 		}
 		return cmpF32(fl.blk.F32, e.Op, li, ri)
+	case ir.Ptr:
+		ri, ok := r.(ir.Ptr)
+		if !ok {
+			return nil, false
+		}
+		return cmpPtr(fl.blk.Ptr, e.Op, li, ri)
 	}
 	return nil, false
+}
+
+// cmpPtr compares two addresses, which are ordered as unsigned integers.
+func cmpPtr(n ir.PtrNS, op token.Kind, l, r ir.Ptr) (*ir.I1, bool) {
+	var c ir.I1
+	switch op {
+	case token.EQL:
+		c = n.Eq(l, r)
+	case token.NEQ:
+		c = n.Ne(l, r)
+	case token.LSS:
+		c = n.Lt(l, r)
+	case token.LEQ:
+		c = n.Le(l, r)
+	case token.GTR:
+		c = n.Lt(r, l)
+	case token.GEQ:
+		c = n.Le(r, l)
+	default:
+		return nil, false
+	}
+	return &c, true
 }
 
 func cmpI32(n ir.I32NS, op token.Kind, l, r ir.I32, signed bool) (*ir.I1, bool) {

@@ -750,6 +750,18 @@ func (p *parser) parsePrimaryExpr() ast.Expr {
 		return p.parseParenOrFoldExpr()
 	}
 
+	// __builtin_va_arg(ap, T): an expression, then a type.
+	if p.peek() == token.IDENT && p.text(p.cur) == "__builtin_va_arg" && p.peekAt(1) == token.LPAREN {
+		start := p.pos()
+		kw := p.next()
+		lp := p.next()
+		x := p.parseAssignmentExpr()
+		p.expect(token.COMMA)
+		typeId := p.parseTypeId()
+		rp := p.expect(token.RPAREN)
+		return &ast.VaArgExpr{Span: ast.Span{Lo: start, Hi: rp + 1}, Keyword: kw, Lparen: lp, X: x, Type: typeId, Rparen: rp}
+	}
+
 	// __builtin_bit_cast(T, x): a named cast with the type first, as
 	// std::bit_cast is written under it.
 	if (p.peek() == token.BIT_CAST || p.peek() == token.IDENT && p.text(p.cur) == "__builtin_bit_cast") && p.peekAt(1) == token.LPAREN {

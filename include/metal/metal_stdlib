@@ -1,0 +1,281 @@
+/*
+ * <metal_stdlib> -- vcx's Metal standard library.
+ *
+ * Apple's is written against its own compiler's builtins, so vcx has its
+ * own, in namespace metal as the language names it: synchronization, the
+ * float and integer functions, the SIMD-group functions and the atomics.
+ * Each bottoms out in a __metal_* builtin that the device pass lowers to
+ * VIR (see lower/metal.go), and the AIR backend to Metal's intrinsics.
+ *
+ * What is here is the part of the library the float and 32-bit integer
+ * types need. The vector types, half, textures and the rest follow.
+ */
+#ifndef __VCX_METAL_STDLIB__
+#define __VCX_METAL_STDLIB__
+
+#define M_E_F 2.71828182845904523536f
+#define M_LOG2E_F 1.44269504088896340736f
+#define M_LOG10E_F 0.434294481903251827651f
+#define M_LN2_F 0.693147180559945309417f
+#define M_LN10_F 2.30258509299404568402f
+#define M_PI_F 3.14159265358979323846f
+#define M_PI_2_F 1.57079632679489661923f
+#define M_PI_4_F 0.785398163397448309616f
+#define M_1_PI_F 0.318309886183790671538f
+#define M_2_PI_F 0.636619772367581343076f
+#define M_SQRT2_F 1.41421356237309504880f
+#define M_SQRT1_2_F 0.707106781186547524401f
+#define MAXFLOAT 0x1.fffffep+127f
+#define INFINITY __builtin_huge_valf()
+#define NAN __builtin_nanf("")
+
+namespace metal {
+
+/* ---- synchronization --------------------------------------------------- */
+
+enum class mem_flags : uint {
+  mem_none = 0,
+  mem_device = 1,
+  mem_threadgroup = 2,
+  mem_texture = 4,
+};
+constexpr mem_flags operator|(mem_flags a, mem_flags b) { return mem_flags(uint(a) | uint(b)); }
+constexpr mem_flags operator&(mem_flags a, mem_flags b) { return mem_flags(uint(a) & uint(b)); }
+
+inline void threadgroup_barrier(mem_flags f) { __metal_threadgroup_barrier(uint(f)); }
+inline void simdgroup_barrier(mem_flags f) { __metal_simdgroup_barrier(uint(f)); }
+
+/* ---- bits ------------------------------------------------------------- */
+
+template <typename T, typename U>
+inline T as_type(U x) { return __builtin_bit_cast(T, x); }
+
+/* ---- float functions --------------------------------------------------- */
+
+/* The instructions, and the library built from them. Metal's default is
+ * fast math, and the transcendentals here are its fast forms; precise::
+ * has the ones whose fast form is already exact. */
+#define __VCX_METAL_EXACT_MATH                                                 \
+  inline float sqrt(float x) { return __metal_sqrt(x); }                       \
+  inline float fabs(float x) { return __metal_fabs(x); }                       \
+  inline float abs(float x) { return __metal_fabs(x); }                        \
+  inline float fmin(float x, float y) { return __metal_fmin(x, y); }           \
+  inline float fmax(float x, float y) { return __metal_fmax(x, y); }           \
+  inline float min(float x, float y) { return __metal_fmin(x, y); }            \
+  inline float max(float x, float y) { return __metal_fmax(x, y); }            \
+  inline float floor(float x) { return __metal_floor(x); }                     \
+  inline float ceil(float x) { return __metal_ceil(x); }                       \
+  inline float trunc(float x) { return __metal_trunc(x); }                     \
+  inline float rint(float x) { return __metal_rint(x); }                       \
+  inline float fma(float a, float b, float c) { return __metal_fma(a, b, c); } \
+  inline float copysign(float x, float y) { return __metal_copysign(x, y); }   \
+  inline float clamp(float x, float lo, float hi) { return fmin(fmax(x, lo), hi); } \
+  inline float saturate(float x) { return clamp(x, 0.0f, 1.0f); }              \
+  inline float mix(float x, float y, float a) { return x + (y - x) * a; }      \
+  inline float step(float edge, float x) { return x < edge ? 0.0f : 1.0f; }    \
+  inline float sign(float x) { return x > 0.0f ? 1.0f : x < 0.0f ? -1.0f : x * 0.0f; } \
+  inline float fract(float x) { return fmin(x - floor(x), 0x1.fffffep-1f); }
+
+#define __VCX_METAL_FAST_MATH                                                  \
+  inline float rsqrt(float x) { return __metal_rsqrt(x); }                     \
+  inline float exp2(float x) { return __metal_exp2(x); }                       \
+  inline float log2(float x) { return __metal_log2(x); }                       \
+  inline float exp(float x) { return __metal_exp2(x * M_LOG2E_F); }            \
+  inline float exp10(float x) { return __metal_exp2(x * 3.32192809488736234787f); } \
+  inline float log(float x) { return __metal_log2(x) * M_LN2_F; }              \
+  inline float log10(float x) { return __metal_log2(x) * 0.301029995663981195214f; } \
+  inline float pow(float x, float y) { return __metal_exp2(y * __metal_log2(x)); } \
+  inline float powr(float x, float y) { return __metal_exp2(y * __metal_log2(x)); } \
+  inline float sin(float x) { return __metal_sin(x); }                         \
+  inline float cos(float x) { return __metal_cos(x); }                         \
+  inline float tan(float x) { return __metal_sin(x) / __metal_cos(x); }        \
+  inline float divide(float x, float y) { return x * __metal_rcp(y); }
+
+__VCX_METAL_EXACT_MATH
+__VCX_METAL_FAST_MATH
+
+namespace fast {
+__VCX_METAL_EXACT_MATH
+__VCX_METAL_FAST_MATH
+} // namespace fast
+
+namespace precise {
+__VCX_METAL_EXACT_MATH
+} // namespace precise
+
+#undef __VCX_METAL_EXACT_MATH
+#undef __VCX_METAL_FAST_MATH
+
+/* ---- integer functions ------------------------------------------------- */
+
+inline int abs(int x) { return x < 0 ? -x : x; }
+inline int min(int x, int y) { return x < y ? x : y; }
+inline int max(int x, int y) { return x > y ? x : y; }
+inline uint min(uint x, uint y) { return x < y ? x : y; }
+inline uint max(uint x, uint y) { return x > y ? x : y; }
+inline int clamp(int x, int lo, int hi) { return min(max(x, lo), hi); }
+inline uint clamp(uint x, uint lo, uint hi) { return min(max(x, lo), hi); }
+inline uint absdiff(int x, int y) { return x > y ? uint(x) - uint(y) : uint(y) - uint(x); }
+inline uint absdiff(uint x, uint y) { return x > y ? x - y : y - x; }
+inline uint clz(uint x) { return __metal_clz_u(x); }
+inline int clz(int x) { return int(__metal_clz_u(uint(x))); }
+inline uint ctz(uint x) { return __metal_ctz_u(x); }
+inline int ctz(int x) { return int(__metal_ctz_u(uint(x))); }
+inline uint popcount(uint x) { return __metal_popcount_u(x); }
+inline int popcount(int x) { return int(__metal_popcount_u(uint(x))); }
+inline uint mulhi(uint x, uint y) { return __metal_mulhi_u(x, y); }
+inline int mulhi(int x, int y) { return __metal_mulhi_i(x, y); }
+
+/* ---- the SIMD group ---------------------------------------------------- */
+
+/* A value from another lane, for each 32-bit type; the lane is a ushort
+ * in MSL and anything that converts to one here. */
+#define __VCX_METAL_SHUFFLE(name, op)                                          \
+  inline uint name(uint v, ushort l) { return __metal_simd_##op##_u(v, l); }   \
+  inline int name(int v, ushort l) { return int(__metal_simd_##op##_u(uint(v), l)); } \
+  inline float name(float v, ushort l) { return __metal_as_float(__metal_simd_##op##_u(__metal_as_uint(v), l)); }
+__VCX_METAL_SHUFFLE(simd_shuffle, shuffle)
+__VCX_METAL_SHUFFLE(simd_broadcast, shuffle)
+__VCX_METAL_SHUFFLE(simd_shuffle_up, shuffle_up)
+__VCX_METAL_SHUFFLE(simd_shuffle_down, shuffle_down)
+__VCX_METAL_SHUFFLE(simd_shuffle_xor, shuffle_xor)
+#undef __VCX_METAL_SHUFFLE
+
+inline uint simd_broadcast_first(uint v) { return __metal_simd_broadcast_first_u(v); }
+inline int simd_broadcast_first(int v) { return int(__metal_simd_broadcast_first_u(uint(v))); }
+inline float simd_broadcast_first(float v) { return __metal_as_float(__metal_simd_broadcast_first_u(__metal_as_uint(v))); }
+
+/* The votes. simd_ballot is a simd_vote, which converts to the mask. */
+class simd_vote {
+public:
+  typedef ulong vote_t;
+  explicit constexpr simd_vote(vote_t v = 0) : v_(v) {}
+  explicit constexpr operator vote_t() const { return v_; }
+  constexpr bool any() const { return v_ != 0; }
+private:
+  vote_t v_;
+};
+inline simd_vote simd_ballot(bool c) { return simd_vote(__metal_simd_ballot(c)); }
+inline bool simd_any(bool c) { return __metal_simd_any(c); }
+inline bool simd_all(bool c) { return __metal_simd_all(c); }
+
+/* The reductions and scans, over shuffles: a butterfly for a reduction,
+ * which every lane ends with, and a Hillis-Steele scan. Both read every
+ * lane of the group, so a group with inactive lanes is not what these
+ * are for yet. */
+#define __VCX_METAL_REDUCE(name, T, combine)                                   \
+  inline T name(T v) {                                                         \
+    for (ushort d = 1; d < 32; d <<= 1) {                                      \
+      T o = simd_shuffle_xor(v, d);                                            \
+      v = combine;                                                             \
+    }                                                                          \
+    return v;                                                                  \
+  }
+__VCX_METAL_REDUCE(simd_sum, float, v + o)
+__VCX_METAL_REDUCE(simd_sum, int, v + o)
+__VCX_METAL_REDUCE(simd_sum, uint, v + o)
+__VCX_METAL_REDUCE(simd_product, float, v * o)
+__VCX_METAL_REDUCE(simd_product, int, v * o)
+__VCX_METAL_REDUCE(simd_product, uint, v * o)
+__VCX_METAL_REDUCE(simd_min, float, fmin(v, o))
+__VCX_METAL_REDUCE(simd_min, int, min(v, o))
+__VCX_METAL_REDUCE(simd_min, uint, min(v, o))
+__VCX_METAL_REDUCE(simd_max, float, fmax(v, o))
+__VCX_METAL_REDUCE(simd_max, int, max(v, o))
+__VCX_METAL_REDUCE(simd_max, uint, max(v, o))
+__VCX_METAL_REDUCE(simd_and, int, v & o)
+__VCX_METAL_REDUCE(simd_and, uint, v & o)
+__VCX_METAL_REDUCE(simd_or, int, v | o)
+__VCX_METAL_REDUCE(simd_or, uint, v | o)
+__VCX_METAL_REDUCE(simd_xor, int, v ^ o)
+__VCX_METAL_REDUCE(simd_xor, uint, v ^ o)
+#undef __VCX_METAL_REDUCE
+
+#define __VCX_METAL_SCAN(T)                                                    \
+  inline T simd_prefix_inclusive_sum(T v) {                                    \
+    uint lane = __metal_simd_lane();                                           \
+    for (ushort d = 1; d < 32; d <<= 1) {                                      \
+      T o = simd_shuffle_up(v, d);                                             \
+      if (lane >= d) v = v + o;                                                \
+    }                                                                          \
+    return v;                                                                  \
+  }                                                                            \
+  inline T simd_prefix_exclusive_sum(T v) { return simd_prefix_inclusive_sum(v) - v; }
+__VCX_METAL_SCAN(float)
+__VCX_METAL_SCAN(int)
+__VCX_METAL_SCAN(uint)
+#undef __VCX_METAL_SCAN
+
+/* ---- atomics ----------------------------------------------------------- */
+
+/* Metal's atomics are relaxed, on 32-bit integers and floats in device and
+ * threadgroup memory. The order argument is taken and, being relaxed, has
+ * nothing to add. */
+enum memory_order {
+  memory_order_relaxed = 0,
+  memory_order_acquire = 2,
+  memory_order_release = 3,
+  memory_order_acq_rel = 4,
+  memory_order_seq_cst = 5,
+};
+
+template <typename T>
+struct atomic {
+  T __value;
+};
+typedef atomic<int> atomic_int;
+typedef atomic<uint> atomic_uint;
+typedef atomic<float> atomic_float;
+
+#define __VCX_METAL_ATOMIC_COMMON(T, s)                                        \
+  inline T atomic_load_explicit(const volatile atomic<T>* o, memory_order) {   \
+    return __metal_atomic_load_##s((T*)o);                                     \
+  }                                                                            \
+  inline void atomic_store_explicit(volatile atomic<T>* o, T v, memory_order) { \
+    __metal_atomic_store_##s((T*)o, v);                                        \
+  }                                                                            \
+  inline T atomic_exchange_explicit(volatile atomic<T>* o, T v, memory_order) { \
+    return __metal_atomic_xchg_##s((T*)o, v);                                  \
+  }                                                                            \
+  inline T atomic_fetch_add_explicit(volatile atomic<T>* o, T v, memory_order) { \
+    return __metal_atomic_add_##s((T*)o, v);                                   \
+  }                                                                            \
+  inline T atomic_fetch_sub_explicit(volatile atomic<T>* o, T v, memory_order) { \
+    return __metal_atomic_sub_##s((T*)o, v);                                   \
+  }
+
+#define __VCX_METAL_ATOMIC_INT(T, s)                                           \
+  __VCX_METAL_ATOMIC_COMMON(T, s)                                              \
+  inline T atomic_fetch_and_explicit(volatile atomic<T>* o, T v, memory_order) { \
+    return __metal_atomic_and_##s((T*)o, v);                                   \
+  }                                                                            \
+  inline T atomic_fetch_or_explicit(volatile atomic<T>* o, T v, memory_order) { \
+    return __metal_atomic_or_##s((T*)o, v);                                    \
+  }                                                                            \
+  inline T atomic_fetch_xor_explicit(volatile atomic<T>* o, T v, memory_order) { \
+    return __metal_atomic_xor_##s((T*)o, v);                                   \
+  }                                                                            \
+  inline T atomic_fetch_min_explicit(volatile atomic<T>* o, T v, memory_order) { \
+    return __metal_atomic_min_##s((T*)o, v);                                   \
+  }                                                                            \
+  inline T atomic_fetch_max_explicit(volatile atomic<T>* o, T v, memory_order) { \
+    return __metal_atomic_max_##s((T*)o, v);                                   \
+  }                                                                            \
+  inline bool atomic_compare_exchange_weak_explicit(volatile atomic<T>* o, thread T* expected, \
+                                                    T desired, memory_order, memory_order) { \
+    T old = __metal_atomic_cas_##s((T*)o, *expected, desired);                 \
+    if (old == *expected)                                                      \
+      return true;                                                             \
+    *expected = old;                                                           \
+    return false;                                                              \
+  }
+
+__VCX_METAL_ATOMIC_INT(int, i)
+__VCX_METAL_ATOMIC_INT(uint, u)
+__VCX_METAL_ATOMIC_COMMON(float, f)
+#undef __VCX_METAL_ATOMIC_INT
+#undef __VCX_METAL_ATOMIC_COMMON
+
+} // namespace metal
+
+#endif /* __VCX_METAL_STDLIB__ */

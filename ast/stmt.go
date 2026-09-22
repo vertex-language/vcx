@@ -142,7 +142,7 @@ type ReturnStmt struct {
 	Span
 	Keyword Tok
 	X       Expr
-	Semi Tok
+	Semi    Tok
 }
 
 // CoReturnStmt is `co_return X_opt ;`.

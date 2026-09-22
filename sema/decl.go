@@ -676,7 +676,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			ExternC:    a.externC,
 			AsmLabel:   a.asmLabel(init),
 			Inline:     declInfo.Inline,
-			Memory:     a.memSpaceOf(d.Specs.AllAttrs(d.Attrs), init.Pos()),
+			Memory:     a.memSpaceOf(d.Specs.AllAttrs(d.Attrs), init.Pos(), fullType),
 			// Defined unless extern without an initializer.
 			Defined: declInfo.Storage != StorageExtern || init.Value != nil || init.Braced != nil,
 		}
@@ -735,6 +735,15 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 					a.info.MemberInits[a.curRecord] = map[string]*ast.InitDeclarator{}
 				}
 				a.info.MemberInits[a.curRecord][name] = init
+				// A default member initializer of class type names a
+				// constructor the same way any other declaration does --
+				// `Part p{"base-member"}` calls Part(const char*) -- and
+				// nothing else resolves it: the declaration path above
+				// leaves members alone. The enclosing class is still
+				// incomplete here, so only another class is resolved.
+				if rec := types.AsRecord(types.Unqualify(fullType)); rec != nil && rec != a.curRecord {
+					a.resolveConstructor(init, rec)
+				}
 			}
 		}
 
@@ -1804,6 +1813,9 @@ func (a *Analyzer) checkMemInits(d *ast.FuncDecl) {
 			}
 		}
 		if target == nil {
+			if name == a.curRecord.Name && !dependentArguments(args) {
+				a.checkDelegatingInit(mi, args)
+			}
 			continue // a base, or a name the class does not have
 		}
 		if _, isArr := types.Unqualify(target).(*types.Array); isArr && mi.Braced != nil {
@@ -1833,6 +1845,30 @@ func (a *Analyzer) checkMemInits(d *ast.FuncDecl) {
 		if !chosen.Defaulted && a.info != nil {
 			a.info.MemInits[mi] = chosen
 		}
+	}
+}
+
+// checkDelegatingInit resolves a mem-initializer that names the constructor's
+// own class. [class.base.init]/6: it delegates to another of the class's
+// constructors, which builds the whole object -- bases, vptr and members --
+// before the delegating constructor's own body runs.
+func (a *Analyzer) checkDelegatingInit(mi *ast.MemInit, args []Argument) {
+	chosen, err := a.chooseConstructor(a.curRecord, args)
+	if err != nil {
+		a.errorAt(mi.Pos(), fmt.Sprintf("no matching constructor for %s: %v", a.curRecord.Name, err))
+		return
+	}
+	if chosen == nil {
+		return
+	}
+	for i := len(mi.Args); i < len(chosen.Defaults); i++ {
+		if def := chosen.Defaults[i]; def != nil {
+			mi.Args = append(mi.Args, def)
+			a.CheckExpr(def)
+		}
+	}
+	if !chosen.Defaulted && a.info != nil {
+		a.info.MemInits[mi] = chosen
 	}
 }
 

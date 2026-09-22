@@ -1,440 +1,114 @@
 # tests
 
-Eight corpora, asking eight different questions, and three more for the
-GPU. Each is named for its question, and a file belongs in exactly one
-of them.
+A ladder: one small thing per file, numbered in the order the rungs climb.
+The root is C++, `001`–`250`, and each offload language has its own ladder
+of `001`–`050` beside it: `cuda/`, `hip/` and `metal/`.
 
-```
-go test ./...                                    # all of it
-go test ./parser -run TestSyntaxCorpus -v
-go test ./sema   -run 'TestCheckCorpus/ok-11' -v
-go test ./sema   -run TestEvalCorpus -v
-go test .        -run TestABICorpus -v
-go test .        -run TestMangleCorpus -v
-go test .        -run TestCompilerCorpus -v
-go test .        -run TestLinkCorpus -v
-go test .        -run TestHeadersCorpus -v
-go test .        -run TestCUDACorpus -v          # tests/cuda/device: kernels, on the GPU where there is one
-go test .        -run TestCUDAPrograms -v        # tests/cuda/host: whole programs, v++ run
-go test .        -run 'TestHIPCorpus|TestHIPPrograms' -v   # tests/hip: to gfx942, not run
-```
+Nothing here writes down an expected value. Every file is built twice,
+once by vcx and once by the language's own compiler, and the two results
+are compared. The other compiler's answer is the oracle, and a
+disagreement with it is a bug in vcx by definition.
 
-## One compiler, every target
+| Ladder | Files | The oracle | Compared |
+| --- | --- | --- | --- |
+| `tests/` | `001`–`250` `.cpp` | clang++ on macOS and Linux, cl on Windows | stdout and the exit status |
+| `tests/cuda/` | `001`–`050` `.cu` | nvcc, on a machine with an NVIDIA GPU | stdout and the exit status |
+| `tests/hip/` | `001`–`050` `.hip` | hipcc, on a machine with an AMD GPU and ROCm | stdout and the exit status |
+| `tests/metal/` | `001`–`050` `.metal` | `xcrun metal`, on a Mac's GPU | every buffer after the dispatch |
 
-vcx is one C++ compiler with targets, not a Windows compiler with other
-targets added, and the corpora are written that way. A file directly in
-`tests/<corpus>/` is portable C++ and every target runs it. What differs
-between targets is the *answer*, and the answer always comes from the
-platform's own compiler, never from the file: `cl` and `link.exe` for an
-MSVC-dialect target, `clang++` and its linker for a GNU-dialect one --
-Apple's on a Mac. A program whose result depends on the target, like one
-that tests `sizeof(long)`, is still portable: both compilers are asked, and
-they have to agree with each other on each machine.
+Where no GPU or oracle is present, the CUDA and HIP programs are still
+compiled through both passes, and must compile. The Metal ladder needs
+the Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`) and
+skips without it.
 
-A file that means something to one family of toolchains only lives one
-level down, in `tests/<corpus>/msvc/` or `tests/<corpus>/gnu/`, and runs
-only for a target of that dialect: `__declspec` in the first, `__asm`
-labels and `__builtin_fabs` in the second. The folder is the whole
-mechanism. Nothing in a file says which targets it is for, and no runner
-keeps a list; `corpus_test.go` reads the folders. A result reported as
-`gnu/084-builtins-and-asm-labels` is one of those.
+## C++: `001`–`250`
 
-The corpora that need an oracle skip, naming what is missing, on a machine
-that has neither toolchain. The rest -- syntax, check, eval -- analyze
-without a target and run everywhere.
+| | |
+| --- | --- |
+| 001–020 | the smallest programs, then arithmetic one operator at a time: add, sub, mul, div, mod, shifts, bitwise, compares, logical, `?:`, increments, compound assignment |
+| 021–040 | every scalar type: `char`, `short`, `long long`, `<cstdint>`, `bool`, promotion, the usual conversions, truncation, extension, `float`, `double`, NaN and infinity, literals, `sizeof` and `alignof` |
+| 041–060 | control flow: `if`, the loops, `break` and `continue`, `switch` dense and sparse, `goto`, recursion, init-statements, the comma, statics, globals, dynamic initialization |
+| 061–080 | pointers, arrays, C strings, `<cstring>`, references, `const`, `nullptr`, `void*`, `snprintf`, a sort |
+| 081–100 | functions: overloading, default arguments, `inline`, function pointers, lambdas and captures, structs by value, layout, unions, bit-fields, C varargs |
+| 101–120 | classes: constructors, destructors, copy and move, `this`, statics, `const` members, operators, `<=>`, friends, nested classes, `new` and `delete`, the rule of three, temporaries |
+| 121–140 | inheritance: construction order, virtual functions, abstract classes, virtual destructors, `override` and `final`, multiple and virtual bases, access, hiding, slicing, covariance, `dynamic_cast`, `typeid`, empty bases |
+| 141–160 | templates: function and class templates, non-type parameters, full and partial specialization, variadics, folds, template template parameters, `constexpr`, `if constexpr`, traits, SFINAE, concepts, `requires`, deduction, CTAD, variable and member templates |
+| 161–180 | the rest of the language: `consteval`, `constinit`, structured bindings, range-for, enums, namespaces, aliases, `initializer_list`, user-defined literals, CRTP, raw strings, `alignas`, the casts, local classes; then exceptions, unwinding, hierarchies, `catch (...)`, `noexcept` |
+| 181–200 | the standard library: `move` and `forward`, `pair` and `tuple`, `array`, `vector`, `string`, `<algorithm>`, `<numeric>`, `unique_ptr`, `shared_ptr`, `optional`, `variant`, `function`, `map`, `set`, `unordered_map`, `<cmath>`, iostreams, `string_view`, and a program that uses most of it |
+| 201–210 | the object model: placement `new`, a class's own `operator new`, pointers to data and function members, `mutable`, `volatile`, `explicit(bool)`, anonymous unions, unions with non-trivial members, aggregates with bases |
+| 211–220 | functions and lambdas, further: init-captures, `this` and `*this` captures, template lambdas, `constexpr` and immediately-invoked lambdas, recursion and overloads through deducing `this`, abbreviated templates, ADL, overload ranking |
+| 221–230 | templates, further: dependent names, `auto` and class-type non-type parameters, `index_sequence` and `apply`, type erasure, tag dispatch, explicit instantiation and friend templates, concept subsumption, constrained members, metaprogramming, `inline` and `static constexpr` members |
+| 231–240 | the rest of the language: `using enum` and bitmask enums, attributes, `if consteval`, leaving scopes by `break`, `continue`, `goto` and `return`, `thread_local`, static destruction order and `atexit`, function-try-blocks, `exception_ptr` and nested exceptions, `uncaught_exceptions`, `__int128`, `long double` and `<bit>` |
+| 241–250 | more of the library: `std::expected`, ranges and views, `span`, the sequence containers and adaptors, `bitset`, a custom iterator under the algorithms, `std::format`, a coroutine generator, and a closing program over the later rungs |
 
-## syntax/
+## CUDA and HIP: `001`–`050`
 
-Does it parse? 17 files covering the C++23 grammar, one per chapter of it,
-from the lexical clause through the combinations that only break a parser
-when they meet. Nothing here has to mean anything or run -- several files are
-deliberately nonsense that happens to be well-formed -- so the only question
-asked of them is whether the parser accepts what the grammar allows.
+Whole programs, each with a `main` that allocates, launches and prints.
+The two ladders climb the same way, each in its own API:
 
-Every construct cites the paragraph it comes from, because there is no
-oracle. The obvious candidate is `cl.exe`, and for phase 4 it is an excellent
-one: it agrees token for token on the `[cpp.rescan]` examples, on
-`__VA_OPT__`, on the placemarker in `a ## __VA_OPT__(x)`. For C++23 core
-syntax it is not. It still rejects P2223's whitespace-before-newline splice
-that GCC and Clang have warned about rather than refused for years; it has no
-delimited escapes; it takes `0x1e+2` for a single pp-number where the grammar
-makes that ill-formed. So the standard is the authority here and the
-paragraph number is the citation.
+| | |
+| --- | --- |
+| 001–010 | a kernel launched, a value written and read back, thread and block indices, vector add, bounds checks, grid-stride loops, 2D grids and 3D blocks, every scalar parameter type |
+| 011–019 | structs by value, device functions, `__host__ __device__`, recursion, integer and 64-bit arithmetic, exact float functions, `double`, the math library, conversions |
+| 020–027 | shared memory and barriers, reductions, dynamic shared memory, the atomics on integers and floats, `__constant__` and `__device__` globals through the symbol API |
+| 028–033 | the warp or wavefront: shuffles, votes, bit intrinsics, `memset` and device-to-device copies, kernel sequences |
+| 034–041 | streams, events, kernel templates, lambdas and classes on the device, device `printf`, `__launch_bounds__`, the vector types |
+| 042–050 | tiled matrix multiply, a prefix scan, a bitonic sort, block-wide votes or scoped atomics, launch errors, device queries, managed and pinned memory, and a fixed-point Mandelbrot |
 
-Used by `parser`, in `corpus_test.go`.
+The HIP ladder is written against `warpSize`, since an AMD GPU's wavefront
+is 64 lanes or 32; its ballots are 64 bits wide.
 
-## check/
+## Metal: `001`–`050`
 
-Does it typecheck, and does it say something when it does not? Files named
-`ok-*` must check clean -- not one diagnostic, because a warning on correct
-code is a bug in the same way an error is. The rest must be rejected, and
-each `bad-*` file is one violation with the paragraph it breaks written
-above it.
+A `.metal` file has no host code, so it says how to run it, on `//!`
+lines:
 
-What a rejection *says* is not asserted, and that is the point of writing the
-paragraph down. A file of expected messages would be maintained by hand and
-wrong the moment a diagnostic improved, which turns a better diagnostic into
-a failing test -- exactly backwards. The file is the record instead:
-
-```
-v++ check tests/check/bad-07-private-member.cpp
+```metal
+//! kernel vector_add
+//! grid 1000 64            threads, threads per threadgroup (or x y px py for 2D)
+//! buffer float 1000 rand  [[buffer(0)]]: float, uint or int; its length; its contents
+//! buffer float 1000 zero  [[buffer(1)]]
+//! ulp 4                   float results may differ by this many ulps
 ```
 
-prints the diagnostic, and reading that against the paragraph quoted in the
-file is how the wording is reviewed. What the suite checks is the part a
-machine can: that a violation is caught at all, and that correct code stays
-quiet.
+A buffer's contents are `zero`, `iota` (its index), `rand` (a fixed
+pseudo-random sequence: [0, 1) for a float, every bit for an integer),
+`mod N` (`rand` modulo N) or `const V`.
 
-Used by `sema`, in `corpus_test.go`.
+| | |
+| --- | --- |
+| 001–018 | a constant stored, the grid position, vector add, then every integer and float operator, conversions, `?:`, and the control flow |
+| 019–027 | device functions, templates, structs in buffers, `constant` references and pointers, binding order and implicit indices, program-scope tables, thread arrays, pointer arithmetic |
+| 028–035 | threadgroup memory and barriers, a reduction, a 2D transpose, the atomics on device and threadgroup memory, integer and float |
+| 036–042 | the SIMD group: shuffles, votes, reductions, prefix sums; the threadgroup and SIMD-group built-ins, partial threadgroups, 2D grids |
+| 043–050 | exact and fast float functions, integer functions, `as_type`, namespaces and function objects, structs with operators, the vector types, and a fixed-point Mandelbrot |
 
-## eval/
+## Rules
 
-Does the constant evaluator get the right answer?
+- **One thing per file.** A failure should name what broke. When a test
+  turns out to be asking two questions, split it.
+- **No undefined behavior, and nothing unspecified.** Signed overflow,
+  out-of-range float-to-int, division by zero and `INT_MIN / -1` are left
+  out, as is the order in which a function's arguments or an operator's
+  operands are evaluated: both compilers are allowed to answer anything.
+- **Floating point is exact where it can be.** Inputs are chosen so that a
+  fused multiply-add and a separate multiply and add round the same, since
+  nvcc fuses by default and vcx does not yet. Only the transcendentals are
+  printed to fewer digits, or compared within stated ulps.
+- **Each run is capped** at 10 seconds and 1 MB of output, so a
+  miscompiled loop fails its own test instead of the whole run.
+- **Deterministic output only**: no clock, no addresses, no hash order, no
+  threads racing to print. An unordered container is sorted before it is
+  printed; a device `printf` comes from one thread; an atomic float sum
+  adds values whose total is exact in any order.
+- **Every fix lands with the smallest numbered file that shows it.**
 
-This is the corpus that runs. Every file is a whole program whose assertions
-are `static_assert`s, so compiling the file *is* running it: the loops
-iterate, the arrays are written through, the recursion recurses, and a wrong
-answer is a diagnostic rather than a number nobody reads. A compiler with no
-code generator can still be asked to execute C++, and this is where it is
-asked -- `tests/eval/06` sieves primes, sorts an array in place, walks a
-Collatz path and computes an integer square root, all of it before a single
-instruction exists to emit.
+## Running
 
-Nothing here writes an expected value into a harness. A table of numbers
-beside a program is a claim maintained by hand and wrong the moment it
-drifts; the claim belongs in the program, as `static_assert(fib(20) ==
-6765)`, where it is checked by the thing it is a claim about. That is the
-same reason `tests/compiler` gives in the sibling projects, arriving a phase
-earlier.
-
-`11` is the one that decides requires-expressions: every concept in it
-has a type it rejects, because a constraint satisfied by everything is
-indistinguishable from none, and the one wrong answer no diagnostic ever
-catches is *true*.
-
-It is also the one corpus with a working oracle. A `static_assert` file is
-portable C++23 -- no headers, no entry point, no platform -- so
-
+```console
+$ go test -run TestCorpus .           # the C++ ladder
+$ go test -run 'TestCorpus/113' .     # one rung
+$ go test -run TestCUDA .             # the CUDA ladder
+$ go test -run TestHIP .              # the HIP ladder
+$ go test -run TestMetal .            # the Metal ladder
 ```
-cl /nologo /std:c++latest /Zs tests\eval\02-constexpr-functions.cpp
-```
-
-compiles the same file unchanged and has to accept it too (`/utf-8`, as
-the runners pass it: cl's default reads the source in the system code
-page, and C++23 makes UTF-8 the portable case). There is no output
-to compare, which is the elegant part: both compilers either accept the file
-or name the assertion that failed, and agreeing on which is the whole
-question. It is not wired into the runner, because this machine needs a
-wrapper to give `cl.exe` an `%INCLUDE%` at all, but nothing in these files
-stands in the way of running it.
-
-One thing they do assert about the target: `04` checks `sizeof` and
-`alignof`, which are LP64's. The runner analyzes under that model for that
-reason, and a file added here must not assume the host's.
-
-Used by `sema`, in `eval_test.go`.
-
-## abi/
-
-Does vcx lay a class out the way the platform's compiler does?
-
-This is the corpus that decides whether the project works, and the only one
-whose files state nothing at all. A layout test does not run and has no
-expected values in it: the file is a set of class declarations, and the
-numbers come from the other compiler. vcx computes a layout, `cl` is asked
-for its own with `/d1reportSingleClassLayout`, and the two are compared:
-size, base offsets, the offset of every named member including the inherited
-ones, and every virtual table entry for entry -- which function a call
-through slot *n* actually reaches.
-
-That is not a stylistic preference. Every Windows layout question settled in
-vcc came out differently from what the documentation implied, and each was
-settled in minutes by writing the program twice and diffing. Four such
-answers came out of writing these four files, none of which could have been
-read off a specification:
-
-- a **member pointer** under Microsoft is sized from the class's
-  inheritance, not from the machine's pointer: four bytes for a data member
-  even under multiple inheritance, eight under virtual inheritance, and
-  eight or sixteen for a member function. Itanium gives every one of them
-  the same size.
-- **two empty bases cannot share an address** (§6.7.2/2), so the second one
-  takes a byte -- but a class whose only base is empty is itself empty, and
-  the test for that has to recurse.
-- a **bit-field starts a new storage unit when the declared type changes**,
-  so `unsigned char a : 3; unsigned int b : 3;` is eight bytes under `cl`
-  and four under a compiler that packs across the change.
-- a class with a **polymorphic base does not add a second vptr**, and the
-  bases are **reordered** so the polymorphic one is first: `struct D :
-  Plain, PolyA {}` lays PolyA out at zero, which is not the order it was
-  written in.
-- a **virtual base goes last**, after the non-virtual part is rounded up to
-  the class's alignment -- and an **empty** one takes no bytes at all, not
-  even the byte an empty complete object has, while still getting an offset
-  one past the end that its table reports.
-- the **vbptr is inherited like the vfptr**, so a class deriving from a
-  diamond carries the two its bases brought and adds none; and a base's own
-  table cannot serve, because its offsets are the ones that base computed
-  for itself and the complete object put the shared subobject elsewhere.
-- a **class-head `alignas` pads the complete object only**: a class
-  derived from `struct alignas(16) A { int v; }` puts its first member
-  at offset 4, inside what the base's `sizeof` counts, and rounds its
-  own size up to 16 afterwards. An `alignas` on a member is the
-  member's and does travel into a derived class.
-- **overloads share consecutive vtable slots and are numbered backwards.**
-  For `virtual void f(int); virtual void f(double); virtual void f(char);`
-  cl gives f(char) slot 0 and f(int) slot 2, and a function declared
-  *between* two overloads comes after both. Nothing states this; a derived
-  class overriding one at a time is what pins it down.
-
-Without `cl.exe` the corpus is skipped rather than checked against numbers
-written down by hand -- those would be a record of what vcx did on the day
-they were written, not of what is correct.
-
-`v++ layout file.cpp` prints the same thing by hand, which is how a
-disagreement is read once the runner reports one.
-
-Used by the root package, in `abi_test.go`.
-
-## mangle/
-
-Does vcx name a definition the way the platform's compiler names it?
-
-The other half of the ABI question. Two objects link only if the one that
-defines `Widget::get() const` and the one that calls it spell it the same
-way, and the spelling is a scheme nobody wrote down: Microsoft's is
-documented by `cl`'s output and by nothing else. So the files are
-declarations and the names come from `cl`. Each file is compiled with `/c`,
-`dumpbin /symbols` lists what the object defines, and every name vcx would
-give a definition in the file has to be in that list -- and every name `cl`
-defined that came from the source has to be one vcx produced, so that a
-function vcx could not name is a failure and not a silence.
-
-The scheme has rules the files found that no description of it gives:
-
-- **top-level const on a pointer parameter is kept**, `?cp@@YAXQEAH@Z` for
-  `cp(int *const)`, though on anything else it is dropped as §9.3.4.6/5
-  says; and a **decayed array parameter is a const pointer**, `QEAH` for
-  `int[3]`.
-- a **pointer to a const pointer writes the const twice**, as the pointee's
-  cv letter and again as the inner pointer's own: `PEBQEBH`.
-- a pointer **variable's trailing cv letter is the pointee's**, not its
-  own: `?pc@@3PEBDEB` for `const char *pc`, where its own const would have
-  been the `Q` in front.
-- the **back-reference tables key on the whole type**, qualifiers at every
-  level, so `void *` and `const void *` are two entries; and a two-letter
-  basic type takes a slot where a one-letter one never does.
-- a class with **several polymorphic bases names every table for its
-  base**, the primary included -- `??_7Labelled@@6BShape@@@` and
-  `??_7Labelled@@6BNamed@@@`, no plain `6B@` at all.
-- an **override of a secondary base's virtual expects `this` to be that
-  base's subobject.** There is no thunk in the table; the adjustment is
-  folded into the callee, and a direct call adds the offset before
-  calling. A thunk appears only where one function is reached through two
-  subobjects at different offsets. This is the rule that changed lowering,
-  and `tests/compiler/038` is the program that runs it.
-
-`cl` emits an inline function only where it is used and synthesizes an
-implicit constructor as a function where vcx does the work inline, so the
-files define their members out of line and declare their constructors: the
-corpus asks about names, and the compiler corpus is where a difference in
-what gets emitted would show.
-
-The Itanium scheme has no oracle on this machine -- no `g++`, no
-`clang++` -- and is not in this corpus. It is written from the ABI document
-and tested in `mangle/mangle_test.go` on examples the document gives, which
-is the weaker kind of evidence and is labelled as such there.
-
-`v++ symbols file.cpp` prints the same thing by hand.
-
-Used by the root package, in `mangle_test.go`.
-
-## compiler/
-
-Does the program do what it says?
-
-tests/syntax asks whether a file parses; tests/check whether it means
-anything. This asks the only question after those, and the one every other
-project in this tree is built around. Each file is a whole program with `int
-main()`, compiled twice -- once by vcx, once by `cl` -- run twice, and the
-two exit statuses have to agree.
-
-Nothing here writes down an expected value. A number beside a program is a
-claim about C++ that has to be maintained by hand and is wrong the moment it
-drifts; `cl`'s answer cannot drift, because it is the platform's answer. And
-both compilers are given exactly the same text -- there is no rewrite
-between them, which is what makes the comparison worth anything. vcx's half
-goes through its own lowering to VIR and its own object writer; only the
-linker is shared, because a linker is not what is being tested.
-
-The files are numbered in the order they get harder, and the early ones are
-one idea each -- a loop, a call, a comparison -- so that a failure names the
-thing that broke rather than the last thing added.
-
-A file belongs here once vcx can build it: a refusal fails the suite rather
-than being skipped, so the corpus stays a live statement of what works.
-
-Used by the root package, in `compiler_corpus_test.go`.
-
-## link/
-
-Can a program be built half by vcx and half by `cl`?
-
-tests/abi says the layouts agree and tests/mangle says the names agree,
-and neither is the claim an ABI makes. That claim is that an object one
-compiler built links against an object the other built and the program
-works: every argument where the callee looks for it, a class constructed
-on one side read correctly on the other, a virtual call through a table
-one compiler emitted reaching a function the other compiled.
-
-So each directory holds one program in two files, `a.cpp` and `b.cpp`,
-each declaring what the other defines. It is built three ways -- both by
-`cl`, `a` by vcx and `b` by `cl`, `a` by `cl` and `b` by vcx -- and the
-three exit statuses have to agree. The first is the oracle and the other
-two are the ABI, one direction each.
-
-This is the corpus that made inline functions and virtual tables COMDAT
-(the linker sees two definitions otherwise, and says so), that made a
-global with a constructor get constructed before `main` (a `Labelled`
-handed across from the other side had no table pointer), and that
-demonstrated the callee-adjusted `this` convention at run time rather
-than only in a name.
-
-`07` is the four-byte class. cl returns a plain aggregate of one, two,
-four or eight bytes in RAX, and the backend stored all eight bytes of
-RAX into storage it had made four bytes wide -- an iterator's `end()`
-overwritten by its `begin()`. The neighbours are checked on purpose.
-
-`06` is where a virtual destructor's slot turned out to hold neither
-destructor but the **deleting destructor** `??_E` -- destroy, and free
-too when a flag says so -- which cl defines as `??_G` in every unit that
-emits the table and aliases weakly; and where a **constructor returns
-`this`** under this convention: cl's `new T(args)` takes the object from
-the constructor's RAX, and the linker had chosen vcx's COMDAT copy of an
-inline constructor that handed back nothing. That one crashed only when
-the freed address was reused, and only across the boundary.
-
-Used by the root package, in `link_corpus_test.go`.
-
-## headers/
-
-Does a standard header compile, from the toolset this machine has?
-
-Every other corpus is text these tests wrote. This is text somebody else
-wrote -- the Microsoft STL and the Windows SDK on Windows, libc++ and the
-macOS SDK on a Mac, as installed -- which is the text every real program
-starts with, and thousands of lines of the language's hardest corners
-written for one compiler. Each file includes one header and uses something
-from it, and is built and run the way tests/compiler builds and runs, with
-the platform's compiler as the oracle; a header that only checks clean is
-not enough, since the point of `<cstdint>` is that `int32_t` is four bytes
-in the object.
-
-The sysroot is found the way `v++ env` shows it -- vcc's walk over
-%INCLUDE%, vswhere and the Kits root on Windows, the SDK and its libc++ on
-a Mac -- and the target's macros are its dialect's. For MSVC they are the
-ones `cl /PD` lists; for GNU they are clang's, generated from the data
-model and held to `clang -dM` by `TestGNUPredefines`, and the vendor
-operators -- `__has_feature`, `__has_builtin`, `__has_attribute` -- answer
-with what vcx implements, which is what lets libc++ choose the paths vcx
-can compile. What that costs is in `predefines.go`, `predefines_gnu.go`
-and `vendor.go`; the compiler's own headers a GNU target needs, the ones
-no platform ships, are in `include/gnu`.
-
-Seven headers are in it. `<type_traits>` is the library's exercise of
-variable templates, default template arguments, packs, fold expressions
-and the choice among partial specializations; `<new>` adds placement new
-and the runtime's exception classes (declared, since nothing throws yet);
-`<utility>` adds member function templates, forwarding references and
-the traits that are overload resolution in disguise. `<vector>` is next,
-and what it waits on is exceptions and `new[]`.
-
-Used by the root package, in `headers_test.go`.
-
-## cuda/device/
-
-Does a kernel written in CUDA compile to PTX, and does it compute? Each
-file is one kernel named `test` of the signature `__global__ void
-test(int *out)`, and its header says how it is launched and what it
-writes:
-
-```
-// grid: 2
-// block: 4
-// expect: 0 1 2 3 4 5 6 7
-```
-
-`TestCUDACorpusCompiles` lowers every file to PTX on any machine and
-checks for the kernel's entry. `TestCUDACorpusRuns` (`cuda_windows_test.go`)
-opens the driver in `nvcuda.dll` -- no toolkit, no cgo -- JITs the PTX,
-runs the kernel over a zeroed buffer, and compares what came back with
-the header, number by number. A machine without an NVIDIA driver skips.
-The expected values are worked out by hand, or by nvcc on a machine that
-has it; never restated from the lowering. A float result is written
-through `__float_as_int` or scaled to an integer so that every
-expectation is a whole number.
-
-## cuda/host/
-
-Does the whole program work? Each file has a `main` that allocates,
-launches, copies back and prints, and its header's `// expect:` lines are
-what it prints. `TestCUDAPrograms` builds each with `v++ run` -- the
-device pass, the host pass with the image embedded and registered, vcx's
-runtime over the driver, vcx's linker -- and compares standard output.
-Nothing but vcx is involved.
-
-Where the CUDA toolkit is installed beside cl.exe, both corpora are also
-compiled by nvcc -- the kernels to cubins run through the same harness,
-the programs to executables -- and held to the same headers
-(`TestCUDACorpusAgainstNvcc`, `TestCUDAProgramsAgainstNvcc`), and the
-programs run on NVIDIA's cudart as well as vcx's. That is the oracle:
-what nvcc prints is what the header says, and what vcx prints is what
-nvcc prints. The toolkit's compute-sanitizer runs memcheck and
-racecheck over every vcx-built program too (`TestCUDAProgramsSanitized`);
-a program that errs on purpose says `// sanitizer: skip`.
-
-## hip/
-
-The same two questions for AMD, as far as this machine can answer them:
-`hip/device` kernels are lowered to gfx942 code objects and checked for
-the kernel symbol and descriptor; `hip/host` programs are compiled through
-both passes and their host objects checked for the offload bundle and the
-registration. Neither runs, since that takes an AMD GPU and ROCm's
-runtime; the code objects disassemble with `llvm-objdump` and are read by
-the same tools a ROCm build's are.
-
-## What is not here, and why
-
-**Everything lowering does not reach yet.** There is no exception in
-tests/compiler, no destructor of a global at exit, no member template
-and no variable template, because lowering handles none of them. A
-lambda cannot capture `this`; a pointer to member of a class with
-multiple or virtual bases, or to a virtual function, is refused; a
-consteval constructor of a class with members is not evaluated. The comparison rewrites of §12.2.2.3 are there, `!=` from `==` and
-the four relationals from `<=>`, reversed forms included. The corpus grows as
-lowering does, one idea per file, rather than being written ahead of it.
-
-**The linker.** `v++ build` produces an object and stops; the corpus hands
-that object to the platform's linker. A linker of vcx's own is a separate repository
-(`pe`, `elf`, `macho`) and composing it is the rung above this one.
-
-## The rule for adding one
-
-Write the file, run it, and put it in the corpus that matches the question it
-asks. Cite the paragraph rather than describing the behaviour -- the file
-outlives the session that prompted it, and a paragraph number is checkable
-where a summary is not.
-
-If the compiler refuses something the file should contain, **say so in the
-file**, naming the production and what happens instead:
-
-```cpp
-// §8.6.5 [stmt.ranged] is not here. `for (int v : c)` does not parse: the
-// parser takes `int v : c` for a bit-field and then wants a second colon.
-// It is the loop C++ code is actually written with, so it is the first
-// thing this file gets back.
-```
-
-An omission that names itself is a bug report with a home. A file quietly
-trimmed until it passes is a suite that agrees with the compiler about what
-C++ is.

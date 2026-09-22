@@ -110,6 +110,9 @@ func (a *Analyzer) execSpaceOf(groups []*ast.AttrGroup, at ast.Tok) ExecSpace {
 	if !a.offload() {
 		return SpaceHost
 	}
+	if a.metal() {
+		return a.metalExecSpace(groups, at)
+	}
 	host := hasAttrNamed(groups, "host", a.unit)
 	device := hasAttrNamed(groups, "device", a.unit)
 	global := hasAttrNamed(groups, "global", a.unit)
@@ -127,10 +130,15 @@ func (a *Analyzer) execSpaceOf(groups []*ast.AttrGroup, at ast.Tok) ExecSpace {
 	return SpaceHost
 }
 
-// memSpaceOf reads a declaration's memory-space attributes.
-func (a *Analyzer) memSpaceOf(groups []*ast.AttrGroup, at ast.Tok) MemSpace {
+// memSpaceOf reads a declaration's memory-space attributes. t is the
+// declared object's type, which is what a Metal address space is read
+// against.
+func (a *Analyzer) memSpaceOf(groups []*ast.AttrGroup, at ast.Tok, t types.Type) MemSpace {
 	if !a.offload() {
 		return MemDefault
+	}
+	if a.metal() {
+		return a.metalMemSpace(groups, at, t)
 	}
 	var out MemSpace
 	for _, name := range []string{"shared", "constant", "device", "managed"} {
@@ -187,7 +195,11 @@ func (a *Analyzer) checkKernel(fn *FuncSymbol) {
 		return
 	}
 	if ret := fn.FuncType.Ret; ret != nil && !types.IsVoid(types.Unqualify(ret)) && !isDependentType(ret) {
-		a.errorAt(fn.SymPos, fmt.Sprintf("a __global__ function returns void, not %s", ret))
+		if a.metal() {
+			a.errorAt(fn.SymPos, fmt.Sprintf("invalid return type '%s' for kernel function: a kernel returns void", ret))
+		} else {
+			a.errorAt(fn.SymPos, fmt.Sprintf("a __global__ function returns void, not %s", ret))
+		}
 	}
 	if fn.InClass != nil && !fn.Static {
 		a.errorAt(fn.SymPos, "a __global__ function cannot be a non-static member: a launch passes no object")
@@ -221,6 +233,10 @@ func mergeSpace(surviving, decl *FuncSymbol) {
 func (a *Analyzer) implicitSpace(fn *FuncSymbol) ExecSpace {
 	if !a.offload() || fn.Space != SpaceHost {
 		return fn.Space
+	}
+	if a.metal() {
+		// A .metal file has no host: every function is the device's.
+		return SpaceDevice
 	}
 	if fn.Constexpr || fn.Consteval || fn.Defaulted {
 		return SpaceHostDevice

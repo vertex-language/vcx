@@ -24,8 +24,8 @@ type Model struct {
 	// VaList is what a va_list is under the target's calling convention.
 	VaList VaListKind
 
-	// Offload is the offload language the unit is written in -- CUDA or
-	// HIP -- or none for plain C++. It admits the execution-space
+	// Offload is the offload language the unit is written in -- CUDA,
+	// HIP or Metal -- or none for plain C++. It admits the execution-space
 	// attributes and the device builtins in both of the two passes such
 	// a unit is compiled in.
 	Offload Offload
@@ -50,6 +50,10 @@ const (
 	NoOffload Offload = iota
 	CUDA
 	HIP
+	// Metal is the Metal Shading Language: C++ with address spaces on
+	// its pointers, a kernel keyword, and bindings written as attributes.
+	// It is all device code, and has one pass.
+	Metal
 )
 
 func (o Offload) String() string {
@@ -58,6 +62,8 @@ func (o Offload) String() string {
 		return "cuda"
 	case HIP:
 		return "hip"
+	case Metal:
+		return "metal"
 	}
 	return "c++"
 }
@@ -69,6 +75,8 @@ const (
 	NoDevice DeviceISA = iota
 	NVPTX
 	AMDGCN
+	// AIR is an Apple GPU's: LLVM IR in Apple's dialect, in a .metallib.
+	AIR
 )
 
 func (d DeviceISA) String() string {
@@ -77,6 +85,8 @@ func (d DeviceISA) String() string {
 		return "nvptx64"
 	case AMDGCN:
 		return "amdgcn"
+	case AIR:
+		return "air64"
 	}
 	return "none"
 }
@@ -174,7 +184,7 @@ func ILP32() Model {
 
 // ModelForTarget returns the model appropriate for target configuration.
 func ModelForTarget(arch, os string) Model {
-	if arch == "nvptx64" || arch == "amdgcn" {
+	if arch == "nvptx64" || arch == "amdgcn" || arch == "air64" {
 		return ForDevice(LP64())
 	}
 	if os == "windows" {

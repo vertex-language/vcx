@@ -26,7 +26,7 @@ func isCommand(word string) bool {
 var valueFlags = map[string]bool{
 	"I": true, "D": true, "U": true, "target": true, "std": true, "x": true, "o": true,
 	"l": true, "L": true, "offload-arch": true, "arch": true, "emit": true,
-	"cudart": true, "cuda-path": true,
+	"cudart": true, "cuda-path": true, "mmacosx-version-min": true,
 }
 
 // attachable are the flags whose value may be written against them.

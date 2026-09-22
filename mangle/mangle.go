@@ -6,8 +6,9 @@
 // encode enough of a declaration -- scopes, name, parameter types, and for
 // a member its class and cv-qualifiers -- that two overloads get two names.
 //
-// The Microsoft scheme is diffed against cl.exe in tests/mangle, since
-// undname.exe and cl are the only statement of it. The Itanium scheme is
+// The Microsoft scheme was diffed against cl.exe, since undname.exe and cl
+// are the only statement of it; on Windows the C++ ladder in tests/ links
+// and runs every program against cl's. The Itanium scheme is
 // written from its specification and has no oracle on this machine; its
 // tests are examples known from the document.
 //

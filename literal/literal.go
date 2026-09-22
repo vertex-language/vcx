@@ -4,6 +4,7 @@ package literal
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/vertex-language/vcx/ast"
@@ -246,4 +247,46 @@ func unescape(body string, enc Encoding) ([]uint32, error) {
 
 func isHexDigit(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+// Char decodes a character literal's spelling -- 'a', '\101', '\x7f',
+// u'é', L'\n', U'\U0001F600' -- into the code unit it names and its
+// encoding. A narrow literal of several characters, 'ab', is an int whose
+// value is its bytes in order, as GCC and Clang give it; multi reports it.
+func Char(spelling string) (value uint32, enc Encoding, multi bool, err error) {
+	q := strings.IndexByte(spelling, '\'')
+	if q < 0 || len(spelling) < q+3 || spelling[len(spelling)-1] != '\'' {
+		return 0, 0, false, fmt.Errorf("malformed character literal %s", spelling)
+	}
+	switch spelling[:q] {
+	case "":
+		enc = Narrow
+	case "u8":
+		enc = UTF8
+	case "u":
+		enc = UTF16
+	case "U":
+		enc = UTF32
+	case "L":
+		enc = Wide
+	default:
+		return 0, 0, false, fmt.Errorf("unknown character literal prefix %q", spelling[:q])
+	}
+	units, err := unescape(spelling[q+1:len(spelling)-1], enc)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if len(units) == 0 {
+		return 0, 0, false, fmt.Errorf("empty character literal")
+	}
+	if len(units) == 1 {
+		return units[0], enc, false, nil
+	}
+	if enc != Narrow {
+		return 0, 0, false, fmt.Errorf("character literal %s is more than one code unit", spelling)
+	}
+	for _, u := range units {
+		value = value<<8 | u&0xff
+	}
+	return value, enc, true, nil
 }

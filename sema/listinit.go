@@ -97,8 +97,14 @@ func (a *Analyzer) checkListInit(list *ast.InitList, target types.Type) {
 		}
 		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
 	}
-	if _, err := a.chooseConstructor(rec, args); err != nil {
+	ctor, err := a.chooseConstructor(rec, args)
+	if err != nil {
 		a.errorAt(list.Pos(), fmt.Sprintf("no matching constructor for %s: %v", rec.Name, err))
+		return
+	}
+	a.ensureInstantiated(ctor)
+	if a.info != nil {
+		a.info.ListCtors[list] = ctor
 	}
 }
 
@@ -275,4 +281,85 @@ func isCharacterType(t types.Type) bool {
 		return true
 	}
 	return false
+}
+
+// listConversion is the implicit conversion sequence from a braced list to
+// a parameter type ([over.ics.list]): to a class, a user-defined one
+// through a constructor or aggregate initialization; to an array or a
+// scalar, the worst of its items' own.
+func (a *Analyzer) listConversion(list *ast.InitList, target types.Type) ConversionSequence {
+	bad := ConversionSequence{Rank: RankNone}
+	ok := func(r ConvRank) ConversionSequence {
+		return ConversionSequence{To: target, Rank: r, Valid: true}
+	}
+	if isDependentType(target) {
+		return ok(RankConversion)
+	}
+	t := types.RemoveReference(target)
+	if types.IsLValueReference(target) && !types.IsConst(t) {
+		return bad // a temporary does not bind to a non-const lvalue reference
+	}
+	bare := types.Unqualify(t)
+	items := make([]Argument, len(list.Items))
+	for i, item := range list.Items {
+		if sub, isList := item.(*ast.InitList); isList {
+			items[i] = Argument{List: sub, ListConv: func(tt types.Type) ConversionSequence { return a.listConversion(sub, tt) }}
+			continue
+		}
+		info := a.CheckExpr(item)
+		items[i] = Argument{Type: info.Type, IsLValue: info.ValCat == LValue, NullConst: isNullConstant(item, info)}
+	}
+	conv := func(arg Argument, to types.Type) ConversionSequence {
+		if arg.List != nil {
+			return arg.ListConv(to)
+		}
+		cs := ClassifyConversion(arg.Type, to, arg.IsLValue)
+		if !cs.Valid && arg.NullConst && isPointerLike(to) {
+			cs = ConversionSequence{Rank: RankConversion, Valid: true}
+		}
+		return cs
+	}
+	worst := func(to func(i int) types.Type) ConversionSequence {
+		r := RankExactMatch
+		for i, arg := range items {
+			cs := conv(arg, to(i))
+			if !cs.Valid {
+				return bad
+			}
+			if cs.Rank > r {
+				r = cs.Rank
+			}
+		}
+		return ok(r)
+	}
+	if arr, isArr := bare.(*types.Array); isArr {
+		if !arr.Incomplete && int64(len(items)) > arr.Len {
+			return bad
+		}
+		return worst(func(int) types.Type { return arr.Elem })
+	}
+	rec := types.AsRecord(bare)
+	if rec == nil {
+		switch len(items) {
+		case 0:
+			return ok(RankExactMatch)
+		case 1:
+			return worst(func(int) types.Type { return t })
+		}
+		return bad
+	}
+	if hasUserConstructor(rec) {
+		if _, err := a.chooseConstructor(rec, items); err != nil {
+			return bad
+		}
+		return ok(RankUserDefined)
+	}
+	fields := aggregateFields(rec)
+	if len(items) > len(fields) {
+		return bad
+	}
+	if cs := worst(func(i int) types.Type { return fields[i].Type }); !cs.Valid {
+		return bad
+	}
+	return ok(RankUserDefined)
 }

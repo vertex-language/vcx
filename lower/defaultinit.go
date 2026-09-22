@@ -135,14 +135,14 @@ func (fl *fn) memberDefault(dst ir.Ptr, t types.Type, decl *ast.InitDeclarator) 
 			return fl.initArrayFromString(dst, arr, lit)
 		}
 	}
-	v, converted := fl.convertedScalar(decl.Value)
+	v, from, converted := fl.convertedScalar(decl.Value)
 	if !converted {
-		v = fl.expr(decl.Value)
+		v, from = fl.expr(decl.Value), fl.typeOf(decl.Value)
 	}
 	if v == nil {
 		return false
 	}
-	fl.store(dst, fl.convert(v, fl.typeOf(decl.Value), t), t)
+	fl.store(dst, fl.convert(v, from, t), t)
 	return true
 }
 

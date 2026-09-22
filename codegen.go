@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/vertex-language/air"
+	"github.com/vertex-language/air/metallib"
 	amd64elf "github.com/vertex-language/amd64/obj/elf"
 	amd64macho "github.com/vertex-language/amd64/obj/macho"
 	amd64pe "github.com/vertex-language/amd64/obj/pe"
@@ -15,6 +17,7 @@ import (
 	ptxtext "github.com/vertex-language/ptx/text"
 
 	"github.com/vertex-language/ir"
+	airlower "github.com/vertex-language/ir/lower/air"
 	amd64lower "github.com/vertex-language/ir/lower/amd64"
 	amdgpulower "github.com/vertex-language/ir/lower/amdgpu"
 	arm64lower "github.com/vertex-language/ir/lower/arm64"
@@ -44,6 +47,8 @@ func irTarget(t Target) (ir.Target, error) {
 		return ir.NVPTX64, nil
 	case t.Arch == "amdgcn":
 		return ir.AMDGCN, nil
+	case t.Arch == "air64":
+		return ir.AIR64, nil
 	}
 	return ir.Target{}, fmt.Errorf("target %s names no VIR layout", t.Name)
 }
@@ -73,8 +78,8 @@ func macOSMinimum(t Target) string {
 }
 
 // emitObject lowers a VIR module and encodes it in the target container
-// format: a relocatable object for a CPU, a device image -- PTX text or
-// an HSA code object -- for a GPU, which arch names.
+// format: a relocatable object for a CPU, a device image -- PTX text, an
+// HSA code object or a Metal library -- for a GPU, which arch names.
 func emitObject(m *ir.Module, t Target, arch OffloadArch) ([]byte, error) {
 	if m == nil {
 		return nil, fmt.Errorf("no module to emit")
@@ -90,6 +95,8 @@ func emitObject(m *ir.Module, t Target, arch OffloadArch) ([]byte, error) {
 		return ptxImage(m, arch)
 	case "amdgcn":
 		return hsacoImage(m, arch)
+	case "air64":
+		return metallibImage(m, arch)
 	}
 	return nil, fmt.Errorf("target %s names no backend", t.Name)
 }
@@ -121,6 +128,27 @@ func hsacoImage(m *ir.Module, arch OffloadArch) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// metallibImage is the module as a Metal library for the family named:
+// every kernel with its device functions inlined, as AIR bitcode, which
+// Metal compiles for the GPU when the app loads it.
+func metallibImage(m *ir.Module, arch OffloadArch) ([]byte, error) {
+	am, err := airModule(m, arch)
+	if err != nil {
+		return nil, err
+	}
+	return metallib.Build(am)
+}
+
+// airModule is the module lowered to AIR, before it is written.
+func airModule(m *ir.Module, arch OffloadArch) (*air.Module, error) {
+	return airlower.Lower(m, airlower.Options{
+		Target:   arch.Metal.Target,
+		Language: arch.Metal.Language,
+		Family:   arch.Family,
+		FastMath: arch.Metal.FastMath,
+	})
 }
 
 func amd64Object(m *ir.Module, t Target) ([]byte, error) {

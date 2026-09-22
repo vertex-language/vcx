@@ -78,6 +78,10 @@ type Info struct {
 	// form lowering walks, one list per subaggregate.
 	Braced map[*ast.InitList]*ast.InitList
 
+	// ListCtors is the constructor a braced list initializes a class with,
+	// when the class has constructors and is no aggregate ([dcl.init.list]/3.7).
+	ListCtors map[*ast.InitList]*FuncSymbol
+
 	// MemInits maps member initializers to resolved constructors.
 	MemInits map[*ast.MemInit]*FuncSymbol
 
@@ -131,6 +135,7 @@ func newInfo() *Info {
 		Casts:          map[*ast.FunctionalCastExpr]*FuncSymbol{},
 		Conversions:    map[ast.Expr]*FuncSymbol{},
 		Braced:         map[*ast.InitList]*ast.InitList{},
+		ListCtors:      map[*ast.InitList]*FuncSymbol{},
 		MemInits:       map[*ast.MemInit]*FuncSymbol{},
 		Rewrites:       map[ast.Expr]ast.Expr{},
 		Arrows:         map[*ast.MemberExpr][]*FuncSymbol{},
@@ -272,6 +277,9 @@ type Analyzer struct {
 	// are being checked, innermost last, for implicit captures.
 	nlambdas int
 	lambdas  []*LambdaInfo
+
+	// generics are the generic lambdas, by their operator().
+	generics map[*FuncSymbol]*LambdaInfo
 
 	functions []*FuncSymbol
 	declared  []*FuncSymbol
@@ -604,6 +612,7 @@ func Analyze(file *ast.File, model types.Model) (*Result, []Diagnostic) {
 
 	a := NewAnalyzer(file.Unit, model)
 	a.file = file
+	a.checkMetalTokens()
 
 	for _, decl := range file.Decls {
 		a.CheckDecl(decl)
@@ -613,7 +622,11 @@ func Analyze(file *ast.File, model types.Model) (*Result, []Diagnostic) {
 	for _, fn := range a.functions {
 		if fn.Body != nil {
 			funcCFG := cfg.BuildWith(fn.Body, a.unit, a.callDoesNotReturn)
-			retDiags := cfg.CheckReturns(funcCFG, fn.Name(), fn.FuncType.Ret)
+			var retDiags []string
+			// [basic.start.main]/5: reaching the end of main returns 0.
+			if !(fn.SymName == "main" && fn.InClass == nil && fn.SymScope == a.globalScope) {
+				retDiags = cfg.CheckReturns(funcCFG, fn.Name(), fn.FuncType.Ret)
+			}
 			for _, rd := range retDiags {
 				// A function template's specialization is only warned about:
 				// std::declval's body is a static_assert and nothing else,

@@ -5,7 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/vertex-language/air/bitcode"
+	airtext "github.com/vertex-language/air/text"
 
 	"github.com/vertex-language/ir/text"
 
@@ -22,7 +28,9 @@ const usage = `v++ — the Vertex C++ Compiler
 
 Usage:
     v++ build  [flags] [files...]   compile and link an executable; -c stops at objects,
-                                    --emit vir|ptx|hsaco one rung short
+                                    --emit vir|ptx|hsaco one rung short; a .metal
+                                    file builds to a .metallib (--emit air|ll for
+                                    its bitcode or text)
     v++ run    [flags] [file] [-- args...]
                                     build to a temporary path and run it
     v++ [flags] files...            the driver spelling: a build, with the
@@ -43,9 +51,16 @@ Common flags:
     -U name         undefine a macro (repeatable)
     -freestanding   freestanding environment (no standard library)
 
-Offload flags (a .cu is CUDA, a .hip is HIP, as nvcc and hipcc have it):
-    -x cuda|hip     the language, whatever the extension says
-    --offload-arch  the device: sm_75, gfx942, ... (default sm_52 for CUDA)
+Offload flags (a .cu is CUDA, a .hip is HIP, as nvcc and hipcc have it,
+and a .metal is Metal):
+    -x cuda|hip|metal
+                    the language, whatever the extension says
+    --offload-arch  the device: sm_75, gfx942, apple8, ... (default sm_52
+                    for CUDA, apple7 for Metal)
+    -std=metal3.1   the MSL version of a .metal file (default metal3.0)
+    -mmacosx-version-min=14.0
+                    the oldest macOS a .metallib loads on (default 13.0)
+    -fno-fast-math  precise float math in a .metal file
     --cuda-device-only / --cuda-host-only
                     one pass of an offload unit rather than both
 
@@ -139,7 +154,7 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 	var pp ppFlags
 	pp.register(fs)
 	outPath := fs.String("o", "", "output file (default a.exe or a.out, or the object's name with -c)")
-	emit := fs.String("emit", "", "what to produce: vir, obj, ptx, hsaco (obj implies -c)")
+	emit := fs.String("emit", "", "what to produce: vir, obj, ptx, hsaco; for a .metal file metallib, air or ll (obj implies -c)")
 	compileOnly := fs.Bool("c", false, "compile to objects, do not link")
 	var libs, libDirs stringList
 	fs.Var(&libs, "l", "link a library (repeatable)")
@@ -172,9 +187,13 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 		*compileOnly = true
 	case "obj":
 		*compileOnly = true
-	case "vir", "":
+	case "air", "ll":
+		// One .metal file's module, as bitcode or as text: what xcrun's
+		// metal -c and -S write.
+		return emitAIR(c, inputs, *emit, *outPath, stdout, stderr)
+	case "vir", "", "metallib":
 	default:
-		fmt.Fprintf(stderr, "v++: --emit %s: not vir, obj, ptx or hsaco\n", *emit)
+		fmt.Fprintf(stderr, "v++: --emit %s: not vir, obj, ptx, hsaco, metallib, air or ll\n", *emit)
 		return exitUsage
 	}
 
@@ -276,6 +295,51 @@ func cmdEnv(args []string, stdout, stderr io.Writer) int {
 	}
 	for _, sys := range c.SystemIncludes() {
 		fmt.Fprintf(stdout, "    %s  (system)\n", sys.Name)
+	}
+	return exitOK
+}
+
+// emitAIR writes each .metal input's AIR module: bitcode for air, the
+// text form for ll. One input may name its output with -o; otherwise
+// each goes next to its source's name, or to standard output for ll.
+func emitAIR(c *vcx.Compiler, inputs []vcx.Input, kind, out string, stdout, stderr io.Writer) int {
+	if out != "" && len(inputs) != 1 {
+		fmt.Fprintf(stderr, "v++: -o with --emit %s names one output, for one input\n", kind)
+		return exitUsage
+	}
+	for _, in := range inputs {
+		m, diags, err := c.AIR(in)
+		if printDiags(stderr, diags) {
+			return exitDiags
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "v++:", err)
+			return exitDiags
+		}
+		var data []byte
+		if kind == "air" {
+			data, err = bitcode.Encode(m)
+		} else {
+			var s string
+			s, err = airtext.Print(m)
+			data = []byte(s)
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "v++:", err)
+			return exitDiags
+		}
+		path := out
+		if path == "" {
+			if kind == "ll" {
+				stdout.Write(data)
+				continue
+			}
+			path = strings.TrimSuffix(filepath.Base(in.Name), filepath.Ext(in.Name)) + ".air"
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			fmt.Fprintln(stderr, "v++:", err)
+			return exitDiags
+		}
 	}
 	return exitOK
 }

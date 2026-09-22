@@ -211,13 +211,40 @@ func (fl *fn) newArray(e *ast.NewExpr, elem types.Type, count ast.Expr) ir.Value
 	b.I64.Store(n64, countSlot)
 	rec := classOf(elem)
 	ctor := fl.u.res.Info.News[e]
+
+	// A braced initializer gives the leading elements their values one at
+	// a time, in order; everything past the list -- and the whole of
+	// `new T[n]{}` -- is value-initialized.
+	var items []ast.Expr
 	zero := false
 	switch init := e.Init.(type) {
 	case *ast.InitList:
-		zero = len(init.Items) == 0
+		if braced := fl.u.res.Info.Braced[init]; braced != nil {
+			init = braced
+		}
+		items = init.Items
+		zero = true
 	case *ast.ParenExpr:
 		zero = len(e.Args) == 0
 	}
+	for i, item := range items {
+		at := obj
+		if off := int64(i) * size; off != 0 {
+			at = fl.blk.Ptr.Add(obj, fl.blk.I64.Const(off))
+		}
+		if !fl.initArrayElement(at, elem, item) {
+			fl.valueInitElem(at, elem, size)
+		}
+	}
+	if len(items) > 0 {
+		// The listed elements are built; the rest are value-initialized,
+		// not constructed from the new-expression's arguments.
+		ctor = nil
+	}
+	// The element loop runs from the first element the list did not reach.
+	first := int64(len(items))
+	b = fl.blk
+
 	if ctor == nil && rec == nil && !zero {
 		return obj // Default-initialized scalars are left uninitialized.
 	}
@@ -225,9 +252,9 @@ func (fl *fn) newArray(e *ast.NewExpr, elem types.Type, count ast.Expr) ir.Value
 		return obj
 	}
 
-	// for (i = 0; i < n; ++i) construct(obj + i*size)
+	// for (i = first; i < n; ++i) construct(obj + i*size)
 	idx := fl.alloc(types.Typ(types.LongLong), "__i")
-	b.I64.Store(b.I64.Const(0), idx)
+	b.I64.Store(b.I64.Const(first), idx)
 	head := fl.block("newarr_head")
 	body := fl.block("newarr_body")
 	exit := fl.block("newarr_exit")
@@ -256,6 +283,19 @@ func (fl *fn) newArray(e *ast.NewExpr, elem types.Type, count ast.Expr) ir.Value
 
 	fl.blk = exit
 	return obj
+}
+
+// valueInitElem value-initializes one element: zero bytes for a class, whose
+// constructor the caller runs after, and a zero value for a scalar.
+func (fl *fn) valueInitElem(at ir.Ptr, elem types.Type, size int64) {
+	if rec := classOf(elem); rec != nil {
+		fl.blk.MemSet(at, fl.blk.I32.Const(0), fl.blk.I64.Const(size))
+		if fl.u.needsConstruction(rec) {
+			fl.defaultConstruct(at, rec, ast.NoTok)
+		}
+		return
+	}
+	fl.store(at, fl.zeroOf(elem), elem)
 }
 
 // hasFieldInits reports a class some member of which has a default

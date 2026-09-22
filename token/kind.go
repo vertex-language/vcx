@@ -144,7 +144,6 @@ const (
 	PUBLIC
 	REGISTER
 	REINTERPRET_CAST
-	BIT_CAST // __builtin_bit_cast: scanned as a keyword, and a NamedCastExpr's kind
 	REQUIRES
 	RETURN
 	SHORT
@@ -191,6 +190,7 @@ const (
 	INT32     // __int32
 	INT16     // __int16
 	INT8      // __int8
+	BIT_CAST  // __builtin_bit_cast: scanned as a keyword, and a NamedCastExpr's kind
 	SEH_TRY   // __try
 	EXCEPT    // __except
 	FINALLY   // __finally

@@ -103,6 +103,17 @@ type CastExpr struct {
 	X      Expr
 }
 
+// VaArgExpr is GNU's __builtin_va_arg(ap, T), which <stdarg.h>'s va_arg
+// is spelled with: the next variadic argument, read as a T.
+type VaArgExpr struct {
+	Span
+	Keyword Tok
+	Lparen  Tok
+	X       Expr
+	Type    *TypeId
+	Rparen  Tok
+}
+
 // NamedCastExpr is static_cast<T>(x) and its three siblings.
 type NamedCastExpr struct {
 	Span
@@ -395,6 +406,7 @@ func (*MemberExpr) exprNode()         {}
 func (*IncDecExpr) exprNode()         {}
 func (*CastExpr) exprNode()           {}
 func (*NamedCastExpr) exprNode()      {}
+func (*VaArgExpr) exprNode()          {}
 func (*FunctionalCastExpr) exprNode() {}
 func (*TypeidExpr) exprNode()         {}
 func (*UnaryExpr) exprNode()          {}

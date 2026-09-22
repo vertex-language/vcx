@@ -32,6 +32,7 @@ $ v++ env
 - **Native Relocatable Object Output**: Emits ELF, Mach-O, and PE/COFF relocatable object files directly via native Go encoders.
 - **Self-Contained Pipeline**: Zero reliance on host `clang`, `gcc`, `as`, or LLVM -- and the link is vcx's own, through the vertex-language ELF, Mach-O and PE linkers.
 - **CUDA and HIP, without a toolkit**: a `.cu` or `.hip` is compiled twice -- the kernels to PTX or an HSA code object, the host to an object that embeds and registers them -- and `v++ run main.cu` runs on the GPU through the driver alone, with vcx's own runtime standing in for cudart. The source is nvcc's and hipcc's: `__global__`, `<<<>>>`, `__shared__`, `atomicAdd`, `__shfl_down_sync`, `cudaMemcpy`.
+- **Metal, without Xcode**: a `.metal` file compiles to the `.metallib` an app loads, `v++ kernels.metal -o kernels.metallib`, lowered through VIR to AIR by vcx and written by the vertex-language `air` package -- no `xcrun metal`. Its kernels run on the GPU with the same results as the libraries Apple's compiler builds.
 - **Rich Introspection CLI**: Built-in commands to inspect token streams, AST nodes, computed record memory layouts, and mangled symbol tables.
 - **Modular Go Library**: Every compilation stage is exposed as a composable, reusable Go API.
 
@@ -73,6 +74,10 @@ $ v++ run vecadd.cu
 # The device pass alone: the PTX, or an AMD code object
 $ v++ build --emit ptx --offload-arch sm_75 kernels.cu
 $ v++ build --emit hsaco --offload-arch gfx942 kernels.hip
+
+# A Metal library, for an app to load with newLibraryWithURL:
+$ v++ kernels.metal -o kernels.metallib
+$ v++ --emit ll kernels.metal                     # its AIR, as text
 
 # Inspect the lowered Vertex Intermediate Representation (VIR)
 $ v++ build --emit vir main.cpp
@@ -126,9 +131,10 @@ v++ <command> [flags] [files...]
 - `-freestanding`: Compile for a freestanding environment (disables hosted standard library discovery).
 - `-o <path>`: Output artifact path (used with `v++ build`).
 - `-c`: Compile to objects without linking; `-l <lib>` and `-L <dir>` name libraries for the link.
-- `--emit vir|obj|ptx|hsaco`: Target output representation (`obj` produces relocatable object files; `vir` dumps IR; `ptx` and `hsaco` the device image).
-- `-x cuda|hip`: The language, whatever the extension says; `.cu` and `.cuh` are CUDA and `.hip` is HIP on their own.
-- `--offload-arch <arch>`: The device kernels are compiled for: `sm_75`, `sm_90a`, `gfx942`, ... (default `sm_52` for CUDA; HIP has no default).
+- `--emit vir|obj|ptx|hsaco|metallib|air|ll`: Target output representation (`obj` produces relocatable object files; `vir` dumps IR; `ptx` and `hsaco` the device image; for a `.metal` file, `air` its bitcode and `ll` its text).
+- `-x cuda|hip|metal`: The language, whatever the extension says; `.cu` and `.cuh` are CUDA, `.hip` is HIP and `.metal` is Metal on their own.
+- `--offload-arch <arch>`: The device kernels are compiled for: `sm_75`, `sm_90a`, `gfx942`, `apple8`, ... (default `sm_52` for CUDA and `apple7` for Metal; HIP has no default).
+- `-std=metal3.0|metal3.1|metal3.2|metal4.0`, `-mmacosx-version-min=<v>`, `-fno-fast-math`: A `.metal` file's MSL version (default 3.0), the oldest macOS its library loads on (default 13.0, which is AIR 2.5), and precise float math (fast is Metal's default), as `xcrun metal` spells them.
 - `--cuda-device-only`, `--cuda-host-only`: One pass of an offload unit rather than both.
 
 ### AST & Parsing Flags
@@ -212,8 +218,9 @@ vcx is one C++ compiler. The MSVC and GNU families are peers, and a target choos
 | `i386-elf` | i386 | Bare-metal | ELF | Itanium | GNU |
 | `nvptx64-cuda` | NVPTX | CUDA device | PTX | Itanium | GNU |
 | `amdgcn-hsa` | AMDGCN | HSA device | ELF code object | Itanium | GNU |
+| `air64-apple` | AIR | Apple GPU | `.metallib` | Itanium | GNU |
 
-The two device targets are what the device pass of a CUDA or HIP unit is compiled for; they are not named with `-target`. The pass keeps the host's data model (a CUDA `long` is 32 bits on Windows, as nvcc has it) and headers, adds `__CUDA_ARCH__` or `__HIP_DEVICE_COMPILE__` and the device's builtins, and mangles with the Itanium ABI whatever the host uses, which is the name the host registers the kernel by.
+The device targets are what the device pass of a CUDA, HIP or Metal unit is compiled for; they are not named with `-target`. The pass keeps the host's data model (a CUDA `long` is 32 bits on Windows, as nvcc has it) and headers, adds `__CUDA_ARCH__` or `__HIP_DEVICE_COMPILE__` and the device's builtins, and mangles with the Itanium ABI whatever the host uses, which is the name the host registers the kernel by. A `.metal` file has no host: its one pass is `air64-apple`'s, with MSL's LP64 data model and none of a CPU's macros or headers, and its kernels keep their names unmangled, as Metal looks them up.
 
 Target selection handles:
 - **Data models**: LP64 (Linux/macOS), LLP64 (Windows), ILP32 (i386), with Apple arm64's 64-bit `long double`.
@@ -320,7 +327,8 @@ vcx/
 ├── include/            Compiler-provided headers
 │   ├── gnu/            GNU-compatible stddef.h, stdint.h, limits.h, float.h, etc.
 │   ├── cuda/           The CUDA wrapper read before every .cu, and a minimal cuda_runtime.h
-│   └── hip/            The same for HIP
+│   ├── hip/            The same for HIP
+│   └── metal/          The wrapper read before every .metal, and vcx's own <metal_stdlib>
 │
 ├── compiler.go         Central Compiler driver orchestrating pipeline rungs
 ├── build.go            Build and Run: objects, the link, the temporary executable
@@ -328,14 +336,15 @@ vcx/
 ├── device.go           Offload languages, architectures, predefines, the embedded headers
 ├── input.go            Input abstraction (file on disk or in-memory text buffer)
 ├── target.go           Target triples, ABI selection, and container mapping
-├── codegen.go          Native object generation (ELF, Mach-O, PE/COFF), PTX and HSA code objects
+├── codegen.go          Native object generation (ELF, Mach-O, PE/COFF), PTX, HSA code objects and Metal libraries
+├── metal.go            A build of .metal files: one .metallib, or one per file with -c
 ├── symbols.go          Mangled linker symbol table extraction
 ├── sysroot.go          Host toolset discovery (MSVC, Windows SDK, GCC/Clang paths)
 ├── predefines.go       MSVC-dialect builtin macro definitions
 ├── predefines_gnu.go   GNU/Clang-dialect builtin macro definitions
 ├── vendor.go           Compiler intrinsics, builtins, and vendor extensions
 │
-├── tests/              Comprehensive test suites (8 corpora, and 3 for the GPU)
+├── tests/              The ladders: 001–250 of C++, and 001–050 each of CUDA, HIP and Metal
 └── docs/               Grammar and architectural specifications
 ```
 
@@ -343,28 +352,18 @@ vcx/
 
 ## Testing & Conformance
 
-`vcx` uses eight test corpora organized by the specific verification question they answer:
+`tests/` is a ladder, one small thing per file, numbered in the order the rungs climb: `001`–`250` of C++ at the root, and `001`–`050` for each offload language in `tests/cuda`, `tests/hip` and `tests/metal`. Nothing in it writes down an expected value. Every file is built by vcx and by the language's own compiler, and the two results are compared: stdout and the exit status, or for Metal every buffer after the dispatch. The other compiler is the oracle, and a disagreement with it is a bug in vcx by definition. [`tests/README.md`](tests/README.md) has the rungs and the rules.
 
 ```console
-$ go test ./...                                    # Run the full test suite
-$ go test ./parser -run TestSyntaxCorpus -v        # Grammar syntax coverage
-$ go test ./sema   -run 'TestCheckCorpus/ok-11' -v # Semantic type checking
-$ go test ./sema   -run TestEvalCorpus -v          # Compile-time constexpr evaluation
-$ go test .        -run TestABICorpus -v           # Record layout & vtable parity
-$ go test .        -run TestMangleCorpus -v        # Name mangling parity
-$ go test .        -run TestCompilerCorpus -v      # End-to-end execution parity
-$ go test .        -run TestLinkCorpus -v          # Cross-compiler link tests
-$ go test .        -run TestHeadersCorpus -v       # Real standard library headers
+$ go test ./...                      # everything, the unit tests included
+$ go test -run TestCorpus .          # C++ against clang++ (or cl on Windows)
+$ go test -run 'TestCorpus/113' .    # one rung
+$ go test -run TestCUDA .            # against nvcc, where there is an NVIDIA GPU
+$ go test -run TestHIP .             # against hipcc, where there is an AMD GPU
+$ go test -run TestMetal .           # against xcrun metal, on the Mac's GPU
 ```
 
-- **`syntax/`**: Validates parser conformance against the ISO C++23 grammar chapters.
-- **`check/`**: Verifies that well-formed code (`ok-*`) type-checks cleanly and ill-formed code (`bad-*`) produces diagnostics citing the relevant ISO paragraph.
-- **`eval/`**: Self-checking `static_assert` programs that execute complex algorithms (e.g. prime sieves, in-place sorting, Collatz paths) entirely within `constexpr`.
-- **`abi/`**: Verifies class layouts, field offsets, bit-field allocations, empty base optimization, and virtual table structures against native compilers (`cl.exe`, `clang++`).
-- **`mangle/`**: Verifies exact symbol mangling agreement for MSVC and Itanium schemes against object dumps.
-- **`compiler/`**: End-to-end execution tests where programs are compiled and run to verify correct runtime behavior.
-- **`link/`**: Verifies ABI compatibility by linking objects compiled by `v++` with objects compiled by the host toolchain.
-- **`headers/`**: Tests compilation against real installed system headers, including `<type_traits>`, `<utility>`, `<new>`, and `<cstdint>`.
+Where there is no GPU or no oracle, the CUDA and HIP programs are still compiled through both passes and must compile.
 
 ---
 
@@ -376,9 +375,22 @@ A `.cu` or `.hip` file -- or any file with `-x cuda` or `-x hip` -- is an offloa
 - **The language.** `__global__`, `__device__`, `__host__`, `__shared__` (at namespace and block scope), `__constant__`, `__managed__`; `f<<<grid, block, shmem, stream>>>(args)` with `dim3` or integer extents; `threadIdx`, `blockIdx`, `blockDim`, `gridDim`, `warpSize` read from the hardware; `__syncthreads`, the fences, the shuffles and votes, the atomics at block, device and system scope, the bit intrinsics, the vector types and `make_float4`, `constexpr` and `__host__ __device__` functions, kernel templates, structs by value into kernels. The device builtins are declared by clang's names -- `__nvvm_*`, `__builtin_amdgcn_*`, `__hip_atomic_*` -- so the vendors' own headers read unchanged once a toolkit is present.
 - **The headers.** `include/cuda` and `include/hip` ship the wrapper every unit reads before its first line (`__vcx_cuda_runtime_wrapper.h`, the way clang force-includes its own), and minimal `cuda_runtime.h` / `hip/hip_runtime.h` for the host API when no toolkit's is installed.
 - **The runtime.** `runtime/cuda/vcx_cudart.cpp` implements the cudart a compiled unit calls -- `__cudaRegisterFatBinary`, `cudaMalloc`, `cudaMemcpy`, `cudaMemcpyToSymbol`, `cudaLaunchKernel`, streams and events -- over the driver in `nvcuda.dll` or `libcuda.so`, which every NVIDIA driver ships. It is compiled by vcx at link time and linked in. With a CUDA toolkit installed (`CUDA_PATH`, or the default directories) the program links NVIDIA's own `cudart_static` instead, through a small glue object; `-cudart vcx|static|shared|none` chooses. The fat binary is byte for byte what `fatbinary.exe` writes, `cuobjdump` reads it, and NVIDIA's cudart loads it. HIP's `runtime/hip/vcx_hiprt.cpp` forwards to `libamdhip64`, which is ROCm's runtime and driver in one.
-- **nvcc as the oracle.** Where nvcc and cl.exe are installed, every kernel of `tests/cuda/device` is also compiled by nvcc to a cubin and run through the same harness, and every program of `tests/cuda/host` is built by nvcc and run: the headers' expectations are what NVIDIA's compiler produces, and the two compilers agree on every one. compute-sanitizer's memcheck and racecheck pass over every vcx-built program.
+- **nvcc as the oracle.** Where nvcc and an NVIDIA GPU are present, every program of `tests/cuda` is built by nvcc and by vcx, both are run, and their output must agree; `tests/hip` is held to hipcc the same way on an AMD GPU.
 - **Also there.** `extern __shared__` dynamic shared memory; the transcendental math in a header-only device library (`expf`, `sinf`, `powf` and their kin, a few ulp, in float and double) beside the single-instruction functions and the `__expf` approximations; `__syncthreads_count`/`_and`/`_or`; `__launch_bounds__`; `printf` from a kernel; structs by value into kernels; several `--offload-arch` values in one fat binary, the runtime loading the newest the device runs; separate compilation (`v++ -c a.cu`, `v++ -c b.cpp`, `v++ a.obj b.obj -o prog`); and the driver spelling of the command line, so that `CXX=v++` works in a build written for nvcc or clang++.
 - **What is not there yet.** `__managed__`, `__half`, textures, dynamic parallelism, `-rdc`, `printf` on AMD (ROCm's hostcall), and the toolkit's headers: vcx's own `cuda_runtime.h` stands in even when a toolkit is installed, since the toolkit's pulls in `<functional>`, which vcx does not compile yet (`typeid`, a member template called with explicit arguments) -- `<cmath>`, `<utility>`, `<vector>`, `<new>` do -- the front-end conformance work ahead. A HIP program compiles through both passes and its code object disassembles with `llvm-objdump`; it has not been run, since no AMD GPU has been near this code.
+
+---
+
+## Metal
+
+A `.metal` file -- or any file with `-x metal` -- is Metal Shading Language, and vcx compiles it the way it compiles a CUDA unit's device pass: MSL is C++ in another dialect, so the front end is vcx's, the kernels lower to VIR, and `ir/lower/air` lowers VIR to AIR, which the vertex-language `air` package writes as the `.metallib` Metal loads. Neither Xcode nor the Metal toolchain is needed to build one.
+
+- **One pass.** A `.metal` file is all device code: every function is a device function, `kernel` marks the entry points, and there is no host pass, launch stub or runtime -- the app loads the library with Metal's own API. Several `.metal` files make one library, as `xcrun metallib` does; `-c` makes one per file.
+- **The language.** The address spaces -- `device`, `constant`, `threadgroup`, `thread` -- read as MSL means them: on the object in `threadgroup float t[64]`, and on what a pointer points at in `device float* p`. Kernel parameters are bound by `[[buffer(n)]]` (the next free index where none is written, as xcrun gives one) and filled by the built-in arguments, `[[thread_position_in_grid]]` and the rest, as `uint`, `ushort` or their 2- and 3-vectors. `constant` data at program scope, threadgroup arrays in a kernel, device functions, structs in buffers and by reference. A floating literal is a `float`, and `double` is refused, as the hardware has none.
+- **The bindings reach AIR as Metal's own.** A buffer's index and address space, and each built-in argument, travel through VIR as attachments on the kernel, and the backend binds AIR's own built-in argument for each: in the last threadgroup of a grid the groups do not divide, `[[threads_per_threadgroup]]` is that group's smaller size, which no arithmetic on work-item ids could say.
+- **`<metal_stdlib>` is vcx's.** Apple's is written against its own compiler's builtins, so `include/metal` has vcx's: `threadgroup_barrier`, the float functions (the exact ones, and fast `exp2`, `log2`, `sin`, `cos`, `pow` and their kin), the integer functions, the SIMD-group shuffles, votes, reductions and scans, and the relaxed atomics on `atomic_int`, `atomic_uint` and `atomic_float` in device and threadgroup memory.
+- **xcrun as the oracle.** `tests/metal` kernels are built by vcx and by `xcrun metal`, and both libraries run on the GPU with Metal's validation layers on; every buffer must agree bit for bit, or within a stated ulp bound for fast transcendentals.
+- **What is not there yet.** MSL's vector types as vectors -- `float4`, swizzles, vector arithmetic; `uint2` and `uint3` are structs for now, enough for the built-in arguments -- and `half`, `bfloat`, matrices, textures and samplers, `[[threadgroup(n)]]` arguments, vertex and fragment functions, `precise::` transcendentals, and the MSL 3.2 fences. Apple's own headers are not read.
 
 ---
 
@@ -395,7 +407,7 @@ A `.cu` or `.hip` file -- or any file with `-x cuda` or `-x hip` -- is an offloa
 - **Lowering & Code Generation**: Lowers functions, locals, expressions, control flow, dynamic initialization, copy constructors, and polymorphic virtual dispatch to VIR and native object files.
 - **System Header Support**: Directly compiles and links against host library headers such as `<type_traits>`, `<utility>`, and `<new>`.
 - **Linking and Running**: `v++ build` links with the vertex-language linkers and the platform's own libraries; `v++ run` runs the result. Variadic functions work through cl's `__va_start`, so the ucrt's inline `printf` compiles on Windows.
-- **GPU Offload**: CUDA and HIP units through both passes; `tests/cuda/host` programs run on an NVIDIA GPU with nothing but vcx.
+- **GPU Offload**: CUDA and HIP units through both passes, run on an NVIDIA GPU with nothing but vcx. `.metal` files to `.metallib`s whose kernels match xcrun's on an Apple GPU.
 
 ---
 

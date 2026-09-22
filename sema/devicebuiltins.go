@@ -97,6 +97,54 @@ var amdgcnBuiltins = map[string]string{
 	"__builtin_amdgcn_s_memtime": "ull()",
 }
 
+// metalBuiltins are what vcx's <metal_stdlib> bottoms out in. Apple's
+// headers are written against its own compiler's builtins, which are not
+// spelled here: the header is vcx's, so the names are too, each one a
+// VIR verb or close to one. The suffix is the operand type: _i int, _u
+// uint, _f float.
+var metalBuiltins = map[string]string{
+	// Synchronization: the argument is the mem_flags.
+	"__metal_threadgroup_barrier": "v(u)", "__metal_simdgroup_barrier": "v(u)",
+
+	// Float math the hardware has an instruction for; the header builds
+	// the rest of the library from these.
+	"__metal_sqrt": "f(f)", "__metal_rsqrt": "f(f)", "__metal_rcp": "f(f)",
+	"__metal_fabs": "f(f)", "__metal_fmin": "f(f,f)", "__metal_fmax": "f(f,f)",
+	"__metal_floor": "f(f)", "__metal_ceil": "f(f)", "__metal_trunc": "f(f)", "__metal_rint": "f(f)",
+	"__metal_fma": "f(f,f,f)", "__metal_copysign": "f(f,f)",
+	"__metal_exp2": "f(f)", "__metal_log2": "f(f)", "__metal_sin": "f(f)", "__metal_cos": "f(f)",
+
+	// Integer functions.
+	"__metal_clz_u": "u(u)", "__metal_ctz_u": "u(u)", "__metal_popcount_u": "u(u)",
+	"__metal_mulhi_i": "i(i,i)", "__metal_mulhi_u": "u(u,u)",
+	"__metal_as_uint": "u(f)", "__metal_as_float": "f(u)",
+
+	// The SIMD group: a lane's value from another lane, and the votes.
+	"__metal_simd_shuffle_u": "u(u,u)", "__metal_simd_shuffle_up_u": "u(u,u)",
+	"__metal_simd_shuffle_down_u": "u(u,u)", "__metal_simd_shuffle_xor_u": "u(u,u)",
+	"__metal_simd_broadcast_first_u": "u(u)",
+
+	"__metal_simd_ballot": "ull(b)", "__metal_simd_any": "b(b)", "__metal_simd_all": "b(b)",
+	"__metal_simd_lane": "u()", "__metal_simd_width": "u()",
+}
+
+func init() {
+	// The atomics, relaxed, on the 32-bit types Metal has them for.
+	for _, t := range []string{"i", "u"} {
+		for _, op := range []string{"add", "sub", "and", "or", "xor", "min", "max", "xchg"} {
+			metalBuiltins["__metal_atomic_"+op+"_"+t] = t + "(*" + t + "," + t + ")"
+		}
+		metalBuiltins["__metal_atomic_cas_"+t] = t + "(*" + t + "," + t + "," + t + ")"
+		metalBuiltins["__metal_atomic_load_"+t] = t + "(*" + t + ")"
+		metalBuiltins["__metal_atomic_store_"+t] = "v(*" + t + "," + t + ")"
+	}
+	for _, op := range []string{"add", "sub", "xchg"} {
+		metalBuiltins["__metal_atomic_"+op+"_f"] = "f(*f,f)"
+	}
+	metalBuiltins["__metal_atomic_load_f"] = "f(*f)"
+	metalBuiltins["__metal_atomic_store_f"] = "v(*f,f)"
+}
+
 // deviceBuiltins is the set of the device the unit is compiled for.
 func (a *Analyzer) deviceBuiltins() map[string]string {
 	switch a.model.DeviceISA {
@@ -104,6 +152,8 @@ func (a *Analyzer) deviceBuiltins() map[string]string {
 		return nvvmBuiltins
 	case types.AMDGCN:
 		return amdgcnBuiltins
+	case types.AIR:
+		return metalBuiltins
 	}
 	return nil
 }

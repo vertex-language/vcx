@@ -233,8 +233,15 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		// Recorded: a cast to a reference designates its operand's
 		// object, and lowering has to know which type was written.
 		targetT := a.noteTypeId(e.Type)
-		a.CheckExpr(e.X)
+		src := a.CheckExpr(e.X)
+		// A C-style cast off a class reaches its conversion function,
+		// explicit ones included: (int)m calls m.operator int().
+		a.noteConversionFunction(e.X, src.Type, targetT)
 		return castResult(targetT)
+
+	case *ast.VaArgExpr:
+		a.CheckExpr(e.X)
+		return ExprInfo{Type: a.noteTypeId(e.Type), ValCat: PrValue}
 
 	case *ast.NamedCastExpr:
 		// Named cast value category and result type.
@@ -258,6 +265,12 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 				return ExprInfo{Type: targetT, ValCat: PrValue, IsConst: true, ConstVal: n}
 			}
 			return ExprInfo{Type: targetT, ValCat: PrValue}
+		}
+		if e.Kind == token.STATIC_CAST {
+			// static_cast is the other explicit context a conversion
+			// function serves; the rest reinterpret or requalify and
+			// must not call one.
+			a.noteConversionFunction(e.X, src.Type, targetT)
 		}
 		return castResult(targetT)
 
@@ -284,6 +297,11 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		for _, arg := range items {
 			info := a.CheckExpr(arg)
 			args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
+		}
+		if rec == nil && len(items) == 1 {
+			// T(x) onto a scalar is a static_cast, and reaches a
+			// conversion function the same way: bool(m).
+			a.noteConversionFunction(items[0], args[0].Type, targetT)
 		}
 		if rec != nil && hasUserConstructor(rec) && !isDependentType(targetT) && !dependentArguments(args) {
 			chosen, err := a.chooseConstructor(rec, args)
@@ -398,6 +416,13 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 			items = e.Args
 		case *ast.InitList:
 			init.Items = a.expandPackArgs(init.Items)
+			if newArrayCount(e) != nil {
+				// `new T[n]{a, b}`: the braces initialize the elements
+				// of the array, one item each -- they are not the
+				// arguments of any one element's constructor.
+				a.checkListInit(init, &types.Array{Elem: allocT, Len: int64(len(init.Items))})
+				return ExprInfo{Type: &types.Pointer{Elem: allocT}, ValCat: PrValue}
+			}
 			items = init.Items
 		case nil:
 		default:
@@ -520,6 +545,9 @@ func (a *Analyzer) checkBasicLit(lit *ast.BasicLit) ExprInfo {
 		}
 		switch {
 		case strings.HasSuffix(text, "f") && !strings.HasPrefix(text, "0x"):
+			return ExprInfo{Type: types.Typ(types.Float), ValCat: PrValue}
+		case a.metal():
+			// MSL has no double, and a literal with no suffix is a float.
 			return ExprInfo{Type: types.Typ(types.Float), ValCat: PrValue}
 		case strings.HasSuffix(text, "l"):
 			return ExprInfo{Type: types.Typ(types.LongDouble), ValCat: PrValue}
@@ -1020,6 +1048,10 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 			IsLValue:  argInfo.ValCat == LValue,
 			NullConst: isNullConstant(arg, argInfo),
 		}
+		if list, isList := arg.(*ast.InitList); isList {
+			args[i].List = list
+			args[i].ListConv = func(target types.Type) ConversionSequence { return a.listConversion(list, target) }
+		}
 		if isDependentExpr(argInfo) {
 			anyDependent = true
 		}
@@ -1206,6 +1238,15 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 			if err != nil {
 				a.errorAt(c.Pos(), err.Error())
 				return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
+			}
+			if li := a.genericLambda(resolved); li != nil {
+				if !callArgsDependent(args) {
+					inst := a.instantiateLambdaCall(li, args, c.Pos())
+					if inst == nil {
+						return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
+					}
+					resolved = inst
+				}
 			}
 			// The call operator's body is instantiated by the call, as any
 			// member's is: `__destroy_vector(*this)()` in vector's destructor.
@@ -1459,6 +1500,12 @@ type LambdaInfo struct {
 
 	// Invoker is the function a captureless closure converts to, recorded for lowering.
 	Invoker *FuncSymbol
+
+	// A generic lambda's template parameters, by name in order -- the
+	// explicit ones, then one per auto parameter -- and the specializations
+	// of its operator() made so far (see genericlambda.go).
+	TemplateNames []string
+	Instances     map[string]*FuncSymbol
 }
 
 // A Capture is one entity a closure holds: by copy or by reference.
@@ -1502,6 +1549,7 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 
 	// Lambda parameters.
 	var params []types.Param
+	var autoNames []string
 	generic := false
 	for i, p := range l.Params {
 		info := BuildDeclSpecs(p.Specs, a.curScope, a.unit)
@@ -1509,7 +1557,9 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 		pack := isPackParamDecl(p)
 		if pt != nil && mentionsAuto(pt) {
 			generic = true
-			pt = substituteAuto(pt, &types.TemplateParam{Name: fmt.Sprintf("auto#%d", i), Index: i, IsType: true, IsPack: pack})
+			autoName := fmt.Sprintf("auto#%d", i)
+			autoNames = append(autoNames, autoName)
+			pt = substituteAuto(pt, &types.TemplateParam{Name: autoName, Index: i, IsType: true, IsPack: pack})
 		}
 		name := ""
 		if p.Decl != nil && p.Decl.DeclName() != nil {
@@ -1635,6 +1685,16 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 	if l.Body != nil && !generic {
 		sym.Body = l.Body
 		a.noteDeclared(sym)
+	}
+	if generic {
+		for _, p := range explicitParams {
+			info.TemplateNames = append(info.TemplateNames, p.SymName)
+		}
+		info.TemplateNames = append(info.TemplateNames, autoNames...)
+		if a.generics == nil {
+			a.generics = map[*FuncSymbol]*LambdaInfo{}
+		}
+		a.generics[sym] = info
 	}
 
 	// A closure with no captures converts to a function pointer.
@@ -2046,7 +2106,8 @@ func (a *Analyzer) builtinCall(name string, c *ast.CallExpr) (ExprInfo, bool) {
 		return info, true
 	}
 	switch name {
-	case "__assume", "__builtin_assume", "__builtin_unreachable", "__debugbreak", "__noop", "__fastfail":
+	case "__assume", "__builtin_assume", "__builtin_unreachable", "__debugbreak", "__noop", "__fastfail",
+		"__builtin_va_start", "__builtin_va_end", "__builtin_va_copy", "__builtin_c23_va_start":
 		for _, arg := range c.Args {
 			a.CheckExpr(arg)
 		}
@@ -2755,6 +2816,11 @@ func (a *Analyzer) noteArgConversions(fn *FuncSymbol, exprs []ast.Expr, args []A
 			break
 		}
 		want := types.RemoveReference(fn.FuncType.Params[i].Type)
+		if list, isList := e.(*ast.InitList); isList {
+			// A braced argument list-initializes its parameter.
+			a.checkListInit(list, types.Unqualify(want))
+			continue
+		}
 		rec := types.AsRecord(types.Unqualify(want))
 		if rec == nil {
 			a.noteConversionFunction(e, args[i].Type, want)

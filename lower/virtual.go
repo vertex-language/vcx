@@ -366,10 +366,18 @@ func isVirtualCall(e *ast.CallExpr, callee *sema.FuncSymbol) bool {
 	if callee == nil || callee.InClass == nil || !isVirtualMember(callee) {
 		return false
 	}
-	if mem, ok := unparen(e.Fun).(*ast.MemberExpr); ok {
-		if _, qualified := mem.Sel.(*ast.QualifiedName); qualified {
+	switch fun := unparen(e.Fun).(type) {
+	case *ast.MemberExpr:
+		// `p.Logger::log(v)`.
+		if _, qualified := fun.Sel.(*ast.QualifiedName); qualified {
 			return false
 		}
+	case *ast.QualifiedName:
+		// `Logger::log(v)` inside a member function: the object is the
+		// implicit this, and the qualification pins the function just
+		// the same -- without this an override calling its base calls
+		// itself instead.
+		return false
 	}
 	return true
 }

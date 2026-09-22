@@ -107,8 +107,9 @@ func TestItanium(t *testing.T) {
 	}
 }
 
-// The Microsoft cases here are the handful measured before tests/mangle
-// existed; the corpus is where the scheme is actually checked.
+// The Microsoft cases here were measured against cl.exe; on Windows the C++
+// ladder in tests/ checks the scheme end to end, since a wrong name does
+// not link.
 func TestMicrosoft(t *testing.T) {
 	cases := []struct {
 		f    Function

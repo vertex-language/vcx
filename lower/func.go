@@ -49,6 +49,9 @@ type fn struct {
 	// temps are the current full-expression's temporaries (see temporary).
 	temps []localObj
 
+	// labels are the function's goto targets, by name (see goto.go).
+	labels map[string]*label
+
 	// bitFields notes which addresses are bit-fields' storage units, for
 	// load and store to shift and mask (see bitfield.go).
 	bitFields map[ir.Ptr]bitField
@@ -108,15 +111,19 @@ func (u *unit) defineFunc(sym *sema.FuncSymbol, f *ir.Func) {
 		}
 	}
 
-	// Construct bases, install vptr, then run member initializers.
+	// Construct bases, install vptr, then run member initializers -- or,
+	// for a delegating constructor, let the constructor it names do all
+	// of that and run only this one's body afterwards.
 	if sym.Decl != nil && sym.InClass != nil && sym.SymName == sym.InClass.Name {
-		fl.constructBases(sym)
-		if fl.hasThis {
-			fl.installVPtr(fl.this, sym.InClass)
-		}
-		fl.memInits(sym)
-		if fl.hasThis {
-			fl.memberDefaultsAfter(sym)
+		if !fl.delegateCtor(sym) {
+			fl.constructBases(sym)
+			if fl.hasThis {
+				fl.installVPtr(fl.this, sym.InClass)
+			}
+			fl.memInits(sym)
+			if fl.hasThis {
+				fl.memberDefaultsAfter(sym)
+			}
 		}
 	}
 
@@ -183,6 +190,29 @@ func (fl *fn) zeroOf(t types.Type) ir.Value {
 	default:
 		return fl.blk.I32.Const(0)
 	}
+}
+
+// delegateCtor runs the constructor a delegating mem-initializer names on
+// this, and reports whether it did. The delegate constructs the complete
+// object, so the delegating constructor initializes nothing itself.
+func (fl *fn) delegateCtor(sym *sema.FuncSymbol) bool {
+	if !fl.hasThis {
+		return false
+	}
+	for _, mi := range sym.Decl.Inits {
+		if mi.Name == nil || sema.NameString(mi.Name, fl.u.unit) != sym.InClass.Name {
+			continue
+		}
+		ctor := fl.u.res.Info.MemInits[mi]
+		if ctor == nil {
+			// A delegate with nothing to call -- a defaulted one -- is
+			// left to the ordinary path, which does the same work.
+			return false
+		}
+		fl.constructWith(fl.this, ctor, mi.Args, mi.Pos())
+		return true
+	}
+	return false
 }
 
 // constructBases runs base subobject constructors in declaration order.

@@ -279,6 +279,12 @@ func (c *Compiler) linkMachO(t Target, p LinkParams) error {
 			if data, err := os.ReadFile(filepath.Join(sdk, "usr/lib/libSystem.tbd")); err == nil {
 				l.AddStub("libSystem", data)
 			}
+			// The C++ runtime, as clang++ links it for every C++ program:
+			// operator new and delete, the exception and RTTI support of
+			// libc++abi, which libc++ re-exports, and the library itself.
+			if data, err := os.ReadFile(filepath.Join(sdk, "usr/lib/libc++.tbd")); err == nil {
+				l.AddStub("libc++", data)
+			}
 		}
 	}
 	libs, err := c.libraries(t, p)

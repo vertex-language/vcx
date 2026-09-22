@@ -69,8 +69,10 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 		if _, _, isRef := fl.castRef(e); isRef {
 			return fl.rvalue(e)
 		}
-		return fl.convert(fl.expr(e.X), fl.typeOf(e.X), fl.typeOf(e))
+		return fl.castOperand(e.X, fl.typeOf(e))
 
+	case *ast.VaArgExpr:
+		return fl.vaArg(e)
 	case *ast.NamedCastExpr:
 		if e.Kind == token.BIT_CAST {
 			return fl.bitCast(e)
@@ -78,7 +80,7 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 		if _, _, isRef := fl.castRef(e); isRef {
 			return fl.rvalue(e)
 		}
-		return fl.convert(fl.expr(e.X), fl.typeOf(e.X), fl.typeOf(e))
+		return fl.castOperand(e.X, fl.typeOf(e))
 
 	case *ast.CondExpr:
 		return fl.conditional(e)
@@ -923,6 +925,24 @@ func (fl *fn) finishCall(e *ast.CallExpr, callee *sema.FuncSymbol, target ir.Cal
 		if i < len(callee.FuncType.Params) {
 			want = callee.FuncType.Params[i].Type
 		}
+		if list, isList := a.(*ast.InitList); isList && want != nil {
+			// A braced argument list-initializes a temporary of the
+			// parameter's type, which is passed as that parameter is.
+			t := types.Unqualify(types.RemoveReference(want))
+			tmp := fl.alloc(t, "")
+			fl.initList(tmp, t, list)
+			if rec := classOf(t); rec != nil {
+				fl.temporary(tmp, rec)
+				args = append(args, tmp)
+				continue
+			}
+			if isReference(want) {
+				args = append(args, tmp)
+				continue
+			}
+			args = append(args, fl.load(tmp, t))
+			continue
+		}
 		if rec := classOf(want); rec != nil {
 			// A class argument: the address of the object, which `byval`
 			// has the backend copy for a plain class. For any other the
@@ -962,7 +982,7 @@ func (fl *fn) finishCall(e *ast.CallExpr, callee *sema.FuncSymbol, target ir.Cal
 			args = append(args, addr)
 			continue
 		}
-		v, converted := fl.convertedScalar(a)
+		v, _, converted := fl.convertedScalar(a)
 		if !converted {
 			v = fl.expr(a)
 		}
@@ -1294,30 +1314,48 @@ func (fl *fn) calleeNamesType(e *ast.CallExpr) bool {
 }
 
 // convertedScalar lowers user-defined conversion functions or lambda conversion
-// to function pointer.
-func (fl *fn) convertedScalar(e ast.Expr) (ir.Value, bool) {
+// to function pointer. The type it returns is the conversion's own result,
+// which is what any further conversion converts from -- not the class the
+// operand was written as.
+func (fl *fn) convertedScalar(e ast.Expr) (ir.Value, types.Type, bool) {
 	conv := fl.u.res.Info.Conversions[e]
 	if conv == nil || conv.InClass == nil || conv.SymName == conv.InClass.Name {
-		return nil, false
+		return nil, nil, false
 	}
+	ret := types.RemoveReference(conv.FuncType.Ret)
 	if inv := fl.u.lambdaInvoker(conv.InClass); inv != nil {
 		fl.expr(e) // the closure object is made and dropped
-		return fl.blk.Ptr.GetAddr(inv), true
+		return fl.blk.Ptr.GetAddr(inv), ret, true
 	}
 	obj, ok := fl.objectOf(e)
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
 	v := fl.invoke(conv, obj, nil, ir.Ptr{}, e.Pos())
 	if v == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	if isReference(conv.FuncType.Ret) {
 		if p, isPtr := v.(ir.Ptr); isPtr {
-			return fl.load(p, types.RemoveReference(conv.FuncType.Ret)), true
+			return fl.load(p, ret), ret, true
 		}
 	}
-	return v, true
+	return v, ret, true
+}
+
+// castOperand lowers the operand of an explicit cast onto a scalar. A class
+// operand goes through the conversion function sema chose, so that
+// static_cast<int>(m) calls m.operator int() rather than reinterpreting the
+// object that holds it.
+func (fl *fn) castOperand(x ast.Expr, to types.Type) ir.Value {
+	v, from, converted := fl.convertedScalar(x)
+	if !converted {
+		v, from = fl.expr(x), fl.typeOf(x)
+	}
+	if v == nil {
+		return nil
+	}
+	return fl.convert(v, from, to)
 }
 
 // convertedObject creates a temporary via a converting constructor if selected.
@@ -1455,11 +1493,7 @@ func (fl *fn) functionalCast(e *ast.FunctionalCastExpr) ir.Value {
 			fl.u.errorf(e.Pos(), "lowering: a scalar cast with %d operands", len(e.ArgList))
 			return nil
 		}
-		v := fl.expr(x)
-		if v == nil {
-			return nil
-		}
-		return fl.convert(v, fl.typeOf(x), t)
+		return fl.castOperand(x, t)
 	}
 
 	tmp := fl.alloc(rec, "")
@@ -1653,6 +1687,30 @@ func (fl *fn) builtinCall(name string, e *ast.CallExpr) (ir.Value, bool) {
 	}
 	switch name {
 	case "__assume", "__builtin_assume", "__builtin_unreachable", "__debugbreak", "__noop", "__fastfail":
+		return nil, true
+	case "__builtin_va_start", "__builtin_c23_va_start":
+		// (ap, last): the list starts after the named parameters.
+		if len(e.Args) >= 1 {
+			if ap, ok := fl.vaList(e.Args[0]); ok {
+				fl.blk.VaStart(ap)
+			}
+		}
+		return nil, true
+	case "__builtin_va_end":
+		if len(e.Args) == 1 {
+			if ap, ok := fl.vaList(e.Args[0]); ok {
+				fl.blk.VaEnd(ap)
+			}
+		}
+		return nil, true
+	case "__builtin_va_copy":
+		if len(e.Args) == 2 {
+			dst, ok1 := fl.vaList(e.Args[0])
+			src, ok2 := fl.vaList(e.Args[1])
+			if ok1 && ok2 {
+				fl.blk.VaCopy(dst, src)
+			}
+		}
 		return nil, true
 	case "__builtin_addressof":
 		if len(e.Args) != 1 {

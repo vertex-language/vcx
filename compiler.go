@@ -96,6 +96,14 @@ type Compiler struct {
 	// until then an offload unit compiles as its device pass alone.
 	DeviceOnly bool
 	HostOnly   bool
+
+	// The Metal flags, as xcrun metal spells them: MetalStd is -std=
+	// metal3.1 (empty is metal3.0), MinOS -mmacosx-version-min (empty is
+	// 13.0, which picks AIR 2.5), and NoFastMath -fno-fast-math. Fast math
+	// is Metal's default, as it is xcrun's.
+	MetalStd   string
+	MinOS      string
+	NoFastMath bool
 }
 
 func (c *Compiler) target() (Target, error) {
@@ -130,6 +138,9 @@ func (c *Compiler) passFor(in Input) (pass, error) {
 	if p.lang == LangCXX {
 		return p, nil
 	}
+	if p.lang == LangMetal {
+		return c.metalPass(p)
+	}
 	p.arch, err = c.offloadArch(p.lang)
 	if err != nil {
 		return pass{}, err
@@ -139,6 +150,24 @@ func (c *Compiler) passFor(in Input) (pass, error) {
 	if c.DeviceOnly {
 		return p.toDevice(), nil
 	}
+	return p, nil
+}
+
+// metalPass is a .metal file's one pass. All of it is device code, and
+// there is no host whose headers it shares: the "host" is the GPU itself,
+// so no CPU's macros or system headers reach it, and its data model is
+// MSL's, which is LP64 whatever machine compiles it.
+func (c *Compiler) metalPass(p pass) (pass, error) {
+	arch, err := c.offloadArch(p.lang)
+	if err != nil {
+		return pass{}, err
+	}
+	t := arch.Target()
+	p.arch, p.host, p.tgt, p.device = arch, t, t, true
+	p.model = types.ModelForTarget(t.Arch, t.OS)
+	p.model.Offload = types.Metal
+	p.model.DeviceISA = types.AIR
+	p.model.DevicePass = true
 	return p, nil
 }
 
@@ -186,7 +215,12 @@ func (c *Compiler) preprocessorConfigFor(in Input, p pass, passErr error) prepro
 		cfg.Search = append(cfg.Search, preprocessor.Mount{Name: own.Name, FS: own.FS, System: true})
 		cfg.PreIncludes = append(cfg.PreIncludes, offloadWrapper(p.lang))
 	}
+	// A .metal file reads no system's headers: MSL has no C library, and
+	// its standard library is vcx's own, above.
 	for _, sys := range c.SystemIncludes() {
+		if p.lang == LangMetal {
+			break
+		}
 		cfg.Search = append(cfg.Search, preprocessor.Mount{Name: sys.Name, FS: sys.FS, System: true})
 	}
 	// The target's own macros first, so that -D and -U on the command line
@@ -685,4 +719,3 @@ func moduleName(in Input) string {
 	}
 	return b.String()
 }
-

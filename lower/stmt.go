@@ -12,8 +12,19 @@ import (
 
 // stmt lowers one statement. Unreachable statements after terminators emit nothing.
 func (fl *fn) stmt(s ast.Stmt) {
-	if s == nil || fl.blk == nil {
+	if s == nil {
 		return
+	}
+	if fl.blk == nil {
+		// Code after a jump is unreachable, unless a goto's label is in
+		// it: the label starts a block of its own.
+		if l, ok := s.(*ast.LabeledStmt); ok && l.Name != nil {
+			fl.labeledStmt(l)
+			return
+		}
+		if c, ok := s.(*ast.CompoundStmt); !ok || !hasNamedLabel(c) {
+			return
+		}
 	}
 
 	switch s := s.(type) {
@@ -65,6 +76,16 @@ func (fl *fn) stmt(s ast.Stmt) {
 	case *ast.ContinueStmt:
 		fl.destroyFrom(fl.loopDepth)
 		fl.jump(fl.continueTo, "continue outside any loop")
+
+	case *ast.GotoStmt:
+		fl.gotoStmt(s)
+
+	case *ast.LabeledStmt:
+		if s.Name == nil {
+			fl.u.errorf(s.Pos(), "a case label outside a switch")
+			return
+		}
+		fl.labeledStmt(s)
 
 	default:
 		fl.u.errorf(s.Pos(), "lowering does not handle %T yet", s)
@@ -218,14 +239,14 @@ func (fl *fn) declareLocal(init *ast.InitDeclarator) {
 			return
 		}
 	}
-	v, converted := fl.convertedScalar(init.Value)
+	v, from, converted := fl.convertedScalar(init.Value)
 	if !converted {
-		v = fl.expr(init.Value)
+		v, from = fl.expr(init.Value), fl.typeOf(init.Value)
 	}
 	if v == nil {
 		return
 	}
-	fl.store(slot, fl.convert(v, fl.typeOf(init.Value), sym.SymType), sym.SymType)
+	fl.store(slot, fl.convert(v, from, sym.SymType), sym.SymType)
 }
 
 // declareStaticLocal lowers a block-scope static object. Constant initializers
@@ -450,6 +471,18 @@ func (fl *fn) initList(dst ir.Ptr, t types.Type, list *ast.InitList) {
 		list = braced
 	}
 	if rec := classOf(t); rec != nil {
+		// A class with constructors is no aggregate: the list's items are
+		// the arguments of the constructor it chose.
+		if ctor := fl.u.res.Info.ListCtors[list]; ctor != nil {
+			var args []ast.Expr
+			for _, item := range list.Items {
+				if e, isExpr := item.(ast.Expr); isExpr {
+					args = append(args, e)
+				}
+			}
+			fl.constructObject(dst, rec, ctor, args, list.Pos())
+			return
+		}
 		// Aggregate initialization of bases and members in declaration order.
 		fieldOffs := make([]int64, len(rec.Fields))
 		baseOffs := make([]int64, len(rec.Bases))
@@ -559,22 +592,8 @@ func (fl *fn) initList(dst ir.Ptr, t types.Type, list *ast.InitList) {
 		if i > 0 {
 			at = fl.blk.Ptr.Add(dst, fl.blk.I64.Const(i*elemSize))
 		}
-		if i < int64(len(list.Items)) {
-			switch item := list.Items[i].(type) {
-			case *ast.InitList:
-				fl.initList(at, arr.Elem, item)
-				continue
-			case ast.Expr:
-				if rec := classOf(arr.Elem); rec != nil {
-					if fl.exprInto(at, item, rec) {
-						continue
-					}
-				}
-				if val := fl.expr(item); val != nil {
-					fl.store(at, fl.convert(val, fl.typeOf(item), arr.Elem), arr.Elem)
-					continue
-				}
-			}
+		if i < int64(len(list.Items)) && fl.initArrayElement(at, arr.Elem, list.Items[i]) {
+			continue
 		}
 		if rec := classOf(arr.Elem); rec != nil {
 			size, _ := fl.u.sizeAlign(rec)
@@ -583,6 +602,27 @@ func (fl *fn) initList(dst ir.Ptr, t types.Type, list *ast.InitList) {
 		}
 		fl.store(at, fl.zeroOf(arr.Elem), arr.Elem)
 	}
+}
+
+// initArrayElement initializes one array element from an initializer-list
+// item -- a nested list, an object built in place, or a converted scalar --
+// and reports whether it did. A caller that gets false value-initializes the
+// element instead.
+func (fl *fn) initArrayElement(at ir.Ptr, elem types.Type, item ast.Expr) bool {
+	switch item := item.(type) {
+	case *ast.InitList:
+		fl.initList(at, elem, item)
+		return true
+	case ast.Expr:
+		if rec := classOf(elem); rec != nil {
+			return fl.exprInto(at, item, rec)
+		}
+		if val := fl.expr(item); val != nil {
+			fl.store(at, fl.convert(val, fl.typeOf(item), elem), elem)
+			return true
+		}
+	}
+	return false
 }
 
 // localSymbol returns the declaration symbol recorded by sema for this declarator.

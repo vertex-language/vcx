@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+	"github.com/vertex-language/vcx/ast"
 
 	"github.com/vertex-language/vcx/token"
 	"github.com/vertex-language/vcx/types"
@@ -14,6 +15,12 @@ type Argument struct {
 
 	// NullConst marks an integer literal zero null pointer constant.
 	NullConst bool
+
+	// List is set for a braced-init-list argument, whose conversion to a
+	// parameter is list-initialization's ([over.ics.list]), not an
+	// expression's: ListConv classifies it against a parameter type.
+	List     *ast.InitList
+	ListConv func(target types.Type) ConversionSequence
 }
 
 // ViableCandidate records a viable candidate function and its argument conversion sequences.
@@ -93,7 +100,12 @@ func ResolveOverloadOn(candidates []*FuncSymbol, object *Argument, args []Argume
 		for i, arg := range args {
 			if i < numParams {
 				paramType := ft.Params[i].Type
-				cs := ClassifyConversion(arg.Type, paramType, arg.IsLValue)
+				var cs ConversionSequence
+				if arg.List != nil && arg.ListConv != nil {
+					cs = arg.ListConv(paramType)
+				} else {
+					cs = ClassifyConversion(arg.Type, paramType, arg.IsLValue)
+				}
 				if isDependentType(paramType) || isDependentType(arg.Type) {
 					// However the conversion ranks here, it is ranked again
 					// against the types the instantiation supplies.

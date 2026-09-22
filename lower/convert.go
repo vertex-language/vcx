@@ -3,6 +3,7 @@ package lower
 import (
 	"github.com/vertex-language/ir"
 
+	"github.com/vertex-language/vcx/ast"
 	"github.com/vertex-language/vcx/types"
 )
 
@@ -18,6 +19,16 @@ func (fl *fn) convert(v ir.Value, from, to types.Type) ir.Value {
 	}
 
 	b := fl.blk
+	// [conv.bool]: a scalar converts to bool as whether it is nonzero, not
+	// by keeping its low bits -- 42 and 256 are both true.
+	if isBool(to) && !isBool(from) {
+		if _, isI1 := v.(ir.I1); !isI1 {
+			if c := fl.truthOf(v, ast.Tok(0)); c != nil {
+				return b.I32.ZExtI1(*c)
+			}
+			return v
+		}
+	}
 	switch val := v.(type) {
 	case ir.I1:
 		// A comparison's result arriving where a number is wanted.
@@ -88,9 +99,17 @@ func (fl *fn) convert(v ir.Value, from, to types.Type) ir.Value {
 		case ir.TypeF32:
 			return b.F32.FCvtF64(val)
 		case ir.TypeI32:
-			// The fractional part is discarded toward zero.
+			// The fractional part is discarded toward zero. An unsigned
+			// target takes the unsigned conversion: 4e9 is a valid unsigned
+			// value and out of range for a signed one.
+			if !isSigned(to) {
+				return fl.narrow(b.I32.UCvtF64(val), to)
+			}
 			return fl.narrow(b.I32.SCvtF64(val), to)
 		case ir.TypeI64:
+			if !isSigned(to) {
+				return b.I64.UCvtF64(val)
+			}
 			return b.I64.SCvtF64(val)
 		}
 
@@ -101,8 +120,14 @@ func (fl *fn) convert(v ir.Value, from, to types.Type) ir.Value {
 		case ir.TypeF64:
 			return b.F64.FCvtF32(val)
 		case ir.TypeI32:
+			if !isSigned(to) {
+				return fl.narrow(b.I32.UCvtF32(val), to)
+			}
 			return fl.narrow(b.I32.SCvtF32(val), to)
 		case ir.TypeI64:
+			if !isSigned(to) {
+				return b.I64.UCvtF32(val)
+			}
 			return b.I64.SCvtF32(val)
 		}
 
@@ -134,6 +159,15 @@ func (fl *fn) convert(v ir.Value, from, to types.Type) ir.Value {
 	}
 
 	return v
+}
+
+// isBool reports whether t is bool, under any qualifiers.
+func isBool(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	b, ok := types.Unqualify(t).(*types.Basic)
+	return ok && b.K == types.Bool
 }
 
 // baseAdjust is the offset a pointer or reference moves by when converted

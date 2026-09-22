@@ -184,6 +184,12 @@ func (u *unit) linkSymbol(fn *sema.FuncSymbol) string {
 	if fn.AsmLabel != "" {
 		return fn.AsmLabel
 	}
+	// A Metal kernel is found by its name as written: the app asks the
+	// library for newFunctionWithName:@"vector_add", and xcrun does not
+	// mangle it, which is why MSL admits no two kernels of one name.
+	if u.metal() && fn.Space == sema.SpaceGlobal {
+		return fn.SymName
+	}
 	return u.symbolName(u.funcSymbol(fn))
 }
 
@@ -457,8 +463,12 @@ func (u *unit) declareFunc(fn *sema.FuncSymbol) *ir.Func {
 		u.srets[fn] = f.ParamPtr("__ret")
 	}
 
-	for _, p := range fn.Params {
-		u.params[fn] = append(u.params[fn], u.declareParam(f, p))
+	if u.metal() && fn.Space == sema.SpaceGlobal {
+		u.declareMetalKernel(fn, f)
+	} else {
+		for _, p := range fn.Params {
+			u.params[fn] = append(u.params[fn], u.declareParam(f, p))
+		}
 	}
 	if retRec == nil {
 		u.declareResult(f, fn.FuncType.Ret)

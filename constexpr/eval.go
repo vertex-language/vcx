@@ -410,44 +410,28 @@ func parseFloatLiteral(text string) (Value, error) {
 }
 
 func parseCharLiteral(text string, model types.Model) (Value, error) {
-	// Simple char literal parsing
-	s := strings.TrimPrefix(text, "u8")
-	s = strings.TrimPrefix(s, "u")
-	s = strings.TrimPrefix(s, "U")
-	s = strings.TrimPrefix(s, "L")
-	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
-		content := s[1 : len(s)-1]
-		var r rune
-		if len(content) == 1 {
-			r = rune(content[0])
-		} else if strings.HasPrefix(content, "\\") {
-			switch content {
-			case `\n`:
-				r = '\n'
-			case `\t`:
-				r = '\t'
-			case `\r`:
-				r = '\r'
-			case `\0`:
-				r = 0
-			case `\\`:
-				r = '\\'
-			case `\'`:
-				r = '\''
-			case `\"`:
-				r = '"'
-			default:
-				if strings.HasPrefix(content, `\x`) {
-					n, _ := strconv.ParseInt(content[2:], 16, 32)
-					r = rune(n)
-				} else {
-					r = rune(content[1])
-				}
-			}
-		}
-		return NewInt(int64(r), types.Typ(types.Char), model), nil
+	v, enc, multi, err := literal.Char(text)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNonConstexpr, err)
 	}
-	return NewInt(0, types.Typ(types.Char), model), nil
+	t := types.Typ(types.Char)
+	switch {
+	case multi:
+		t = types.Typ(types.Int)
+	case enc == literal.UTF8:
+		t = types.Typ(types.Char8)
+	case enc == literal.UTF16:
+		t = types.Typ(types.Char16)
+	case enc == literal.UTF32:
+		t = types.Typ(types.Char32)
+	case enc == literal.Wide:
+		t = types.Typ(types.WChar)
+	case v > 0x7f && model.CharSigned:
+		// A narrow literal is a char, and the one byte of '\xff' is -1
+		// where char is signed.
+		return NewInt(int64(int8(v)), t, model), nil
+	}
+	return NewInt(int64(v), t, model), nil
 }
 
 func (ctx *Context) evalStringLit(lit *ast.StringLit) (Value, error) {

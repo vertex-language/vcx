@@ -410,6 +410,9 @@ func (fl *fn) intrinsicCall(callee *sema.FuncSymbol, e *ast.CallExpr) ir.Value {
 	if strings.HasPrefix(name, "__builtin_amdgcn_") {
 		return fl.amdgcnCall(name, args, e)
 	}
+	if strings.HasPrefix(name, "__metal_") {
+		return fl.metalCall(name, args, e)
+	}
 	fl.u.errorf(e.Pos(), "internal: %s is marked a device builtin and has no lowering", name)
 	return nil
 }

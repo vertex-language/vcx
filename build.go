@@ -20,6 +20,12 @@ func (c *Compiler) Build(params BuildParams) error {
 	if len(params.Inputs) == 0 {
 		return fmt.Errorf("no input files")
 	}
+	if metal, err := c.metalInputs(params.Inputs); err != nil || metal {
+		if err != nil {
+			return err
+		}
+		return c.buildMetal(params)
+	}
 	var objects []Input
 	offload := map[Language]bool{}
 	for _, in := range params.Inputs {
@@ -216,8 +222,11 @@ func (c *Compiler) objectExt(in Input) string {
 		}
 		return ".o"
 	}
-	if p.tgt.Container == ContainerPTX {
+	switch p.tgt.Container {
+	case ContainerPTX:
 		return ".ptx"
+	case ContainerMetallib:
+		return ".metallib"
 	}
 	return ".hsaco"
 }

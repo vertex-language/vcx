@@ -61,12 +61,18 @@ func classifyConversion(from, to types.Type, fromIsLValue, allowUser bool) Conve
 		toElem := types.RemoveReference(to)
 		fromElem := types.RemoveReference(from)
 
-		// Reference to same type or base class
-		if fromElem.Equal(toElem) || types.IsBaseOf(toElem, fromElem) {
+		// Reference to same type or base class. [dcl.init.ref]/4: the
+		// types are reference-compatible when they differ only in cv, the
+		// reference's at least the argument's -- for an array, its
+		// element's: const int (&)[7] binds to an int[7].
+		fromBare, fromQ := cvStrip(fromElem)
+		toBare, toQ := cvStrip(toElem)
+		sameBare := fromBare.Equal(toBare)
+		if (sameBare && toQ&fromQ == fromQ) || fromElem.Equal(toElem) || types.IsBaseOf(toElem, fromElem) {
 			if types.IsLValueReference(to) {
 				if fromIsLValue {
 					// Direct reference binding to lvalue
-					if !types.IsConst(toElem) && types.IsConst(fromElem) {
+					if toQ&types.QConst == 0 && fromQ&types.QConst != 0 {
 						return ConversionSequence{Rank: RankNone, Valid: false} // Discards const
 					}
 					rank := RankExactMatch
@@ -76,7 +82,7 @@ func classifyConversion(from, to types.Type, fromIsLValue, allowUser bool) Conve
 					return ConversionSequence{From: from, To: to, Rank: rank, Valid: true}
 				}
 				// Cannot bind non-const lvalue reference to rvalue
-				if !types.IsConst(toElem) {
+				if toQ&types.QConst == 0 {
 					return ConversionSequence{Rank: RankNone, Valid: false}
 				}
 				// Const lvalue ref can bind to rvalue
@@ -320,4 +326,19 @@ func CompareConversions(cs1, cs2 ConversionSequence) int {
 	}
 
 	return 0
+}
+
+// cvStrip is a type without its cv-qualifiers, and the qualifiers: its
+// own, and for an array its element's, which [basic.type.qualifier]/6
+// makes the array's.
+func cvStrip(t types.Type) (types.Type, types.Qual) {
+	q := qualsOf(t)
+	bare := types.Unqualify(t)
+	if arr, ok := bare.(*types.Array); ok {
+		elem, eq := cvStrip(arr.Elem)
+		c := *arr
+		c.Elem = elem
+		return &c, q | eq
+	}
+	return bare, q
 }
