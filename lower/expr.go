@@ -77,6 +77,11 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 		if e.Kind == token.BIT_CAST {
 			return fl.bitCast(e)
 		}
+		if e.Kind == token.DYNAMIC_CAST {
+			// Before castRef: a dynamic_cast to a reference is the
+			// runtime's answer, not the operand's address.
+			return fl.dynamicCast(e)
+		}
 		if _, _, isRef := fl.castRef(e); isRef {
 			return fl.rvalue(e)
 		}

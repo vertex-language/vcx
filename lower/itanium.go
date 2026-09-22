@@ -367,3 +367,170 @@ func (u *unit) cxxabiTable(class string) ir.Symbol {
 	u.cxxabiTables[class] = s
 	return s
 }
+
+// dynamicCastFn is the Itanium ABI's runtime cast:
+//
+//	void* __dynamic_cast(const void* sub, const __class_type_info* src,
+//	                     const __class_type_info* dst, ptrdiff_t src2dst);
+//
+// The last argument is a hint about where src sits inside dst; -1 is "no
+// hint", which is always correct and which the runtime answers by walking
+// the type-info graph.
+func (u *unit) dynamicCastFn() ir.Callee {
+	if u.dynCast == nil {
+		sig := ir.NewSig().Param(ir.TypePtr).Param(ir.TypePtr).Param(ir.TypePtr).Param(ir.TypeI64).Ret(ir.TypePtr)
+		u.dynCast = u.mod.ImportFunc(u.symbolName("__dynamic_cast"), sig)
+	}
+	return u.dynCast
+}
+
+// badCastFn throws std::bad_cast, which is what a failed dynamic_cast to a
+// reference does. It does not return.
+func (u *unit) badCastFn() ir.Callee {
+	if u.badCast == nil {
+		u.badCast = u.mod.ImportFunc(u.symbolName("__cxa_bad_cast"), ir.NewSig())
+	}
+	return u.badCast
+}
+
+// dynamicCast lowers dynamic_cast.
+//
+// A cast to the same class or to a base of it is the static adjustment and
+// no runtime call at all -- the answer is known here. Anything else asks
+// __dynamic_cast, which walks the object's own type-info and answers with
+// the subobject's address, or null where the object is not of that type.
+// A cast to void* is the whole object, which every table records as its
+// distance back to the top.
+//
+// The pointer form guards the call: a null operand is a null result, and
+// the runtime would dereference it looking for a table. The reference form
+// needs no such guard, and throws where the pointer form would answer null.
+func (fl *fn) dynamicCast(e *ast.NamedCastExpr) ir.Value {
+	to := fl.typeOf(e)
+	ref := isReference(to)
+
+	target := types.RemoveReference(to)
+	if !ref {
+		p, isPtr := types.Unqualify(to).(*types.Pointer)
+		if !isPtr {
+			fl.u.errorf(e.Pos(), "lowering: dynamic_cast to %s, which is neither a pointer nor a reference", to)
+			return nil
+		}
+		target = p.Elem
+	}
+
+	// The operand: the object a reference designates, or the pointer.
+	var src ir.Ptr
+	fromT := types.Unqualify(types.RemoveReference(fl.typeOf(e.X)))
+	srcClass := classOf(fromT)
+	if ref {
+		p, _, ok := fl.lvalue(e.X)
+		if !ok {
+			fl.u.errorf(e.Pos(), "lowering: the operand of dynamic_cast has no address")
+			return nil
+		}
+		src = p
+	} else {
+		fp, isPtr := fromT.(*types.Pointer)
+		if !isPtr {
+			fl.u.errorf(e.Pos(), "lowering: the operand of dynamic_cast is not a pointer")
+			return nil
+		}
+		srcClass = classOf(fp.Elem)
+		v := fl.expr(e.X)
+		p, isP := v.(ir.Ptr)
+		if !isP {
+			fl.u.errorf(e.Pos(), "lowering: the operand of dynamic_cast is not an address")
+			return nil
+		}
+		src = p
+	}
+
+	dstClass := classOf(types.Unqualify(target))
+	toVoid := types.IsVoid(types.Unqualify(target))
+
+	// An upcast is static: the same class needs nothing, a base needs the
+	// subobject's offset, and convert() already knows it.
+	if !toVoid && dstClass != nil && srcClass != nil &&
+		(dstClass == srcClass || types.IsBaseOf(dstClass, srcClass)) {
+		if ref {
+			return fl.convert(src, &types.Pointer{Elem: srcClass}, &types.Pointer{Elem: dstClass})
+		}
+		return fl.convert(src, fl.typeOf(e.X), to)
+	}
+
+	if srcClass == nil || fl.u.vtablesOf(srcClass) == nil {
+		fl.u.errorf(e.Pos(), "dynamic_cast needs a polymorphic operand")
+		return nil
+	}
+	if !toVoid && dstClass == nil {
+		fl.u.errorf(e.Pos(), "lowering: dynamic_cast to %s, which is no class", target)
+		return nil
+	}
+
+	if ref {
+		return fl.dynamicCastBody(src, srcClass, dstClass, toVoid, true, e)
+	}
+
+	// `p ? __dynamic_cast(p, ...) : nullptr`, through a slot: the call is
+	// its own block.
+	slot := fl.alloc(&types.Pointer{Elem: types.Typ(types.Void)}, "")
+	fl.blk.Ptr.Store(fl.blk.Ptr.Const(), slot)
+	do := fl.block("dyncast_do")
+	join := fl.block("dyncast_join")
+	fl.blk.BrIf(fl.blk.Ptr.Eq(src, fl.blk.Ptr.Const()), join.To(), do.To())
+
+	fl.blk = do
+	if v := fl.dynamicCastBody(src, srcClass, dstClass, toVoid, false, e); v != nil {
+		if p, isP := v.(ir.Ptr); isP {
+			fl.blk.Ptr.Store(p, slot)
+		}
+	}
+	if fl.blk != nil {
+		fl.blk.Br(join.To())
+	}
+
+	fl.blk = join
+	return fl.blk.Ptr.Load(slot)
+}
+
+// dynamicCastBody is the cast itself, on an operand already known to be
+// non-null: the table's distance to the top for void*, the runtime call
+// otherwise, and for a reference the throw that a null answer means.
+func (fl *fn) dynamicCastBody(src ir.Ptr, srcClass, dstClass *types.Record, toVoid, ref bool, e *ast.NamedCastExpr) ir.Value {
+	b := fl.blk
+	if toVoid {
+		// The table's first word before its address point is the
+		// distance back to the most derived object.
+		vptr := b.Ptr.Load(src)
+		top := b.I64.Load(b.Ptr.Add(vptr, b.I64.Const(-2*fl.u.model.SizePtr)))
+		return b.Ptr.Add(src, top)
+	}
+
+	srcTI, dstTI := fl.u.typeInfo(srcClass), fl.u.typeInfo(dstClass)
+	if srcTI == nil || dstTI == nil {
+		fl.u.errorf(e.Pos(), "lowering: dynamic_cast has no type-info for %s or %s", srcClass.Name, dstClass.Name)
+		return nil
+	}
+	res := b.Call(fl.u.dynamicCastFn(), src, b.Ptr.GetAddr(srcTI), b.Ptr.GetAddr(dstTI), b.I64.Const(-1))
+	if res.Len() == 0 {
+		return nil
+	}
+	out, isP := res.Value(0).(ir.Ptr)
+	if !isP {
+		return nil
+	}
+	if !ref {
+		return out
+	}
+
+	// A reference cannot be null, so a null answer is a failed cast.
+	bad := fl.block("dyncast_bad")
+	ok := fl.block("dyncast_ok")
+	fl.blk.BrIf(fl.blk.Ptr.Eq(out, fl.blk.Ptr.Const()), bad.To(), ok.To())
+	fl.blk = bad
+	fl.blk.Call(fl.u.badCastFn())
+	fl.blk.Br(ok.To())
+	fl.blk = ok
+	return out
+}

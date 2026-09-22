@@ -136,6 +136,11 @@ type unit struct {
 	ntypes      int
 	srets       map[*sema.FuncSymbol]ir.Ptr
 
+	// dynCast and badCast are the Itanium runtime's cast helpers,
+	// imported on first use (see itanium.go).
+	dynCast ir.Callee
+	badCast ir.Callee
+
 	// dynamicInits tracks global variables requiring dynamic initialization.
 	dynamicInits []dynamicInit
 	declsOf      map[sema.Symbol]*ast.InitDeclarator
