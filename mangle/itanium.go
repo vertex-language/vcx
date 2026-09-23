@@ -151,7 +151,7 @@ func (m *itanium) templateArgs(args []types.TemplateArg) {
 		}
 		m.sb.WriteString("L")
 		m.typ(a.ValType)
-		m.sb.WriteString(m.rawValue(a.Val))
+		m.sb.WriteString(m.rawValue(a.Val, a.ValType))
 		m.sb.WriteString("E")
 	}
 	m.sb.WriteString("E")
@@ -166,14 +166,25 @@ func (m *itanium) templateArgsInner(args []types.TemplateArg) {
 		}
 		m.sb.WriteString("L")
 		m.typ(a.ValType)
-		m.sb.WriteString(m.rawValue(a.Val))
+		m.sb.WriteString(m.rawValue(a.Val, a.ValType))
 		m.sb.WriteString("E")
 	}
 }
 
-func (m *itanium) rawValue(v int64) string {
+// rawValue is a template argument's value in the digits the ABI wants:
+// the number, with `n` before a negative one.
+//
+// The parameter's type decides how the bits read. `integral_constant<
+// unsigned long, 1ul << 63>` holds a value whose sign bit is set, and as
+// an unsigned parameter it is mangled as the large number it is -- not as
+// a negative, which would also make `n` plus a number that cannot be
+// negated in sixty-four bits.
+func (m *itanium) rawValue(v int64, t types.Type) string {
+	if t != nil && !types.IsSigned(t) {
+		return strconv.FormatUint(uint64(v), 10)
+	}
 	if v < 0 {
-		return "n" + strconv.FormatInt(-v, 10)
+		return "n" + strconv.FormatUint(-uint64(v), 10)
 	}
 	return strconv.FormatInt(v, 10)
 }
@@ -285,7 +296,7 @@ func (m *itanium) rawPrefix(scopes []Scope) string {
 				if a.IsType {
 					sb.WriteString(m.raw(a.Type))
 				} else {
-					sb.WriteString("L" + m.raw(a.ValType) + m.rawValue(a.Val) + "E")
+					sb.WriteString("L" + m.raw(a.ValType) + m.rawValue(a.Val, a.ValType) + "E")
 				}
 			}
 			sb.WriteString("E")

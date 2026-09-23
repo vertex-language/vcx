@@ -32,6 +32,13 @@ type FuncInfo struct {
 	ParamTypes []types.Type
 	Body       *ast.CompoundStmt
 	RetType    types.Type
+
+	// TemplateNames and TemplateValues are the function's own template
+	// parameters, for the non-type ones a specialization fixed: the body
+	// of `template <size_t N> constexpr size_t len(const T (&)[N])` reads
+	// N, and N is not a parameter it was called with.
+	TemplateNames  []string
+	TemplateValues []Value
 }
 
 // Scope represents a local lexical scope holding objects.
@@ -91,6 +98,17 @@ type Context struct {
 
 	// Folded returns sema-evaluated values for expressions like sizeof...(pack).
 	Folded func(ast.Expr) (int64, bool)
+
+	// Prechecked is the value the analysis already worked out for an
+	// expression, for the ones this evaluator could not work out again.
+	//
+	// A pack expansion is the case: `{f(A)...}` becomes one clone of the
+	// pattern per element, each checked with that element bound in a
+	// scope of its own. The clones are the same text, so reading one
+	// again anywhere else -- which is what evaluating a static member's
+	// initializer does -- would see the whole pack instead of the
+	// element, and every clone would answer the same.
+	Prechecked func(ast.Expr) (Value, bool)
 
 	// TypeOfExpr returns the semantic type for unevaluated operands (e.g. sizeof).
 	TypeOfExpr func(ast.Expr) types.Type
@@ -173,6 +191,12 @@ func (ctx *Context) Eval(expr ast.Expr) (Value, error) {
 	ctx.StepCount++
 	if ctx.StepCount > ctx.MaxSteps {
 		return nil, fmt.Errorf("constexpr evaluation exceeded maximum step limit (%d)", ctx.MaxSteps)
+	}
+
+	if ctx.Prechecked != nil {
+		if v, known := ctx.Prechecked(expr); known {
+			return v, nil
+		}
 	}
 
 	switch e := expr.(type) {
@@ -1044,6 +1068,16 @@ func (ctx *Context) callFunction(fn *FuncInfo, args []ast.Expr) (Value, error) {
 	savedScope := ctx.CurScope
 	ctx.CurScope = NewScope(nil)
 	defer func() { ctx.CurScope = savedScope }()
+
+	// The function's own template parameters, before its parameters: a
+	// body reads them as it reads anything else, and the specialization
+	// is what gives them values.
+	for i, name := range fn.TemplateNames {
+		if name == "" || i >= len(fn.TemplateValues) || fn.TemplateValues[i] == nil {
+			continue
+		}
+		ctx.DeclareVar(name, fn.TemplateValues[i].Type(), fn.TemplateValues[i], true)
+	}
 
 	// Bind parameters
 	for i, name := range fn.ParamNames {

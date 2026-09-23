@@ -14,6 +14,11 @@ func (a *Analyzer) checkListInit(list *ast.InitList, target types.Type) {
 	}
 	bare := types.Unqualify(target)
 
+	// `{f(A)...}`: the items are as much a place for a pack expansion as
+	// an argument list is, and the list is what is counted against an
+	// array's bound, so they are expanded before anything reads them.
+	a.expandListItems(list)
+
 	if isDependentType(target) {
 		for _, item := range list.Items {
 			a.CheckExpr(item)
@@ -414,4 +419,25 @@ func initListElem(t types.Type) (types.Type, bool) {
 		return nil, false
 	}
 	return rec.TemplateArgs[0].Type, true
+}
+
+// expandListItems expands the pack expansions among a braced list's
+// items, in place. Items that are not expressions -- a designator, a
+// nested list -- are left where they are.
+func (a *Analyzer) expandListItems(list *ast.InitList) {
+	if list == nil || len(list.Items) == 0 {
+		return
+	}
+	any := false
+	for _, item := range list.Items {
+		switch item.(type) {
+		case *ast.PackExpansion, *ast.PackName:
+			any = true
+		}
+	}
+	if !any {
+		return
+	}
+
+	list.Items = a.expandPackArgs(list.Items)
 }

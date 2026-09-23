@@ -442,6 +442,16 @@ func (a *Analyzer) NewConstContext() *constexpr.Context {
 	ctx.ExpandFold = func(f *ast.FoldExpr) (constexpr.Value, error) {
 		return a.expandFold(ctx, f)
 	}
+	ctx.Prechecked = func(e ast.Expr) (constexpr.Value, bool) {
+		// The clones a pack expansion made: each was checked with its own
+		// element bound, and reading the text again here would see the
+		// pack (see expandOne).
+		info, made := a.prechecked[e]
+		if !made || !info.IsConst {
+			return nil, false
+		}
+		return constexpr.NewInt(info.ConstVal, info.Type, a.model), true
+	}
 	ctx.Folded = func(e ast.Expr) (int64, bool) {
 		if a.info != nil {
 			if n, known := a.info.Consts[e]; known {
@@ -567,13 +577,16 @@ func (a *Analyzer) NewConstContext() *constexpr.Context {
 			paramNames[i] = p.SymName
 			paramTypes[i] = p.SymType
 		}
+		names, values := a.templateArgValues(fs)
 		return &constexpr.FuncInfo{
-			Unit:       a.unit,
-			Name:       fs.SymName,
-			ParamNames: paramNames,
-			ParamTypes: paramTypes,
-			Body:       fs.Body,
-			RetType:    fs.FuncType.Ret,
+			Unit:           a.unit,
+			Name:           fs.SymName,
+			ParamNames:     paramNames,
+			ParamTypes:     paramTypes,
+			Body:           fs.Body,
+			RetType:        fs.FuncType.Ret,
+			TemplateNames:  names,
+			TemplateValues: values,
 		}
 	}
 	ctx.ResolveCall = func(c *ast.CallExpr) (*constexpr.FuncInfo, bool) {
@@ -939,4 +952,38 @@ func (a *Analyzer) declareBuiltinTypes() {
 		g.Insert(&TypeSymbol{SymName: "__int128_t", SymType: types.Typ(types.Int128), SymScope: g})
 		g.Insert(&TypeSymbol{SymName: "__uint128_t", SymType: types.Typ(types.UInt128), SymScope: g})
 	}
+}
+
+// templateArgValues are the non-type template parameters a function
+// specialization fixed, by the names its pattern gave them.
+//
+// `template <size_t N> constexpr size_t len(const T (&)[N])` reads N in
+// its body, and N is not one of the parameters it was called with: the
+// evaluator is given it alongside them.
+func (a *Analyzer) templateArgValues(fs *FuncSymbol) ([]string, []constexpr.Value) {
+	if len(fs.TemplateArgs) == 0 {
+		return nil, nil
+	}
+	pattern := fs.TemplateOf
+	if pattern == nil {
+		pattern = fs
+	}
+	if pattern.Template == nil {
+		return nil, nil
+	}
+	params := pattern.Template.Params
+	var names []string
+	var values []constexpr.Value
+	for i, arg := range fs.TemplateArgs {
+		if i >= len(params) || arg.IsType || params[i] == nil {
+			continue
+		}
+		t := arg.ValType
+		if t == nil {
+			t = params[i].SymType
+		}
+		names = append(names, params[i].SymName)
+		values = append(values, constexpr.NewInt(arg.Val, t, a.model))
+	}
+	return names, values
 }

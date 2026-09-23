@@ -382,7 +382,7 @@ func LibraryBuiltins() []string {
 func itoaSmall(n int) string { return string(rune('0' + n)) }
 
 // builtinTemplates lists compiler-provided built-in templates.
-var builtinTemplates = []string{"__make_integer_seq"}
+var builtinTemplates = []string{"__make_integer_seq", "__type_pack_element"}
 
 // BuiltinTemplates are the builtin templates declareBuiltinTemplates enters.
 func BuiltinTemplates() []string { return builtinTemplates }
@@ -441,6 +441,33 @@ func (a *Analyzer) instantiateBuiltinTemplate(name string, args []types.Template
 			return nil
 		}
 		return inst(primary, seq, at)
+
+	case "__type_pack_element":
+		// __type_pack_element<I, T...> is the I'th of the pack. libc++
+		// writes tuple_element with it, so `get<0>(t)` has a return type
+		// only when this is one.
+		if len(args) < 1 || args[0].IsType {
+			a.errorAt(at, "__type_pack_element takes an index and a pack of types")
+			return nil
+		}
+		elems := args[1:]
+		// The pack arrives as one argument holding its elements when it
+		// was expanded into this position.
+		if len(elems) == 1 && elems[0].IsType {
+			if p, isPack := elems[0].Type.(*types.Pack); isPack {
+				elems = p.Elems
+			}
+		}
+		i := args[0].Val
+		if i < 0 || i >= int64(len(elems)) {
+			a.errorAt(at, fmt.Sprintf("__type_pack_element index %d is outside a pack of %d", i, len(elems)))
+			return nil
+		}
+		if !elems[i].IsType {
+			a.errorAt(at, "__type_pack_element names a value, not a type")
+			return nil
+		}
+		return elems[i].Type
 	}
 	return nil
 }

@@ -116,6 +116,14 @@ func (a *Analyzer) templateArgsFor(tmpl *FuncSymbol, b Binding) ([]types.Templat
 			// Empty pack.
 			args[i] = types.TemplateArg{IsType: true, Type: &types.Pack{}}
 		case bound && t != nil && p.IsType:
+			if _, isVal := t.(*valueBound); isVal {
+				// `std::get<0>(t)` against `get<class _T1, class... _Args>`:
+				// the argument is a value and the parameter is a type, so
+				// this candidate is not one. Without saying so the value
+				// would stand in as a type and the body would be
+				// instantiated, failing where nothing is wrong.
+				return nil, fmt.Errorf("cannot instantiate %s: template parameter %s is a type; a value was given", tmpl.SymName, p.SymName)
+			}
 			args[i] = types.TemplateArg{IsType: true, Type: t}
 		case bound && t != nil:
 			vb, isVal := t.(*valueBound)

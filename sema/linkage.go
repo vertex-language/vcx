@@ -32,36 +32,78 @@ func HasExternalLinkage(v *VarSymbol) bool {
 }
 
 // StaticMembers returns every static data member defined in this unit.
+//
+// A class template's pattern holds no objects: its static members are
+// declarations waiting for arguments, and it is the specializations that
+// have members to emit. Those are not in any scope -- an instantiation
+// keeps them in the template's own table -- so each template's instances
+// are walked as well as the classes a scope names directly.
 func StaticMembers(res *Result) []*VarSymbol {
-	var out []*VarSymbol
 	if res.GlobalScope == nil {
 		return nil
 	}
-	// In name order: both scopes are maps, and a module built from the
-	// same source should come out the same.
-	for _, name := range sortedNames(res.GlobalScope.Symbols) {
-		for _, sym := range res.GlobalScope.Symbols[name] {
-			rs, ok := sym.(*RecordSymbol)
-			if !ok || rs.ClassScope == nil {
-				continue
+	var out []*VarSymbol
+	seen := map[*VarSymbol]bool{}
+	scopes := map[*Scope]bool{}
+	var walk func(scope *Scope)
+
+	take := func(rs *RecordSymbol) {
+		if rs == nil || rs.ClassScope == nil {
+			return
+		}
+		for _, member := range sortedNames(rs.ClassScope.Symbols) {
+			for _, m := range rs.ClassScope.Symbols[member] {
+				v, isVar := m.(*VarSymbol)
+				if !isVar || v.InClass == nil || !v.Defined || seen[v] {
+					continue
+				}
+				seen[v] = true
+				out = append(out, v)
 			}
-			// A class template's pattern holds no objects. Its static
-			// members are declarations waiting for arguments -- their
-			// initializers still name the parameters -- and it is the
-			// specializations that have members to emit.
-			if rs.ClassTemplate != nil && (rs.Record == nil || rs.Record.TemplateArgs == nil) {
-				continue
-			}
-			for _, member := range sortedNames(rs.ClassScope.Symbols) {
-				for _, m := range rs.ClassScope.Symbols[member] {
-					if v, isVar := m.(*VarSymbol); isVar && v.InClass != nil && v.Defined {
-						out = append(out, v)
+		}
+	}
+
+	walk = func(scope *Scope) {
+		if scope == nil || scopes[scope] {
+			return
+		}
+		scopes[scope] = true
+		// In name order: a scope is a map, and a module built from the
+		// same source should come out the same.
+		for _, name := range sortedNames(scope.Symbols) {
+			for _, sym := range scope.Symbols[name] {
+				switch s := sym.(type) {
+				case *NamespaceSymbol:
+					// `std::__1::numeric_limits<int>` is as much a class
+					// as one at the top.
+					walk(s.InnerScope)
+				case *RecordSymbol:
+					if s.ClassTemplate != nil {
+						for _, key := range sortedInstanceKeys(s.ClassTemplate.Instances) {
+							take(s.ClassTemplate.Instances[key])
+						}
+						if s.Record == nil || s.Record.TemplateArgs == nil {
+							continue
+						}
 					}
+					take(s)
 				}
 			}
 		}
 	}
+	walk(res.GlobalScope)
 	return out
+}
+
+// sortedInstanceKeys orders a template's instances, so that the same
+// source is the same module every time.
+func sortedInstanceKeys(m map[string]*RecordSymbol) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // ConstructedClasses returns every class instantiated in this unit whose
