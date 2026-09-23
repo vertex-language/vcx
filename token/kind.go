@@ -438,6 +438,10 @@ var aliases = map[string]Kind{
 	// thread_local alias
 	"__thread": THREAD_LOCAL,
 
+	// C11's spelling, which clang accepts in C++ and the macOS SDK's
+	// <mach/message.h> uses there.
+	"_Static_assert": STATIC_ASSERT,
+
 	// Qualifiers
 	"__const":      CONST,
 	"__volatile":   VOLATILE,
