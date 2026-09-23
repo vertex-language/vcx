@@ -499,11 +499,24 @@ func (p *parser) parseEnumSpec() *ast.EnumSpec {
 	}
 
 	if p.peek() == token.LBRACE {
+		// An enumerator of a scoped enum is reached only through the
+		// enum's name, and `Res::equiv` is then a value rather than a
+		// type -- which is what tells `Ord g(Res::equiv);` from a
+		// function declaration (see opensParamList).
+		enumName := ""
+		if scoped.IsValid() {
+			if id, isIdent := name.(*ast.Ident); isIdent {
+				enumName = id.Text(p.u)
+			}
+		}
 		es.Lbrace = p.next()
 		for !p.atEOF() && p.peek() != token.RBRACE {
 			en := p.parseEnumerator()
 			if en != nil {
 				es.Values = append(es.Values, en)
+				if enumName != "" && en.Name != nil {
+					p.noteEnumerator(enumName, en.Name.Text(p.u))
+				}
 			}
 			if p.peek() == token.COMMA {
 				es.Comma = p.next()

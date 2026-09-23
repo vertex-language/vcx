@@ -238,6 +238,15 @@ func (p *parser) opensParamList() bool {
 		if cannotFollowType(p.peekAt(2)) {
 			return false
 		}
+		// `Ord::equivalent(_OrdResult::__equiv)` -- a scoped enum's
+		// enumerator is a value, so the parentheses hold an initializer
+		// and not an unnamed parameter. Read as a parameter the whole
+		// declaration became a function, and libc++'s weak_ordering had
+		// no definition for the linker to find.
+		if p.peekAt(2) == token.SCOPE && p.peekAt(3) == token.IDENT &&
+			p.namesAnEnumerator(p.text(p.peekTok(1)), p.text(p.peekTok(3))) {
+			return false
+		}
 		return p.tryParamList()
 	case token.SCOPE, token.TYPENAME, token.DECLTYPE, token.UNALIGNED:
 		return p.tryParamList()

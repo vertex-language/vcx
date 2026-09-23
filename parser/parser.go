@@ -86,6 +86,10 @@ type parser struct {
 	maxDepth       int
 	inTemplateArgs int
 
+	// enumerators are the scoped enums' enumerators seen so far, by
+	// "Enum::name": `Res::equiv` is a value, not a type (see names.go).
+	enumerators map[string]bool
+
 	// inLaunch counts the launch configurations being parsed, inside
 	// which `>>>` closes rather than shifts.
 	inLaunch int

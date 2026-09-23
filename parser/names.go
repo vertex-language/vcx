@@ -260,3 +260,20 @@ var typeTraits = map[string]bool{
 	"__reference_binds_to_temporary": true, "__reference_constructs_from_temporary": true,
 	"__is_invocable": true, "__is_nothrow_invocable": true, "__is_trivially_relocatable": true,
 }
+
+// noteEnumerator records that enum::name is an enumerator of a scoped
+// enum, so that `enum::name` in a parameter position is read as a value.
+func (p *parser) noteEnumerator(enum, name string) {
+	if enum == "" || name == "" {
+		return
+	}
+	if p.enumerators == nil {
+		p.enumerators = map[string]bool{}
+	}
+	p.enumerators[enum+"::"+name] = true
+}
+
+// namesAnEnumerator reports whether `a::b` is a scoped enum's enumerator.
+func (p *parser) namesAnEnumerator(enum, name string) bool {
+	return p.enumerators[enum+"::"+name]
+}
