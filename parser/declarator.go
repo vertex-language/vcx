@@ -222,7 +222,20 @@ func (p *parser) opensParamList() bool {
 			return p.tryParamList()
 		}
 		// Treat an identifier as a potential type unless known otherwise.
-		if !p.identMayBeType(p.peekTok(1)) || cannotFollowType(p.peekAt(2)) {
+		if !p.identMayBeType(p.peekTok(1)) {
+			return false
+		}
+		if p.peekAt(2) == token.ASSIGN {
+			// `=` after a name is an assignment, and the parentheses an
+			// initializer -- unless the name is known to be a type, and
+			// then this is an unnamed parameter with a default argument:
+			// `void reset(nullptr_t = nullptr)`.
+			if p.kindOf(p.text(p.peekTok(1))) != nameType {
+				return false
+			}
+			return p.tryParamList()
+		}
+		if cannotFollowType(p.peekAt(2)) {
 			return false
 		}
 		return p.tryParamList()
