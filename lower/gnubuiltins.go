@@ -122,6 +122,9 @@ func (fl *fn) gnuBuiltinCall(name string, e *ast.CallExpr) (ir.Value, bool) {
 		"popcount", "popcountl", "popcountll", "popcountg", "parity", "parityl", "parityll":
 		return fl.bitCount(base, e), true
 
+	case "bitreverse8", "bitreverse16", "bitreverse32", "bitreverse64":
+		return fl.bitReverse(base, e), true
+
 	case "bswap16", "bswap32", "bswap64":
 		if len(e.Args) != 1 {
 			return nil, true
@@ -178,6 +181,44 @@ func (fl *fn) gnuBuiltinCall(name string, e *ast.CallExpr) (ir.Value, bool) {
 		return fl.expr(e.Args[0]), true
 	}
 	return nil, false
+}
+
+// bitReverse is __builtin_bitreverse8/16/32/64: the bits in the opposite
+// order, within the width the name gives.
+//
+// The 32-bit shape does the whole job, since a narrower width is that one
+// with the result brought back down, and a 64-bit one is the two halves
+// reversed and swapped.
+func (fl *fn) bitReverse(base string, e *ast.CallExpr) ir.Value {
+	if len(e.Args) != 1 {
+		return nil
+	}
+	b := fl.blk
+	v := fl.expr(e.Args[0])
+	if v == nil {
+		return nil
+	}
+	if base == "bitreverse64" {
+		x, isI64 := fl.convert(v, fl.typeOf(e.Args[0]), types.Typ(types.ULongLong)).(ir.I64)
+		if !isI64 {
+			return nil
+		}
+		lo := fl.bitReverse32(b.I32.WrapI64(x))
+		hi := fl.bitReverse32(b.I32.WrapI64(b.I64.UShr(x, b.I64.Const(32))))
+		return b.I64.Or(b.I64.Shl(b.I64.ZExtI32(lo), b.I64.Const(32)), b.I64.ZExtI32(hi))
+	}
+	x, isI32 := fl.convert(v, fl.typeOf(e.Args[0]), types.Typ(types.UInt)).(ir.I32)
+	if !isI32 {
+		return nil
+	}
+	r := fl.bitReverse32(x)
+	switch base {
+	case "bitreverse8":
+		return b.I32.UShr(r, b.I32.Const(24))
+	case "bitreverse16":
+		return b.I32.UShr(r, b.I32.Const(16))
+	}
+	return r
 }
 
 // bitCount is clz, ctz, popcount and parity in their int, long, long long

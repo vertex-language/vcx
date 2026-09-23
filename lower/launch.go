@@ -41,6 +41,10 @@ func (u *unit) runtime() runtimeNames {
 	// A PE image's section name is eight bytes: what nvcc and hipcc use
 	// on Windows is the ELF name cut to fit.
 	pe := strings.HasSuffix(u.opt.Target.Use(), "/windows")
+	// A Mach-O section is named by its segment as well, because the
+	// segment is what the loader protects: the names below are written as
+	// as(1) specifiers, which is what the container reads them as.
+	macho := strings.HasSuffix(u.opt.Target.Use(), "/macos")
 	if u.model.Offload == types.HIP {
 		rt := runtimeNames{
 			push: "__vcx_hipPushCallConfiguration", pop: "__hipPopCallConfiguration", launch: "__vcx_hipLaunch",
@@ -50,6 +54,11 @@ func (u *unit) runtime() runtimeNames {
 		}
 		if pe {
 			rt.fatbinSection, rt.wrapperSection = ".hip_fat", ".hipFatB"
+		}
+		if macho {
+			// A Mach-O section name is sixteen bytes, so the segment's
+			// spelling of .hipFatBinSegment is the one that fits.
+			rt.fatbinSection, rt.wrapperSection = "__HIP,__hip_fatbin", "__HIP,__hipFatBinSeg"
 		}
 		return rt
 	}
@@ -61,6 +70,10 @@ func (u *unit) runtime() runtimeNames {
 	}
 	if pe {
 		rt.fatbinSection, rt.wrapperSection = ".nv_fatb", ".nvFatBi"
+	}
+	if macho {
+		// clang's own names for these on a Mach-O target.
+		rt.fatbinSection, rt.wrapperSection = "__NV_CUDA,__nv_fatbin", "__NV_CUDA,__fatbin"
 	}
 	return rt
 }

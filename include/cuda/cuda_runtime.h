@@ -11,6 +11,14 @@
 #include <stddef.h>
 #include <__vcx_cuda_vector_types.h>
 
+/* __dv is the toolkit's own: a default argument where the header is read
+ * as C++, and nothing where it is read as C. */
+#if defined(__cplusplus)
+#define __vcx_dv(x) = x
+#else
+#define __vcx_dv(x)
+#endif
+
 #if defined(__cplusplus)
 extern "C" {
 #endif
@@ -35,6 +43,19 @@ typedef enum cudaMemcpyKind {
   cudaMemcpyDeviceToDevice = 3,
   cudaMemcpyDefault = 4,
 } cudaMemcpyKind;
+
+enum cudaMemAttach {
+  cudaMemAttachGlobal = 0x01,
+  cudaMemAttachHost = 0x02,
+  cudaMemAttachSingle = 0x04,
+};
+
+enum cudaHostAllocFlags {
+  cudaHostAllocDefault = 0x00,
+  cudaHostAllocPortable = 0x01,
+  cudaHostAllocMapped = 0x02,
+  cudaHostAllocWriteCombined = 0x04,
+};
 
 typedef struct CUstream_st *cudaStream_t;
 typedef struct CUevent_st *cudaEvent_t;
@@ -63,8 +84,9 @@ cudaError_t cudaFree(void *devPtr);
 cudaError_t cudaMallocHost(void **ptr, size_t size);
 cudaError_t cudaFreeHost(void *ptr);
 cudaError_t cudaMallocManaged(void **devPtr, size_t size, unsigned int flags);
+cudaError_t cudaHostAlloc(void **ptr, size_t size, unsigned int flags);
 cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind kind);
-cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, cudaMemcpyKind kind, cudaStream_t stream);
+cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, cudaMemcpyKind kind, cudaStream_t stream __vcx_dv(0));
 cudaError_t cudaMemset(void *devPtr, int value, size_t count);
 cudaError_t cudaMemcpyToSymbol(const void *symbol, const void *src, size_t count, size_t offset, cudaMemcpyKind kind);
 cudaError_t cudaMemcpyFromSymbol(void *dst, const void *symbol, size_t count, size_t offset, cudaMemcpyKind kind);
@@ -85,10 +107,10 @@ cudaError_t cudaStreamDestroy(cudaStream_t stream);
 cudaError_t cudaStreamSynchronize(cudaStream_t stream);
 cudaError_t cudaEventCreate(cudaEvent_t *event);
 cudaError_t cudaEventDestroy(cudaEvent_t event);
-cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream);
+cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream __vcx_dv(0));
 cudaError_t cudaEventSynchronize(cudaEvent_t event);
 cudaError_t cudaEventElapsedTime(float *ms, cudaEvent_t start, cudaEvent_t end);
-cudaError_t cudaLaunchKernel(const void *func, dim3 gridDim, dim3 blockDim, void **args, size_t sharedMem, cudaStream_t stream);
+cudaError_t cudaLaunchKernel(const void *func, dim3 gridDim, dim3 blockDim, void **args, size_t sharedMem __vcx_dv(0), cudaStream_t stream __vcx_dv(0));
 
 #if defined(__cplusplus)
 }
@@ -98,6 +120,26 @@ cudaError_t cudaLaunchKernel(const void *func, dim3 gridDim, dim3 blockDim, void
  * it: the symbol is named, and its shadow's address is what the C
  * function takes. */
 #if defined(__cplusplus)
+/* The allocators take the address of the caller's own pointer. In C that
+ * is a void** and any object pointer converts to one; in C++ it is not,
+ * so the toolkit declares these templates and casts inside them, which is
+ * why `cudaMalloc(&d, n)` with an `int *d` compiles there. */
+template <class T>
+static inline cudaError_t cudaMalloc(T **devPtr, size_t size) {
+  return cudaMalloc((void **)devPtr, size);
+}
+template <class T>
+static inline cudaError_t cudaMallocHost(T **ptr, size_t size) {
+  return cudaMallocHost((void **)ptr, size);
+}
+template <class T>
+static inline cudaError_t cudaMallocManaged(T **devPtr, size_t size, unsigned int flags = cudaMemAttachGlobal) {
+  return cudaMallocManaged((void **)devPtr, size, flags);
+}
+template <class T>
+static inline cudaError_t cudaHostAlloc(T **ptr, size_t size, unsigned int flags) {
+  return cudaHostAlloc((void **)ptr, size, flags);
+}
 template <class T>
 static inline cudaError_t cudaMemcpyToSymbol(const T &symbol, const void *src, size_t count, size_t offset = 0,
                                              cudaMemcpyKind kind = cudaMemcpyHostToDevice) {

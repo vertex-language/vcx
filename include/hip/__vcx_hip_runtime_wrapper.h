@@ -123,6 +123,8 @@ __VCX_DEVICE_INLINE int __clz(int x) { return x == 0 ? 32 : __builtin_clz((unsig
 __VCX_DEVICE_INLINE int __clzll(long long x) { return x == 0 ? 64 : __builtin_clzll((unsigned long long)x); }
 __VCX_DEVICE_INLINE int __ffs(int x) { return x == 0 ? 0 : __builtin_ctz((unsigned)x) + 1; }
 __VCX_DEVICE_INLINE int __ffsll(long long x) { return x == 0 ? 0 : __builtin_ctzll((unsigned long long)x) + 1; }
+__VCX_DEVICE_INLINE unsigned __brev(unsigned x) { return __builtin_bitreverse32(x); }
+__VCX_DEVICE_INLINE unsigned long long __brevll(unsigned long long x) { return __builtin_bitreverse64(x); }
 
 /* ---- atomics ---------------------------------------------------------- */
 

@@ -94,4 +94,29 @@ struct dim3 {
 
 typedef struct dim3 dim3;
 
+/* The vector constructors, as ROCm's hip_vector_types.h has them. */
+#define __VCX_BOTH_INLINE static __inline__ __attribute__((always_inline)) __host__ __device__
+#define __VCX_MAKE1(T, E) __VCX_BOTH_INLINE T make_##T(E x) { T v; v.x = x; return v; }
+#define __VCX_MAKE2(T, E) __VCX_BOTH_INLINE T make_##T(E x, E y) { T v; v.x = x; v.y = y; return v; }
+#define __VCX_MAKE3(T, E) __VCX_BOTH_INLINE T make_##T(E x, E y, E z) { T v; v.x = x; v.y = y; v.z = z; return v; }
+#define __VCX_MAKE4(T, E) __VCX_BOTH_INLINE T make_##T(E x, E y, E z, E w) { T v; v.x = x; v.y = y; v.z = z; v.w = w; return v; }
+#define __VCX_MAKE(E, N)  __VCX_MAKE1(N##1, E) __VCX_MAKE2(N##2, E) __VCX_MAKE3(N##3, E) __VCX_MAKE4(N##4, E)
+__VCX_MAKE(signed char, char)
+__VCX_MAKE(unsigned char, uchar)
+__VCX_MAKE(short, short)
+__VCX_MAKE(unsigned short, ushort)
+__VCX_MAKE(int, int)
+__VCX_MAKE(unsigned int, uint)
+__VCX_MAKE(long, long)
+__VCX_MAKE(unsigned long, ulong)
+__VCX_MAKE(long long, longlong)
+__VCX_MAKE(unsigned long long, ulonglong)
+__VCX_MAKE(float, float)
+__VCX_MAKE(double, double)
+#undef __VCX_MAKE
+#undef __VCX_MAKE1
+#undef __VCX_MAKE2
+#undef __VCX_MAKE3
+#undef __VCX_MAKE4
+
 #endif /* __VCX_HIP_VECTOR_TYPES_H__ */

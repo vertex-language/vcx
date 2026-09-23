@@ -226,6 +226,19 @@ func (a *Analyzer) gnuBuiltinCall(name string, c *ast.CallExpr) (ExprInfo, bool)
 			return prv(types.Typ(types.UInt)), true
 		}
 		return prv(types.Typ(types.ULongLong)), true
+	case builtinBitReverse:
+		// The value with its bits in the opposite order, in the width
+		// the name gives. Clang's, and what ROCm's __brev is written in.
+		want(1)
+		switch base {
+		case "bitreverse8":
+			return prv(types.Typ(types.UChar)), true
+		case "bitreverse16":
+			return prv(types.Typ(types.UShort)), true
+		case "bitreverse32":
+			return prv(types.Typ(types.UInt)), true
+		}
+		return prv(types.Typ(types.ULongLong)), true
 	case builtinOverflow:
 		want(3)
 		return prv(types.Typ(types.Bool)), true
@@ -307,6 +320,7 @@ const (
 	builtinConstant                           // huge_val(), inf(), nan("")
 	builtinBitCount                           // clz, ctz, popcount, parity
 	builtinBswap                              // bswap16/32/64
+	builtinBitReverse                         // bitreverse8/16/32/64
 	builtinOverflow                           // add_overflow(a, b, &r)
 	builtinExpect                             // expect(x, v)
 	builtinConstantP                          // constant_p(x)
@@ -334,6 +348,8 @@ var builtinKinds = map[string]builtinKind{
 	"popcountg": builtinBitCount, "parity": builtinBitCount, "parityl": builtinBitCount,
 	"parityll": builtinBitCount,
 	"bswap16":  builtinBswap, "bswap32": builtinBswap, "bswap64": builtinBswap,
+	"bitreverse8": builtinBitReverse, "bitreverse16": builtinBitReverse,
+	"bitreverse32": builtinBitReverse, "bitreverse64": builtinBitReverse,
 	"add_overflow": builtinOverflow, "sub_overflow": builtinOverflow, "mul_overflow": builtinOverflow,
 	"expect": builtinExpect, "expect_with_probability": builtinExpect,
 	"constant_p": builtinConstantP,
