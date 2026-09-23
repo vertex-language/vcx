@@ -1,6 +1,8 @@
 package sema
 
 import (
+	"fmt"
+
 	"github.com/vertex-language/vcx/ast"
 	"github.com/vertex-language/vcx/constexpr"
 	"github.com/vertex-language/vcx/token"
@@ -35,6 +37,11 @@ type DeclSpecInfo struct {
 	// nothing.
 	Unresolved    string
 	UnresolvedPos ast.Tok
+
+	// AutoConcept is the concept of a constrained placeholder --
+	// `std::integral auto v` -- which constrains the parameter invented
+	// for it. Nil where the placeholder is plain `auto`.
+	AutoConcept ast.Name
 }
 
 // BuildDeclSpecs evaluates DeclSpecs and produces the base type and specifier flags.
@@ -333,6 +340,7 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 
 		case *ast.ConstrainedAutoSpec:
 			customType = types.Typ(types.AutoKind)
+			info.AutoConcept = s.Concept
 
 		case *ast.TypeTransformSpec:
 			if s.Arg == nil {
@@ -531,9 +539,19 @@ func BuildDeclarator(d ast.Declarator, baseType types.Type, scope *Scope, u ast.
 		// on, so a later parameter can say `decltype(f(earlier))`, as
 		// libc++'s __unwrap_range_impl::__rewrap does.
 		paramScope := NewScope(scope, BlockScope, nil)
-		for _, p := range decl.Params {
+		for i, p := range decl.Params {
 			pInfo := BuildDeclSpecs(p.Specs, paramScope, u)
 			pType := BuildDeclarator(p.Decl, pInfo.Type, paramScope, u)
+			// [dcl.fct]/23: `auto` for a parameter makes the function a
+			// template, with one invented parameter per placeholder. The
+			// name is the position, which nothing can write, so the
+			// invented parameter is reached only by deduction -- and by
+			// the binding an instantiation puts in scope under it, which
+			// is what makes rebuilding this signature give the deduced
+			// type rather than a placeholder again.
+			if pType != nil && mentionsAuto(pType) {
+				pType = substituteAuto(pType, inventedParam(paramScope, i, isPackParamDecl(p)))
+			}
 			name := ""
 			if p.Decl != nil && p.Decl.DeclName() != nil {
 				name = NameString(p.Decl.DeclName(), u)
@@ -1275,3 +1293,63 @@ func namesValueTemplate(n ast.Node, scope *Scope, u ast.Unit) bool {
 // literalOperatorName is the name a literal operator is declared and
 // looked up under: `operator""` and the ud-suffix, with no space.
 func literalOperatorName(suffix string) string { return `operator""` + suffix }
+
+// inventedParamName is the name of the template parameter invented for an
+// `auto` in the nth parameter of a function. It is no identifier, so a
+// program cannot write it.
+func inventedParamName(n int) string { return fmt.Sprintf("auto#%d", n) }
+
+// inventedParam is what an `auto` parameter stands for: the type an
+// instantiation bound under the invented name, or the invented parameter
+// itself where nothing has.
+func inventedParam(scope *Scope, n int, pack bool) types.Type {
+	name := inventedParamName(n)
+	for _, sym := range LookupUnqualified(scope, name) {
+		if ts, isType := sym.(*TypeSymbol); isType && ts.SymType != nil {
+			return ts.SymType
+		}
+		break
+	}
+	return &types.TemplateParam{Name: name, Index: n, IsType: true, IsPack: pack}
+}
+
+// InventedParams are the template parameters a function's signature
+// invented for its `auto` parameters, in order, or nil for a signature
+// that has none. An abbreviated function template is registered from
+// these.
+func InventedParams(ft *types.Func) []*TemplateParamSymbol {
+	var out []*TemplateParamSymbol
+	seen := map[string]bool{}
+	for _, p := range ft.Params {
+		tp, isParam := invented(p.Type)
+		if !isParam || seen[tp.Name] {
+			continue
+		}
+		seen[tp.Name] = true
+		out = append(out, &TemplateParamSymbol{
+			SymName: tp.Name, Index: len(out), IsType: true, IsPack: tp.IsPack,
+		})
+	}
+	return out
+}
+
+// invented finds the invented parameter a type mentions, if it is one.
+func invented(t types.Type) (*types.TemplateParam, bool) {
+	switch x := t.(type) {
+	case *types.TemplateParam:
+		if strings.HasPrefix(x.Name, "auto#") {
+			return x, true
+		}
+	case *types.Qualified:
+		return invented(x.T)
+	case *types.Pointer:
+		return invented(x.Elem)
+	case *types.LValueReference:
+		return invented(x.Elem)
+	case *types.RValueReference:
+		return invented(x.Elem)
+	case *types.Array:
+		return invented(x.Elem)
+	}
+	return nil, false
+}

@@ -2798,6 +2798,9 @@ func (a *Analyzer) satisfiedOnly(cands []*FuncSymbol, instanceArgs map[*FuncSymb
 }
 
 func (a *Analyzer) satisfied(c *FuncSymbol, targs []types.TemplateArg, tmpl *FuncSymbol) bool {
+	if !a.autoConceptsHold(targs, tmpl) {
+		return false
+	}
 	if len(c.Constraints) == 0 {
 		return true
 	}
@@ -2830,6 +2833,9 @@ func (a *Analyzer) satisfied(c *FuncSymbol, targs []types.TemplateArg, tmpl *Fun
 
 // moreConstrained breaks ties by preferring constrained candidates over unconstrained.
 func (a *Analyzer) moreConstrained(viable []*FuncSymbol, object *Argument, args []Argument) *FuncSymbol {
+	if sub := a.subsumes(viable); sub != nil {
+		return sub
+	}
 	var constrained []*FuncSymbol
 	for _, c := range viable {
 		if len(c.Constraints) > 0 {
@@ -2843,6 +2849,139 @@ func (a *Analyzer) moreConstrained(viable []*FuncSymbol, object *Argument, args 
 		return resolved
 	}
 	return nil
+}
+
+// subsumes is the candidate whose constraints subsume every other's, or
+// nil where none does.
+//
+// [temp.constr.order] normalizes constraints into atoms and asks which
+// implies which. What that comes to for the constraints a program
+// actually writes is whether one concept has the other among its
+// conjuncts: `concept Bird = Animal<T> && requires ...` is more
+// constrained than Animal, so kind(const Bird auto&) wins for a Crow.
+func (a *Analyzer) subsumes(viable []*FuncSymbol) *FuncSymbol {
+	if len(viable) < 2 {
+		return nil
+	}
+	names := make([]string, len(viable))
+	for i, c := range viable {
+		n := a.soleConcept(c)
+		if n == "" {
+			return nil
+		}
+		names[i] = n
+	}
+	best := 0
+	for i := 1; i < len(viable); i++ {
+		switch {
+		case a.conceptImplies(names[i], names[best]):
+			best = i
+		case a.conceptImplies(names[best], names[i]):
+			// The one already held stays.
+		default:
+			return nil // neither is more constrained
+		}
+	}
+	return viable[best]
+}
+
+// soleConcept is the one concept a candidate is constrained by, by name,
+// or "" where it is constrained by none or by more than one.
+func (a *Analyzer) soleConcept(c *FuncSymbol) string {
+	tmpl := c.TemplateOf
+	if tmpl == nil {
+		tmpl = c
+	}
+	if tmpl.Template == nil {
+		return ""
+	}
+	name := ""
+	for _, p := range tmpl.Template.Params {
+		switch {
+		case p == nil:
+		case p.AutoConceptKey != "":
+			if name != "" {
+				return ""
+			}
+			name = p.AutoConceptKey
+		case p.TypeConstraint != nil:
+			n := conceptIdName(p.TypeConstraint, a.unit)
+			if n == "" || name != "" {
+				return ""
+			}
+			name = n
+		}
+	}
+	return name
+}
+
+// conceptImplies reports whether the concept named sub has the concept
+// named sup among the conjuncts of its own constraint.
+func (a *Analyzer) conceptImplies(sub, sup string) bool {
+	if sub == "" || sup == "" || sub == sup {
+		return false
+	}
+	seen := map[string]bool{}
+	var holds func(name string, depth int) bool
+	holds = func(name string, depth int) bool {
+		if depth > 8 || seen[name] {
+			return false
+		}
+		seen[name] = true
+		cs := a.conceptByName(name)
+		if cs == nil || cs.Constraint == nil {
+			return false
+		}
+		for _, conj := range conjuncts(cs.Constraint) {
+			n := conceptIdName(conj, a.unit)
+			if n == "" {
+				continue
+			}
+			if n == sup || holds(n, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	return holds(sub, 0)
+}
+
+// conceptByName is the concept a name, possibly qualified, stands for.
+func (a *Analyzer) conceptByName(name string) *ConceptSymbol {
+	last := name
+	if i := strings.LastIndex(name, "::"); i >= 0 {
+		last = name[i+2:]
+	}
+	for _, sym := range LookupUnqualified(a.curScope, last) {
+		if cs, isConcept := sym.(*ConceptSymbol); isConcept {
+			return cs
+		}
+	}
+	return nil
+}
+
+// conjuncts are the operands of a constraint's top-level `&&`s.
+func conjuncts(e ast.Expr) []ast.Expr {
+	if b, isBinary := unparenExpr(e).(*ast.BinaryExpr); isBinary && b.Op == token.LAND {
+		return append(conjuncts(b.X), conjuncts(b.Y)...)
+	}
+	return []ast.Expr{e}
+}
+
+// conceptIdName is the concept a concept-id names, or "" for anything
+// that is not one.
+func conceptIdName(e ast.Expr, u ast.Unit) string {
+	switch n := unparenExpr(e).(type) {
+	case *ast.TemplateName:
+		return NameString(n.Name, u)
+	case *ast.QualifiedName:
+		if tn, isTemplate := n.Name.(*ast.TemplateName); isTemplate {
+			q := *n
+			q.Name = tn.Name
+			return NameString(&q, u)
+		}
+	}
+	return ""
 }
 
 // expandPackArgs expands pack expansion expressions in an argument list.
@@ -3555,4 +3694,49 @@ func (a *Analyzer) enclosingThisClass(fn *FuncSymbol) *types.Record {
 // isClosureRecord is whether a class is a lambda's closure.
 func isClosureRecord(rec *types.Record) bool {
 	return rec != nil && strings.HasPrefix(rec.Name, "<lambda_")
+}
+
+// autoConceptsHold checks the concepts a constrained placeholder named
+// against the arguments deduced for the parameters invented for them.
+//
+// There is no spelling of an invented parameter for a constraint to be
+// written in terms of, so the concept is checked against the type
+// directly rather than through an expression.
+func (a *Analyzer) autoConceptsHold(targs []types.TemplateArg, tmpl *FuncSymbol) bool {
+	if tmpl == nil || tmpl.Template == nil || targs == nil {
+		return true
+	}
+	for i, p := range tmpl.Template.Params {
+		if p == nil || p.AutoConcept == nil || i >= len(targs) || !targs[i].IsType || targs[i].Type == nil {
+			continue
+		}
+		cs := a.conceptNamed(p.AutoConcept)
+		if cs == nil {
+			continue
+		}
+		ndiags := len(a.diags)
+		v, err := a.satisfyConcept(a.NewConstContext(), cs, []types.Type{targs[i].Type})
+		failed := len(a.diags) > ndiags
+		a.diags = a.diags[:ndiags]
+		if failed || err != nil || v == nil || !v.ToBool() {
+			return false
+		}
+	}
+	return true
+}
+
+// conceptNamed is the concept a name resolves to, or nil.
+func (a *Analyzer) conceptNamed(n ast.Name) *ConceptSymbol {
+	var syms []Symbol
+	if qn, isQualified := n.(*ast.QualifiedName); isQualified {
+		syms = ResolveQualifiedName(qn, a.curScope, a.globalScope, a.unit)
+	} else {
+		syms = LookupUnqualified(a.curScope, NameString(n, a.unit))
+	}
+	for _, sym := range syms {
+		if cs, isConcept := sym.(*ConceptSymbol); isConcept {
+			return cs
+		}
+	}
+	return nil
 }

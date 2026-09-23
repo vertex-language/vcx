@@ -202,6 +202,13 @@ func (s *Scope) insert(sym Symbol) (Symbol, error) {
 			if !sameConstraints(exFn, fn) {
 				continue
 			}
+			// And by the concepts their constrained placeholders named,
+			// which is what an abbreviated function template has in place
+			// of a template-head: `show(std::integral auto)` beside
+			// `show(std::floating_point auto)` is two templates.
+			if !sameAutoConcepts(exFn, fn) {
+				continue
+			}
 			// And function templates by their template-heads: basic_string's
 			// __init from an input and from a forward iterator pair have one
 			// signature and two heads, each with its own enable_if.
@@ -526,6 +533,18 @@ func sameConstraints(x, y *FuncSymbol) bool {
 	if len(x.Constraints) != len(y.Constraints) {
 		return false
 	}
+	// What they require, where both declarations recorded it. Two
+	// constraints of the same length written in different places are not
+	// the same constraint: `Int` and `Flt` are both three characters, and
+	// comparing extents merged the two overloads into one.
+	if len(x.ConstraintKeys) == len(x.Constraints) && len(y.ConstraintKeys) == len(y.Constraints) {
+		for i := range x.ConstraintKeys {
+			if x.ConstraintKeys[i] != y.ConstraintKeys[i] {
+				return false
+			}
+		}
+		return true
+	}
 	for i := range x.Constraints {
 		a, b := x.Constraints[i], y.Constraints[i]
 		if a.Pos() != b.Pos() && (a.End()-a.Pos() != b.End()-b.Pos()) {
@@ -561,6 +580,12 @@ func sameTemplateParams(a, b *FuncSymbol) bool {
 	for i, p := range a.Template.Params {
 		q := b.Template.Params[i]
 		if p.IsType != q.IsType || p.IsPack != q.IsPack || p.IsTemplate != q.IsTemplate {
+			return false
+		}
+		// A parameter invented for a constrained placeholder carries the
+		// concept rather than an expression, so the heads are told apart
+		// by it: two `show(C auto)` with different C are two templates.
+		if p.AutoConceptKey != q.AutoConceptKey {
 			return false
 		}
 		if !p.IsType && canonicalParamType(p.SymType, a.Template.Params) != canonicalParamType(q.SymType, b.Template.Params) {
@@ -603,4 +628,18 @@ func replaceIdentifier(text, name, with string) string {
 		i++
 	}
 	return string(out)
+}
+
+// sameAutoConcepts reports whether two declarations' constrained
+// placeholders name the same concepts.
+func sameAutoConcepts(x, y *FuncSymbol) bool {
+	if len(x.AutoConceptKeys) != len(y.AutoConceptKeys) {
+		return false
+	}
+	for i := range x.AutoConceptKeys {
+		if x.AutoConceptKeys[i] != y.AutoConceptKeys[i] {
+			return false
+		}
+	}
+	return true
 }

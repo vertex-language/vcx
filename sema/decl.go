@@ -531,6 +531,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 				Inline: declInfo.Inline || declInfo.Constexpr, Constexpr: declInfo.Constexpr, ExternC: a.externC,
 			}
 			fnSym.Constraints = a.constraintsOf(d, init.Decl)
+			fnSym.ConstraintKeys = a.constraintKeys(fnSym.Constraints)
 			fnSym.ConstraintScope = into
 			if surviving, err := into.InsertFunc(fnSym); err == nil {
 				fnSym = surviving
@@ -580,6 +581,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			}
 			a.checkParamDefaults(funcDeclaratorOf(init.Decl), nil)
 			fnSym.Constraints = a.constraintsOf(d, init.Decl)
+			fnSym.ConstraintKeys = a.constraintKeys(fnSym.Constraints)
 			fnSym.ConstraintScope = a.curScope
 
 			// Member function declared without a body inside a class.
@@ -1380,6 +1382,8 @@ func (a *Analyzer) checkFuncDecl(d *ast.FuncDecl) {
 	}
 	a.checkParamDefaults(funcDeclaratorOf(d.Decl), nil)
 	fnSym.Constraints = a.constraintsOf(d, d.Decl)
+	fnSym.ConstraintKeys = a.constraintKeys(fnSym.Constraints)
+	fnSym.AutoConceptKeys = a.autoConceptKeys(d.Decl)
 	fnSym.ConstraintScope = a.curScope
 
 	var method *types.Method
@@ -1429,6 +1433,20 @@ func (a *Analyzer) checkFuncDecl(d *ast.FuncDecl) {
 			a.methodSyms = map[*types.Method]*FuncSymbol{}
 		}
 		a.methodSyms[method] = fnSym
+	}
+
+	// An abbreviated function template -- `auto add(auto a, auto b)` --
+	// is a template whose parameters its own signature invented, and is
+	// registered from them exactly as a written template-head is.
+	if a.curTemplateParams == nil {
+		if invented := InventedParams(ft); len(invented) > 0 {
+			a.noteAutoConcepts(invented, d.Decl)
+			saved := a.curTemplateParams
+			a.curTemplateParams = invented
+			a.noteFunctionTemplate(fnSym, d)
+			a.curTemplateParams = saved
+			return
+		}
 	}
 
 	// Function template definition recorded for future instantiation.
@@ -1759,6 +1777,24 @@ func (a *Analyzer) checkTemplateDecl(d *ast.TemplateDecl) {
 
 	a.curTemplateParams, a.templateOwner, a.curTemplateRequires = prevParams, prevOwner, prevRequires
 	a.curScope = oldScope
+}
+
+// constraintKeys spell each of a declaration's constraints, token by
+// token, so that two of them can be compared by what they say.
+func (a *Analyzer) constraintKeys(cs []ast.Expr) []string {
+	if len(cs) == 0 {
+		return nil
+	}
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		var sb strings.Builder
+		for t := c.Pos(); t < c.End(); t++ {
+			sb.WriteString(a.unit.Text(t))
+			sb.WriteByte(' ')
+		}
+		out[i] = sb.String()
+	}
+	return out
 }
 
 // constraintsOf gathers a function declaration's requires-clauses.
@@ -2905,6 +2941,13 @@ func (a *Analyzer) templateHeadKey(params []*TemplateParamSymbol) string {
 			b.WriteString("template")
 		case p.IsType:
 			b.WriteString("type")
+			// A parameter invented for a constrained placeholder is told
+			// from another by the concept: `show(std::integral auto)` and
+			// `show(std::floating_point auto)` are two templates of one
+			// signature.
+			if p.AutoConceptKey != "" {
+				b.WriteString(":" + p.AutoConceptKey)
+			}
 		default:
 			b.WriteString("value:")
 			if p.Decl == nil || p.Decl.Specs == nil {
@@ -3086,4 +3129,53 @@ func namesTemplateId(d ast.Declarator) bool {
 		return isTemplate
 	}
 	return false
+}
+
+// autoConceptKeys spell the concepts a declaration's constrained
+// placeholders named, one per parameter that has one.
+func (a *Analyzer) autoConceptKeys(d ast.Declarator) []string {
+	fd := funcDeclaratorOf(d)
+	if fd == nil {
+		return nil
+	}
+	var out []string
+	for i, p := range fd.Params {
+		if p.Specs == nil {
+			continue
+		}
+		for _, spec := range p.Specs.List {
+			if ca, isAuto := spec.(*ast.ConstrainedAutoSpec); isAuto && ca.Concept != nil {
+				out = append(out, fmt.Sprintf("%d:%s", i, NameString(ca.Concept, a.unit)))
+				break
+			}
+		}
+	}
+	return out
+}
+
+// noteAutoConcepts gives each invented parameter the concept its
+// placeholder named: `void show(std::integral auto v)` invents one
+// parameter and constrains it with std::integral.
+func (a *Analyzer) noteAutoConcepts(invented []*TemplateParamSymbol, d ast.Declarator) {
+	fd := funcDeclaratorOf(d)
+	if fd == nil {
+		return
+	}
+	byName := map[string]*TemplateParamSymbol{}
+	for _, p := range invented {
+		byName[p.SymName] = p
+	}
+	for i, p := range fd.Params {
+		sym := byName[inventedParamName(i)]
+		if sym == nil || p.Specs == nil {
+			continue
+		}
+		for _, spec := range p.Specs.List {
+			if ca, isAuto := spec.(*ast.ConstrainedAutoSpec); isAuto && ca.Concept != nil {
+				sym.AutoConcept = ca.Concept
+				sym.AutoConceptKey = NameString(ca.Concept, a.unit)
+				break
+			}
+		}
+	}
 }

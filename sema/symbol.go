@@ -110,20 +110,20 @@ type FuncSymbol struct {
 	// lowering has to run that list before the body.
 	Decl *ast.FuncDecl
 
-	SymName     string
-	FuncType    *types.Func
-	SymPos      ast.Tok
-	SymScope    *Scope
-	Params      []*VarSymbol
-	Defaults    []ast.Expr
-	Body        *ast.CompoundStmt
+	SymName  string
+	FuncType *types.Func
+	SymPos   ast.Tok
+	SymScope *Scope
+	Params   []*VarSymbol
+	Defaults []ast.Expr
+	Body     *ast.CompoundStmt
 
 	// TryBody is the function-try-block a definition was written with:
 	// `C(int v) try : m(v) { ... } catch (...) { ... }`. Body is its
 	// compound statement, and the handlers answer for the
 	// mem-initializers as well ([except.pre]/4), so lowering opens the
 	// try before it builds anything.
-	TryBody *ast.TryStmt
+	TryBody     *ast.TryStmt
 	Inline      bool
 	Constexpr   bool
 	Consteval   bool
@@ -190,6 +190,21 @@ type FuncSymbol struct {
 	// the function to be a candidate. ConstraintScope is the evaluation scope.
 	Constraints     []ast.Expr
 	ConstraintScope *Scope
+
+	// ConstraintKeys spell the constraints, one per entry of Constraints,
+	// so that two declarations can be told apart by what they require
+	// rather than by where it was written. Two overloads may differ only
+	// in a constraint -- `template <Int T> void show(T)` beside
+	// `template <Flt T> void show(T)` -- and the same declaration may be
+	// read twice in different places.
+	ConstraintKeys []string
+
+	// AutoConceptKeys spell the concepts the constrained placeholders of
+	// an abbreviated function template named, in parameter order. Two
+	// declarations of one signature that name different concepts declare
+	// two templates, and this is what says so before the template-head
+	// has been recorded.
+	AutoConceptKeys []string
 
 	Template     *TemplateInfo
 	TemplateArgs []types.TemplateArg
@@ -338,6 +353,17 @@ type TemplateParamSymbol struct {
 	// Decl is a non-type parameter's declaration, used when rebuilding
 	// types dependent on preceding parameters.
 	Decl *ast.ParamDecl
+
+	// AutoConcept is the concept a constrained placeholder named, for a
+	// parameter invented for an `auto` that carried one. It is checked
+	// against the type bound to this parameter, needing no spelling of a
+	// name the program never wrote.
+	AutoConcept ast.Name
+
+	// AutoConceptKey spells that concept, so two template-heads can be
+	// told apart by it: `show(std::integral auto)` and
+	// `show(std::floating_point auto)` are two templates.
+	AutoConceptKey string
 
 	// TypeConstraint is a constrained type parameter's constraint as the
 	// concept-id it stands for: `sentinel_for<_Ip> _Sp` is
