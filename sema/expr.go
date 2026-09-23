@@ -1618,8 +1618,14 @@ type LambdaInfo struct {
 	// A generic lambda's template parameters, by name in order -- the
 	// explicit ones, then one per auto parameter -- and the specializations
 	// of its operator() made so far (see genericlambda.go).
-	TemplateNames []string
-	Instances     map[string]*FuncSymbol
+	//
+	// TemplateParams are the explicit ones themselves, for the defaults
+	// they may carry: `[]<bool _False = false>() { ... }()` deduces
+	// nothing and is called anyway. It is nil where there are none, and
+	// shorter than TemplateNames, which the auto parameters extend.
+	TemplateNames  []string
+	TemplateParams []*TemplateParamSymbol
+	Instances      map[string]*FuncSymbol
 }
 
 // A Capture is one entity a closure holds: by copy or by reference.
@@ -1804,6 +1810,7 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 		for _, p := range explicitParams {
 			info.TemplateNames = append(info.TemplateNames, p.SymName)
 		}
+		info.TemplateParams = explicitParams
 		info.TemplateNames = append(info.TemplateNames, autoNames...)
 		if a.generics == nil {
 			a.generics = map[*FuncSymbol]*LambdaInfo{}

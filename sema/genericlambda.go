@@ -40,9 +40,21 @@ func (a *Analyzer) instantiateLambdaCall(li *LambdaInfo, args []Argument, at ast
 		}
 	}
 	var targs []types.TemplateArg
-	for _, name := range li.TemplateNames {
+	for i, name := range li.TemplateNames {
 		t, ok := b[name]
 		if !ok || t == nil {
+			// Not deduced, so its default is the argument:
+			// `[]<bool _False = false>() { static_assert(_False); }()`
+			// is how libc++ writes a template that must not be
+			// instantiated, and it is called with no arguments at all.
+			if i < len(li.TemplateParams) {
+				if p := li.TemplateParams[i]; p != nil && p.Default != nil {
+					if arg, made := a.defaultTemplateArg(p, li.TemplateParams[:i], targs, li.Scope); made {
+						targs = append(targs, arg)
+						continue
+					}
+				}
+			}
 			a.errorAt(at, fmt.Sprintf("the generic lambda's template parameter %s is not deduced", name))
 			return nil
 		}
@@ -75,7 +87,15 @@ func (a *Analyzer) instantiateLambdaCall(li *LambdaInfo, args []Argument, at ast
 
 	if li.Expr.Body != nil {
 		body := ast.Clone(li.Expr.Body)
-		scope := NewScope(li.Inner, FunctionScope, inst)
+		// The explicit template parameters are names the body may read
+		// -- `static_assert(_False)` is the whole point of one -- so they
+		// are bound around it. The auto parameters need no binding: their
+		// types went into the signature.
+		outer := li.Inner
+		if n := len(li.TemplateParams); n > 0 && n <= len(targs) {
+			outer = a.bindTemplateArgs(outer, li.TemplateParams, targs[:n])
+		}
+		scope := NewScope(outer, FunctionScope, inst)
 		oldScope, oldFunc, oldParams, oldLambdas := a.curScope, a.curFunc, a.curTemplateParams, a.lambdas
 		a.curScope, a.curFunc, a.curTemplateParams = scope, inst, nil
 		a.lambdas = append(append([]*LambdaInfo(nil), oldLambdas...), li)
