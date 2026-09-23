@@ -1586,6 +1586,10 @@ func (a *Analyzer) checkAliasDecl(d *ast.AliasDecl) {
 }
 
 func (a *Analyzer) checkUsingDecl(d *ast.UsingDecl) {
+	if d.Enum.IsValid() {
+		a.checkUsingEnum(d)
+		return
+	}
 	for _, n := range d.Names {
 		// Inheriting constructors from base class.
 		if qn, isQualified := n.(*ast.QualifiedName); isQualified && a.curRecord != nil && a.curScope.Kind == ClassScope {
@@ -1615,6 +1619,45 @@ func (a *Analyzer) checkUsingDecl(d *ast.UsingDecl) {
 				s = &DependentSymbol{SymName: declared, SymPos: dep.SymPos}
 			}
 			a.curScope.AddUsingDecl(declared, s)
+		}
+	}
+}
+
+// checkUsingEnum brings an enumeration's enumerators into this scope
+// under their own names ([enum.udecl]): `using enum Perm;` makes `Read`
+// mean `Perm::Read` here, which is what lets a switch over a scoped enum
+// write its labels unqualified.
+func (a *Analyzer) checkUsingEnum(d *ast.UsingDecl) {
+	for _, n := range d.Names {
+		var syms []Symbol
+		if qn, isQualified := n.(*ast.QualifiedName); isQualified {
+			syms = ResolveQualifiedName(qn, a.curScope, a.globalScope, a.unit)
+		} else {
+			syms = LookupUnqualified(a.curScope, NameString(n, a.unit))
+		}
+		var en *types.Enum
+		for _, s := range syms {
+			if es, isEnum := s.(*EnumSymbol); isEnum {
+				en = es.Enum
+				break
+			}
+			if ts, isType := s.(*TypeSymbol); isType {
+				if e, isE := types.Unqualify(ts.SymType).(*types.Enum); isE {
+					en = e
+					break
+				}
+			}
+		}
+		if en == nil {
+			if !a.dependentContext() {
+				a.errorAt(n.Pos(), fmt.Sprintf("%s does not name an enumeration", NameString(n, a.unit)))
+			}
+			continue
+		}
+		for _, e := range en.Enumerators {
+			a.curScope.AddUsingDecl(e.Name, &EnumeratorSymbol{
+				SymName: e.Name, Enum: en, Val: e.Val, SymPos: n.Pos(), SymScope: a.curScope,
+			})
 		}
 	}
 }
