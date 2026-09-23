@@ -914,6 +914,14 @@ func (a *Analyzer) packsIn(e ast.Expr) []boundPack {
 	if e == nil {
 		return nil
 	}
+	return a.packsInNode(e)
+}
+
+// packsInNode is packsIn over any node: a base-specifier's name is one.
+func (a *Analyzer) packsInNode(e ast.Node) []boundPack {
+	if e == nil {
+		return nil
+	}
 	var packs []boundPack
 	seen := map[string]bool{}
 	ast.Inspect(e, func(n ast.Node) bool {

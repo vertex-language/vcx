@@ -2588,7 +2588,73 @@ func (a *Analyzer) resolveBases(s *ast.ClassSpec, rec *types.Record, defaultAcce
 		} else if b.AccKind == token.PRIVATE {
 			bAccess = types.AccessPrivate
 		}
+		// `struct tuple_impl : __tuple_leaf<Is, Tp>... {}`: one base per
+		// element, each resolved with that element bound. Without this a
+		// class inheriting a pack inherits nothing, and std::tuple is
+		// empty.
+		//
+		// The `...` may be the base-specifier's own or inside the name:
+		// `T...` is read as a name followed by an ellipsis, since that is
+		// how a declaration spells a pack too.
+		expansion := b
+		if pn, isPack := b.Name.(*ast.PackName); isPack {
+			inner := *b
+			inner.Name = pn.Name
+			inner.Ellipsis = pn.Ellipsis
+			expansion = &inner
+		}
+		if expansion.Ellipsis.IsValid() && a.expandBasePack(expansion, rec, bAccess) {
+			continue
+		}
+		a.addBase(expansion, rec, bAccess)
+	}
+}
 
+// expandBasePack adds one base per element of the packs a base-specifier
+// names, and reports whether it did. It does not when the packs are not
+// bound yet -- the template as written, whose bases are its
+// instantiations' to resolve.
+func (a *Analyzer) expandBasePack(b *ast.BaseSpec, rec *types.Record, access types.Access) bool {
+	packs := a.packsInNode(b.Name)
+	if len(packs) == 0 {
+		return false
+	}
+	n := -1
+	for _, p := range packs {
+		if n >= 0 && n != len(p.pack.Elems) {
+			a.errorAt(b.Pos(), "the packs in this base differ in length")
+			return false
+		}
+		n = len(p.pack.Elems)
+	}
+	if n < 0 {
+		return false
+	}
+	saved := a.curScope
+	defer func() { a.curScope = saved }()
+	for i := 0; i < n; i++ {
+		bound := NewScope(saved, BlockScope, nil)
+		for _, p := range packs {
+			elem := p.pack.Elems[i]
+			if elem.IsType {
+				bound.Insert(&TypeSymbol{SymName: p.name, SymType: elem.Type, SymScope: bound})
+				continue
+			}
+			vt := elem.ValType
+			if vt == nil {
+				vt = types.Typ(types.Int)
+			}
+			bound.Insert(&VarSymbol{SymName: p.name, SymType: vt, SymScope: bound, Constexpr: true, KnownValue: elem.Val, HasKnownValue: true})
+		}
+		a.curScope = bound
+		a.addBase(b, rec, access)
+	}
+	return true
+}
+
+// addBase resolves one base-specifier into rec.
+func (a *Analyzer) addBase(b *ast.BaseSpec, rec *types.Record, bAccess types.Access) {
+	{
 		// Base class type resolution.
 		baseName := NameString(b.Name, a.unit)
 		specs := &ast.DeclSpecs{Span: b.Span, List: []ast.DeclSpec{&ast.NamedTypeSpec{Span: b.Span, Typename: ast.NoTok, Name: b.Name}}}
