@@ -15,10 +15,14 @@ type scope struct {
 	objs []localObj
 }
 
-// localObj is an object with a destructor to run.
+// localObj is an object with a destructor to run. arr is set for a
+// local array of such objects, which is destroyed element by element,
+// last first ([class.dtor]/13 via [dcl.init]: each element is a complete
+// object of its own).
 type localObj struct {
 	addr ir.Ptr
 	rec  *types.Record
+	arr  types.Type
 }
 
 // pushScope opens a block.
@@ -40,12 +44,40 @@ func (fl *fn) popScope() {
 // track registers a freshly constructed object with the current scope,
 // if its class has a destructor to run.
 func (fl *fn) track(addr ir.Ptr, t types.Type) {
-	rec := classOf(t)
-	if rec == nil || len(fl.scopes) == 0 || fl.u.destructor(rec) == nil {
+	if len(fl.scopes) == 0 {
 		return
 	}
 	top := fl.scopes[len(fl.scopes)-1]
+	if elem := arrayElemClass(t); elem != nil {
+		if fl.u.destructor(elem) != nil {
+			top.objs = append(top.objs, localObj{addr: addr, rec: elem, arr: t})
+		}
+		return
+	}
+	rec := classOf(t)
+	if rec == nil || fl.u.destructor(rec) == nil {
+		return
+	}
 	top.objs = append(top.objs, localObj{addr: addr, rec: rec})
+}
+
+// arrayElemClass is the class an array (of arrays) of class objects holds,
+// or nil where t is not such an array, or its bound is not known here.
+func arrayElemClass(t types.Type) *types.Record {
+	arr, ok := types.Unqualify(t).(*types.Array)
+	if !ok {
+		return nil
+	}
+	for {
+		if arr.Incomplete || arr.DepLen != "" {
+			return nil
+		}
+		inner, isArr := types.Unqualify(arr.Elem).(*types.Array)
+		if !isArr {
+			return classOf(arr.Elem)
+		}
+		arr = inner
+	}
 }
 
 // trackPartial registers a subobject a constructor has just built, so that
@@ -97,6 +129,10 @@ func (fl *fn) extendTemporary(addr ir.Ptr) {
 // destroyScope runs one scope's destructors, last constructed first.
 func (fl *fn) destroyScope(s *scope) {
 	for i := len(s.objs) - 1; i >= 0; i-- {
+		if s.objs[i].arr != nil {
+			fl.destroyElements(s.objs[i].addr, s.objs[i].arr)
+			continue
+		}
 		fl.destroy(s.objs[i].addr, s.objs[i].rec)
 	}
 }
