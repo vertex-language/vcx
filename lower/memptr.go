@@ -29,8 +29,20 @@ func (fl *fn) memberPointerValue(e *ast.UnaryExpr) ir.Value {
 	}
 	if ref.Func != nil {
 		if ref.Func.Virtual {
-			fl.u.errorf(e.Pos(), "lowering: a pointer to a virtual member function is not handled yet")
-			return nil
+			// [itanium-abi 2.3]: a pointer to a virtual function holds
+			// the slot's byte offset in the table plus one, rather than
+			// an address. A function is never at an odd address, so the
+			// low bit tells the two apart, and the call site reads it.
+			tableOff, slot, found := fl.u.vslot(ref.Func)
+			if !found {
+				fl.u.errorf(e.Pos(), "lowering found no table slot for %s::%s", ref.Class.Name, ref.Func.SymName)
+				return nil
+			}
+			if tableOff != 0 {
+				fl.u.errorf(e.Pos(), "lowering: a pointer to a virtual member of a secondary base is not handled yet")
+				return nil
+			}
+			return fl.blk.Ptr.FromI64(fl.blk.I64.Const(int64(slot)*fl.u.model.SizePtr + 1))
 		}
 		target := fl.u.callee(ref.Func)
 		if target == nil {
@@ -194,6 +206,7 @@ func (fl *fn) memberPointerCall(c *ast.CallExpr, bin *ast.BinaryExpr) ir.Value {
 		}
 		args = append(args, fl.convert(v, fl.typeOf(a), want))
 	}
+	targetPtr = fl.memberFuncTarget(targetPtr, obj)
 	res := fl.blk.CallInd(targetPtr, irType, args...)
 	if retRec != nil {
 		return result
@@ -202,4 +215,28 @@ func (fl *fn) memberPointerCall(c *ast.CallExpr, bin *ast.BinaryExpr) ir.Value {
 		return nil
 	}
 	return res.Value(0)
+}
+
+// memberFuncTarget is the function a pointer to member function names for
+// an object: what it holds, or -- where the low bit is set -- the entry
+// its value less one indexes in the object's table ([itanium-abi 2.3]).
+func (fl *fn) memberFuncTarget(pmf ir.Ptr, obj ir.Ptr) ir.Ptr {
+	b := fl.blk
+	raw := b.I64.FromPtr(pmf)
+	virt := b.I64.Ne(b.I64.And(raw, b.I64.Const(1)), b.I64.Const(0))
+
+	viaTable := fl.block("pmf_virtual")
+	direct := fl.block("pmf_direct")
+	join := fl.block("pmf_join")
+	target := join.ParamPtr("target")
+	b.BrIf(virt, viaTable.To(), direct.To())
+
+	vptr := viaTable.Ptr.Load(obj)
+	entry := viaTable.Ptr.Add(vptr, viaTable.I64.Sub(raw, viaTable.I64.Const(1)))
+	viaTable.Br(join.To(viaTable.Ptr.Load(entry)))
+
+	direct.Br(join.To(pmf))
+
+	fl.blk = join
+	return target
 }

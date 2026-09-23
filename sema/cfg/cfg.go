@@ -181,6 +181,12 @@ func (b *Builder) addStmt(stmt ast.Stmt) {
 				b.curBlock.NoReturn = true
 			}
 		}
+		if es, isExpr := s.(*ast.ExprStmt); isExpr {
+			if _, isThrow := unparenStmtExpr(es.X).(*ast.ThrowExpr); isThrow {
+				// A throw leaves by the handler, never past itself.
+				b.curBlock.NoReturn = true
+			}
+		}
 
 	case *ast.CompoundStmt:
 		for _, child := range s.Stmts {
@@ -426,10 +432,50 @@ func (b *Builder) addStmt(stmt ast.Stmt) {
 		}
 		b.curBlock = nil
 
+	case *ast.TryStmt:
+		// The body, and then each handler, all joining what follows: an
+		// exception may come from anywhere in the body, so a handler is
+		// reachable from the try's start, and the try is left normally by
+		// whichever of them completes.
+		entry := b.curBlock
+		after := b.newBlock()
+		if s.Body != nil {
+			b.addStmt(s.Body)
+		}
+		if b.curBlock != nil {
+			b.addEdge(b.curBlock, after, EdgeFallthrough)
+		}
+		for _, h := range s.Handlers {
+			hb := b.newBlock()
+			if entry != nil {
+				b.addEdge(entry, hb, EdgeFallthrough)
+			}
+			b.curBlock = hb
+			if h.Body != nil {
+				b.addStmt(h.Body)
+			}
+			if b.curBlock != nil {
+				b.addEdge(b.curBlock, after, EdgeFallthrough)
+			}
+		}
+		b.curBlock = after
+
 	case *ast.ReturnStmt:
 		b.curBlock.Terminator = s
 		b.curBlock.TerminatorPos = s.Pos()
 		b.addEdge(b.curBlock, b.cfg.Exit, EdgeReturn)
 		b.curBlock = nil
+	}
+}
+
+// unparenStmtExpr strips the parentheses around an expression-statement's
+// expression.
+func unparenStmtExpr(e ast.Expr) ast.Expr {
+	for {
+		p, isParen := e.(*ast.ParenExpr)
+		if !isParen {
+			return e
+		}
+		e = p.X
 	}
 }

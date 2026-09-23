@@ -62,7 +62,12 @@ type fn struct {
 	// call unwinds nowhere.
 	// ehDeclared records that the function has named its personality, and
 	// npads numbers its pads apart. See eh.go.
-	tries      []*tryFrame
+	tries []*tryFrame
+
+	// catchDepth is how many handlers the code being emitted is inside
+	// of, which a path leaving the function has to end (see
+	// endOpenCatches).
+	catchDepth int
 	inEH       bool
 	ehDeclared bool
 	npads      int
@@ -364,6 +369,13 @@ func (fl *fn) memInits(sym *sema.FuncSymbol) {
 			continue
 		}
 		if initExpr == nil {
+			// `__ptr_()` and `__ptr_{}`: value-initialization, which for
+			// anything that is not a class is a zero ([dcl.init]/8).
+			// Skipping it left the member with whatever the storage
+			// held, and libc++'s exception_ptr was never empty.
+			if len(mi.Args) == 0 && (mi.Lparen.IsValid() || mi.Braced != nil) {
+				fl.store(dst, fl.zeroOf(t), t)
+			}
 			continue
 		}
 		v := fl.expr(initExpr)

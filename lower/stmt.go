@@ -734,6 +734,7 @@ func (fl *fn) localSymbol(init *ast.InitDeclarator) *sema.VarSymbol {
 func (fl *fn) returnStmt(s *ast.ReturnStmt) {
 	if s.X == nil {
 		fl.destroyFrom(0)
+		fl.endOpenCatches()
 		if fl.u.ctorReturnsThis(fl.sym) {
 			fl.blk.Return(fl.this)
 		} else {
@@ -751,6 +752,7 @@ func (fl *fn) returnStmt(s *ast.ReturnStmt) {
 		}
 		fl.endFullExpr()
 		fl.destroyFrom(0)
+		fl.endOpenCatches()
 		fl.blk.Return()
 		fl.blk = nil
 		return
@@ -763,6 +765,7 @@ func (fl *fn) returnStmt(s *ast.ReturnStmt) {
 			return
 		}
 		fl.destroyFrom(0)
+		fl.endOpenCatches()
 		fl.blk.Return(addr)
 		fl.blk = nil
 		return
@@ -776,6 +779,7 @@ func (fl *fn) returnStmt(s *ast.ReturnStmt) {
 	v = fl.convert(v, fl.typeOf(s.X), ret)
 	fl.endFullExpr()
 	fl.destroyFrom(0)
+	fl.endOpenCatches()
 	fl.blk.Return(v)
 	fl.blk = nil
 }

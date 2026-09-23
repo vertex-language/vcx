@@ -219,6 +219,11 @@ func (fl *fn) cleanupPad() *ir.Block {
 	saved, savedIn := fl.blk, fl.inEH
 	fl.blk, fl.inEH = pad, true
 	fl.destroyLive()
+	// Unwinding out of a handler ends it: the exception it caught is
+	// done with, and the one now in flight is the runtime's to carry.
+	for i := 0; i < fl.catchDepth; i++ {
+		fl.blk.Call(fl.u.cxaEndCatch())
+	}
 	fl.blk.Resume(pad.Exn())
 	fl.blk, fl.inEH = saved, savedIn
 	return pad
@@ -408,18 +413,29 @@ func (fl *fn) handlerTypeInfo(h *ast.CatchClause) ir.Symbol {
 // parameter is bound to it, the body runs, and the catch ends however the
 // body leaves.
 func (fl *fn) handler(h *ast.CatchClause, exn ir.Ptr, done *ir.Block, rethrow bool) {
-	caught, isPtr := fl.emitCall1(fl.u.cxaBeginCatch(), exn).(ir.Ptr)
+	// A plain call, and it has to be: this runs on the way into the
+	// handler, where the exception is still the runtime's and the frame
+	// has no region for a second pad to belong to. An invoke here is
+	// what made libc++'s current_exception crash.
+	res := fl.blk.Call(fl.u.cxaBeginCatch(), exn)
+	if res.Len() == 0 {
+		fl.u.errorf(h.Pos(), "lowering: __cxa_begin_catch did not answer")
+		return
+	}
+	caught, isPtr := res.Value(0).(ir.Ptr)
 	if !isPtr {
 		fl.u.errorf(h.Pos(), "lowering: __cxa_begin_catch did not answer with an address")
 		return
 	}
 	fl.pushScope()
+	fl.catchDepth++
 	if sym, _ := fl.u.res.Info.Defs[h.Param].(*sema.VarSymbol); sym != nil && sym.SymName != "" {
 		fl.bindCaught(sym, caught)
 	}
 	if h.Body != nil {
 		fl.stmt(h.Body)
 	}
+	fl.catchDepth--
 	fl.popScope()
 	if fl.blk != nil {
 		if rethrow {
@@ -451,4 +467,22 @@ func (fl *fn) bindCaught(sym *sema.VarSymbol, caught ir.Ptr) {
 		return
 	}
 	fl.store(slot, fl.load(caught, sym.SymType), sym.SymType)
+}
+
+// endOpenCatches ends every handler the code being emitted is inside of.
+//
+// Leaving a handler by any path -- a return, a goto out of it -- has to
+// tell the runtime, or the exception stays in flight and the next one
+// finds the frame in a state it cannot unwind. Falling off the end of a
+// handler is ended where the handler is emitted; this is for the paths
+// that leave the function instead.
+func (fl *fn) endOpenCatches() {
+	if fl.blk == nil {
+		return
+	}
+	for i := 0; i < fl.catchDepth; i++ {
+		// A plain call: the path out of the function has nothing left to
+		// unwind, and __cxa_end_catch does not throw here.
+		fl.blk.Call(fl.u.cxaEndCatch())
+	}
 }

@@ -376,7 +376,7 @@ func (u *unit) signature(fn *sema.FuncSymbol) *ir.Sig {
 		if u.plainForReturn(retRec) {
 			sig = sig.Param(ir.TypePtr, ir.SRet(u.recordType(retRec)))
 		} else {
-			sig = sig.Param(ir.TypePtr)
+			sig = sig.Param(ir.TypePtr, ir.SRetMemory(u.recordType(retRec)))
 		}
 	}
 	if fn.InClass != nil && !fn.Static {
@@ -497,12 +497,21 @@ func (u *unit) declareFunc(fn *sema.FuncSymbol) *ir.Func {
 }
 
 // declareSRet is the hidden result parameter for a class returned by
-// value: `sret` for a plain class, a bare pointer otherwise.
+// value.
+//
+// Both forms are the indirect result, and the ABI puts that pointer in a
+// register of its own -- X8 on AArch64 -- rather than among the
+// arguments. Which form says whether the aggregate may come back in
+// registers instead: a plain class may ([class.temporary] leaves it to
+// the ABI), and one with a non-trivial copy constructor or destructor
+// never does, however small it is. Saying neither left the pointer in
+// X0, and every call into a library compiled by another compiler was
+// one register out.
 func (u *unit) declareSRet(f *ir.Func, rec *types.Record) ir.Ptr {
 	if u.plainForReturn(rec) {
 		return f.ParamPtr("__ret", ir.SRet(u.recordType(rec)))
 	}
-	return f.ParamPtr("__ret")
+	return f.ParamPtr("__ret", ir.SRetMemory(u.recordType(rec)))
 }
 
 func (u *unit) declareParam(f *ir.Func, p *sema.VarSymbol) ir.Value {
