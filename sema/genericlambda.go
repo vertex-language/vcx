@@ -58,6 +58,14 @@ func (a *Analyzer) instantiateLambdaCall(li *LambdaInfo, args []Argument, at ast
 			a.errorAt(at, fmt.Sprintf("the generic lambda's template parameter %s is not deduced", name))
 			return nil
 		}
+		if vb, isVal := t.(*valueBound); isVal {
+			// A non-type parameter of the lambda -- the `N` of
+			// `[]<class T, int N>(T (&)[N])` -- deduced as a value.
+			// Carried as a type it has no spelling, and the mangler
+			// said so.
+			targs = append(targs, types.TemplateArg{Val: vb.Val, ValType: vb.Type})
+			continue
+		}
 		targs = append(targs, types.TemplateArg{IsType: true, Type: t})
 	}
 	key := argsKey(targs)

@@ -602,7 +602,18 @@ func (a *Analyzer) NewConstContext() *constexpr.Context {
 			return nil, false
 		}
 		fs := a.info.Calls[c]
-		if fs == nil || !(fs.Constexpr || fs.Consteval) || fs.Body == nil || fs.InClass != nil {
+		if fs == nil {
+			// A call on an object is its operator(), recorded apart:
+			// `square(12)` where square holds a closure.
+			fs = a.info.Operators[c]
+		}
+		if fs == nil || !(fs.Constexpr || fs.Consteval) || fs.Body == nil {
+			return nil, false
+		}
+		if fs.InClass != nil && !a.capturelessClosure(fs.InClass) {
+			// A member needs its object, which this evaluator has no
+			// way to be given. A captureless closure's operator() has
+			// one in name only: its body cannot read through it.
 			return nil, false
 		}
 		return funcInfo(fs), true
@@ -999,4 +1010,18 @@ func (a *Analyzer) templateArgValues(fs *FuncSymbol) ([]string, []constexpr.Valu
 		values = append(values, constexpr.NewInt(arg.Val, t, a.model))
 	}
 	return names, values
+}
+
+// capturelessClosure reports whether a class is a lambda's closure with
+// nothing captured, whose operator() reads nothing through its object.
+func (a *Analyzer) capturelessClosure(rec *types.Record) bool {
+	if !isClosureRecord(rec) {
+		return false
+	}
+	for _, info := range a.info.Lambdas {
+		if info != nil && info.Closure == rec {
+			return len(info.Captures) == 0
+		}
+	}
+	return false
 }

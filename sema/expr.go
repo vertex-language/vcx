@@ -1733,7 +1733,11 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 		Quals:    quals,
 		Noexcept: l.Noexcept != nil,
 	}
-	sym := &FuncSymbol{SymName: "operator()", FuncType: call, InClass: closure, SymPos: l.Pos(), SymScope: a.curScope, Inline: true, Access: types.AccessPublic}
+	// [expr.prim.lambda.closure]/4: a closure's operator() is constexpr
+	// when it satisfies the requirements of one, and an evaluation that
+	// cannot proceed says so on its own -- so it is marked here and the
+	// evaluator decides.
+	sym := &FuncSymbol{SymName: "operator()", FuncType: call, InClass: closure, SymPos: l.Pos(), SymScope: a.curScope, Inline: true, Access: types.AccessPublic, Constexpr: true}
 	// A lambda written in device code runs where the function around it
 	// runs; one in host code is the host's, as nvcc has it without
 	// --extended-lambda.
