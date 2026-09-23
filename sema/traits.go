@@ -76,6 +76,20 @@ func (a *Analyzer) resolveTrait(name string, args []types.Type) (answer bool, kn
 		}
 		return a.convertible(from, to), true, nil
 
+	case "__reference_constructs_from_temporary", "__reference_converts_from_temporary":
+		// [meta.unary.prop]: T is a reference that, initialized from a U,
+		// would bind to a temporary materialized for the purpose rather
+		// than to the U itself.
+		//
+		// libc++ asserts the negation of this in __tuple_leaf's
+		// constructor, so without it the constructor that takes the
+		// element's value is not a candidate and a tuple is built by
+		// something else.
+		if len(args) != 2 {
+			return false, true, nil
+		}
+		return a.bindsToTemporary(args[0], args[1]), true, nil
+
 	case "__is_empty":
 		return oneClass(args, func(rec *types.Record) bool { return types.IsEmptyRecord(rec) })
 	case "__is_polymorphic":
@@ -474,4 +488,34 @@ func (a *Analyzer) uniqueRepresentations(t types.Type) bool {
 	}
 	size, ok := a.model.Sizeof(bare)
 	return ok && size == sum
+}
+
+// bindsToTemporary reports whether initializing a reference of type to
+// from a from would bind it to a temporary.
+//
+// A reference binds directly to an object of its own type, or of a class
+// derived from it, with no fewer qualifiers. Anything else that is still a
+// valid initialization goes through a materialized temporary -- and an
+// lvalue reference to non-const cannot bind to one at all, so there is no
+// initialization to speak of.
+func (a *Analyzer) bindsToTemporary(to, from types.Type) bool {
+	if !types.IsReference(to) {
+		return false // not a reference: nothing is bound
+	}
+	target := types.RemoveReference(to)
+	source := types.RemoveReference(from)
+	if !a.convertible(from, to) {
+		return false // no initialization at all
+	}
+	bare, sbare := types.Unqualify(target), types.Unqualify(source)
+	if bare.Equal(sbare) {
+		return false // the same type: bound directly
+	}
+	if types.IsBaseOf(bare, sbare) {
+		return false // a base of what it was given: bound directly
+	}
+	if _, isLValue := types.Unqualify(to).(*types.LValueReference); isLValue && !types.IsConst(target) {
+		return false // cannot bind to a temporary in the first place
+	}
+	return true
 }

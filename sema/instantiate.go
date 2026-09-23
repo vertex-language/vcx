@@ -115,6 +115,12 @@ func (a *Analyzer) templateArgsFor(tmpl *FuncSymbol, b Binding) ([]types.Templat
 		case p.IsPack && !bound:
 			// Empty pack.
 			args[i] = types.TemplateArg{IsType: true, Type: &types.Pack{}}
+		case p.IsPack && bound && isPackType(t):
+			// A pack is carried whole, in the type-shaped slot, whether
+			// its elements are types or values: `<size_t... _Uf>` deduced
+			// from a `__tuple_indices<0, 1>` argument is a pack of values
+			// and is still the argument for _Uf.
+			args[i] = types.TemplateArg{IsType: true, Type: t}
 		case bound && t != nil && p.IsType:
 			if _, isVal := t.(*valueBound); isVal {
 				// `std::get<0>(t)` against `get<class _T1, class... _Args>`:
@@ -144,6 +150,12 @@ func (a *Analyzer) templateArgsFor(tmpl *FuncSymbol, b Binding) ([]types.Templat
 		}
 	}
 	return args, nil
+}
+
+// isPackType reports whether a binding is a pack.
+func isPackType(t types.Type) bool {
+	_, isPack := t.(*types.Pack)
+	return isPack
 }
 
 // instanceSignature returns the substituted function signature for overload ranking.
