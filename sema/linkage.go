@@ -45,6 +45,13 @@ func StaticMembers(res *Result) []*VarSymbol {
 			if !ok || rs.ClassScope == nil {
 				continue
 			}
+			// A class template's pattern holds no objects. Its static
+			// members are declarations waiting for arguments -- their
+			// initializers still name the parameters -- and it is the
+			// specializations that have members to emit.
+			if rs.ClassTemplate != nil && (rs.Record == nil || rs.Record.TemplateArgs == nil) {
+				continue
+			}
 			for _, member := range sortedNames(rs.ClassScope.Symbols) {
 				for _, m := range rs.ClassScope.Symbols[member] {
 					if v, isVar := m.(*VarSymbol); isVar && v.InClass != nil && v.Defined {
