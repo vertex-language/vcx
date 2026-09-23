@@ -1402,6 +1402,22 @@ func (a *Analyzer) calleeNamesAType(fun ast.Expr) (types.Type, bool) {
 	case *ast.Ident:
 		syms = LookupUnqualified(a.curScope, f.Text(a.unit))
 	case *ast.QualifiedName:
+		if _, isTemplate := f.Name.(*ast.TemplateName); isTemplate && namesAQualifiedType(f, a.curScope, a.globalScope, a.unit) {
+			// `std::__tuple_indices<0, 1>()`: a qualified template-id is
+			// still a template-id, and its arguments name a
+			// specialization. Resolving the name alone answered with the
+			// template's own record, arguments and all thrown away, so
+			// the value had no template arguments and nothing could be
+			// deduced from it.
+			specs := &ast.DeclSpecs{Span: f.Span, List: []ast.DeclSpec{&ast.NamedTypeSpec{Span: f.Span, Typename: ast.NoTok, Name: f}}}
+			ndiags := len(a.diags)
+			info := BuildDeclSpecs(specs, a.curScope, a.unit)
+			if len(a.diags) > ndiags {
+				a.diags = a.diags[:ndiags]
+			} else if info.Type != nil && info.Unresolved == "" {
+				return info.Type, true
+			}
+		}
 		syms = ResolveQualifiedName(f, a.curScope, a.globalScope, a.unit)
 	case *ast.TemplateName:
 		// A class template's or an alias template's specialization used as
@@ -3452,4 +3468,22 @@ func argumentsConvert(sig *types.Func, args []Argument) bool {
 func (a *Analyzer) isClassTemplatePrimary(rec *types.Record) bool {
 	rs := a.curScope.recordSymbol(rec)
 	return rs != nil && rs.ClassTemplate != nil && rec.TemplateArgs == nil
+}
+
+// namesAQualifiedType reports whether a qualified template-id names a
+// class or an alias rather than a function. `std::forward<T>(x)` is a
+// call and `std::__tuple_indices<0, 1>()` is a type, and they are written
+// the same way.
+func namesAQualifiedType(qn *ast.QualifiedName, scope, global *Scope, u ast.Unit) bool {
+	for _, sym := range ResolveQualifiedName(qn, scope, global, u) {
+		switch s := sym.(type) {
+		case *RecordSymbol:
+			return true
+		case *TypeSymbol:
+			if s.Alias != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
