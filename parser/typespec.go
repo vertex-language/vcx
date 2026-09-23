@@ -322,6 +322,18 @@ func (p *parser) parseClassOrElaboratedSpec() ast.DeclSpec {
 			p.noteTemplate(id.Text(p.u), nameType)
 			p.declaringTemplate = false
 		}
+	} else if tn, isTemplate := name.(*ast.TemplateName); isTemplate {
+		// A partial specialization: `template <class T> class up<T*>`.
+		// The template-head belongs to the name written here, which is
+		// already a template, and is spent on it either way -- left set,
+		// it is taken by the first member the body declares, and that
+		// member's name is recorded as a template instead of whatever it
+		// is. A typedef so swallowed is not a type afterwards, and the
+		// first `elem*` in a template-argument list reads as a product.
+		if base, isIdent := tn.Name.(*ast.Ident); isIdent {
+			p.noteType(base.Text(p.u))
+		}
+		p.declaringTemplate = false
 	}
 	cs := &ast.ClassSpec{
 		Span:    ast.Span{Lo: start, Hi: p.pos()},
