@@ -285,6 +285,12 @@ func (fl *fn) lvalue(e ast.Expr) (ir.Ptr, types.Type, bool) {
 				return fl.throughRef(base, t)
 			}
 		}
+		// Inside a lambda that captured this, a member of the enclosing
+		// class is that object's, reached through the closure's own
+		// field rather than through the closure.
+		if at, t, found := fl.capturedThisMember(v.SymName); found {
+			return fl.throughRef(at, t)
+		}
 		fl.u.errorf(e.Pos(), "lowering found no storage for %q", v.SymName)
 		return ir.Ptr{}, nil, false
 

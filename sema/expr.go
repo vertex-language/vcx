@@ -1622,6 +1622,11 @@ type LambdaInfo struct {
 	// Invoker is the function a captureless closure converts to, recorded for lowering.
 	Invoker *FuncSymbol
 
+	// ThisClass is the class `[this]` or `[*this]` captured the object
+	// of: a member of it, named in the body, is reached through the
+	// closure's own field rather than through the closure.
+	ThisClass *types.Record
+
 	// A generic lambda's template parameters, by name in order -- the
 	// explicit ones, then one per auto parameter -- and the specializations
 	// of its operator() made so far (see genericlambda.go).
@@ -1642,6 +1647,11 @@ type Capture struct {
 	ByRef bool
 	Init  ast.Expr // an init-capture's initializer
 	Field int      // index in Closure.Fields
+
+	// This marks the capture of the enclosing object: `[this]` holds a
+	// pointer to it (ByRef), `[*this]` a copy of it. The field is named
+	// thisField, which is no identifier, so nothing can name it.
+	This bool
 }
 
 // checkLambdaExpr builds the closure type and operator() for a lambda expression.
@@ -1750,7 +1760,21 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 
 	for _, cap := range l.Captures {
 		if cap.This.IsValid() {
-			a.errorAt(cap.Pos(), "capturing this is not supported yet")
+			// `[this]` holds the enclosing object's address; `[*this]`
+			// holds a copy of the object. Either way a member named in
+			// the body is that object's.
+			encl := a.enclosingThisClass(oldFunc)
+			if encl == nil {
+				a.errorAt(cap.Pos(), "there is no object to capture here")
+				continue
+			}
+			info.ThisClass = encl
+			byRef := !cap.Star.IsValid()
+			t := types.Type(encl)
+			if byRef {
+				t = &types.Pointer{Elem: encl}
+			}
+			a.addCapture(info, Capture{Name: thisField, ByRef: byRef, This: true}, t)
 			continue
 		}
 		if cap.Name == nil {
@@ -3500,4 +3524,31 @@ func namesAQualifiedType(qn *ast.QualifiedName, scope, global *Scope, u ast.Unit
 		}
 	}
 	return false
+}
+
+// thisField is the closure member a this-capture is held in. It is not an
+// identifier, so nothing in the program can name it.
+const thisField = "__this"
+
+// enclosingThisClass is the class whose object a lambda written in fn
+// would capture: the class fn is a member of, or -- for a lambda inside
+// another lambda's body -- the class that one captured.
+func (a *Analyzer) enclosingThisClass(fn *FuncSymbol) *types.Record {
+	if fn == nil {
+		return nil
+	}
+	if fn.InClass != nil && !isClosureRecord(fn.InClass) {
+		return fn.InClass
+	}
+	for i := len(a.lambdas) - 1; i >= 0; i-- {
+		if a.lambdas[i].ThisClass != nil {
+			return a.lambdas[i].ThisClass
+		}
+	}
+	return nil
+}
+
+// isClosureRecord is whether a class is a lambda's closure.
+func isClosureRecord(rec *types.Record) bool {
+	return rec != nil && strings.HasPrefix(rec.Name, "<lambda_")
 }

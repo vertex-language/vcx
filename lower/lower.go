@@ -118,6 +118,10 @@ type unit struct {
 	// invokers maps a closure to the function it converts to.
 	invokers map[*types.Record]ir.Callee
 
+	// lambdaByRec is the lambda a closure record belongs to, built on
+	// first use (see lambdaOf).
+	lambdaByRec map[*types.Record]*sema.LambdaInfo
+
 	// implicitCopies maps a class to its synthesized copy constructor and
 	// copy assignment (see implicitCopy).
 	implicitCopies map[copyKey]ir.Callee
