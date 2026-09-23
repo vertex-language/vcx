@@ -313,6 +313,18 @@ func (p *parser) isParenDeclarator(abstract bool) bool {
 
 func (p *parser) parseArraySuffix(inner ast.Declarator) ast.Declarator {
 	lb := p.next()
+	// C99's qualifiers and `static` inside a parameter's brackets --
+	// `char *const argv[__restrict]`, `int a[static 4]` -- which clang
+	// accepts in C++ as an extension and system headers (<spawn.h>) use.
+	// They qualify the pointer the parameter adjusts to, which is nothing
+	// a call or its ABI depends on, so they are read and passed over.
+	for {
+		k := p.peek()
+		if k != token.CONST && k != token.VOLATILE && k != token.RESTRICT && k != token.STATIC {
+			break
+		}
+		p.next()
+	}
 	var size ast.Expr
 	if p.peek() != token.RBRACK {
 		size = p.parseExpr()

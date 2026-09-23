@@ -552,6 +552,15 @@ func BuildDeclarator(d ast.Declarator, baseType types.Type, scope *Scope, u ast.
 			if pType != nil && mentionsAuto(pType) {
 				pType = substituteAuto(pType, inventedParam(paramScope, i, isPackParamDecl(p)))
 			}
+			// [dcl.fct]/5: a parameter of array type is a pointer to its
+			// element, and one of function type a pointer to the function:
+			// `char *const argv[]` is `char *const *argv`.
+			switch at := pType.(type) {
+			case *types.Array:
+				pType = &types.Pointer{Elem: at.Elem}
+			case *types.Func:
+				pType = &types.Pointer{Elem: at}
+			}
 			name := ""
 			if p.Decl != nil && p.Decl.DeclName() != nil {
 				name = NameString(p.Decl.DeclName(), u)
