@@ -234,6 +234,12 @@ func deduce(param, arg types.Type, out Binding) bool {
 		}
 		for i := range p.Args {
 			if !p.Args[i].IsType || !args[i].IsType {
+				// A non-type parameter nested in the pattern is deduced
+				// from the value against it: the `_Np` of a
+				// `__tuple_leaf<_Ip, _Hp>` parameter.
+				if !bindNestedValue(p.Args[i], args[i], out) {
+					return false
+				}
 				continue
 			}
 			if !deduce(p.Args[i].Type, args[i].Type, out) {
@@ -683,7 +689,7 @@ func matchType(pat, arg types.Type, out Binding) bool {
 		}
 		for i := range p.Args {
 			if !p.Args[i].IsType || !args[i].IsType {
-				if p.Args[i].IsType == args[i].IsType && p.Args[i].Val != args[i].Val {
+				if !bindNestedValue(p.Args[i], args[i], out) {
 					return false
 				}
 				continue
@@ -723,3 +729,31 @@ func primaryOf(rec *types.Record) *types.Record {
 
 // primaryRecords maps specialization records to their primary template record.
 var primaryRecords = map[*types.Record]*types.Record{}
+
+// bindNestedValue matches one argument of a nested template-id where
+// either side is a value.
+//
+// A non-type parameter in an argument position is carried as a type: the
+// `_Np` of `__simd_vector<_Tp, _Np>` is a TemplateParam sitting in the
+// type-shaped slot, and the argument against it is an ordinary value. The
+// top-level matcher binds one; the nested one skipped it, so the
+// parameter came out unbound and every such partial specialization was
+// passed over for the primary.
+func bindNestedValue(pat, arg types.TemplateArg, out Binding) bool {
+	if pat.IsType && !arg.IsType {
+		tp, isParam := pat.Type.(*types.TemplateParam)
+		if !isParam || tp.IsType || tp.Name == "" {
+			return false
+		}
+		if prev, seen := out[tp.Name]; seen {
+			vb, isVal := prev.(*valueBound)
+			return isVal && vb.Val == arg.Val
+		}
+		out[tp.Name] = &valueBound{Type: arg.ValType, Val: arg.Val}
+		return true
+	}
+	if pat.IsType != arg.IsType {
+		return false
+	}
+	return pat.Val == arg.Val
+}

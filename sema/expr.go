@@ -1338,7 +1338,14 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 				return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
 			}
 			if li := a.genericLambda(resolved); li != nil {
-				if !callArgsDependent(args) {
+				// Not inside a template as written: the body of a lambda
+				// there belongs to whatever instantiates the template,
+				// and a call with no arguments has nothing dependent to
+				// say so. libc++'s `__simd_vector_size_v` is a variable
+				// template whose primary is an immediately-invoked lambda
+				// that static_asserts -- instantiating it where it stands
+				// is instantiating the thing that must never be.
+				if !callArgsDependent(args) && !a.dependentContext() {
 					inst := a.instantiateLambdaCall(li, args, c.Pos())
 					if inst == nil {
 						return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
