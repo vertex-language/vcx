@@ -26,6 +26,18 @@ import (
 	"github.com/vertex-language/vcx/types"
 )
 
+// A tryFrame is one open try: the clauses its handlers answer with, the
+// block that chooses among them, and the scope depth the try started at,
+// which says what a pad of this try has to destroy before dispatching.
+type tryFrame struct {
+	clauses  []ir.PadClause
+	dispatch *ir.Block
+	base     *ir.Block
+	exn      ir.Ptr
+	sel      ir.I32
+	depth    int
+}
+
 // The runtime the Itanium ABI defines for C++ exceptions.
 func (u *unit) cxaAllocate() ir.Callee {
 	return u.rtImport("__cxa_allocate_exception", ir.NewSig().Param(u.regType(u.sizeT())).Ret(ir.TypePtr))
@@ -122,13 +134,60 @@ func (fl *fn) unwindPad() *ir.Block {
 		// unwinding is std::terminate's business, not another pad's.
 		return nil
 	}
-	if fl.ehPad != nil {
-		return fl.ehPad
+	if n := len(fl.tries); n > 0 {
+		return fl.tryPad(fl.tries[n-1])
 	}
 	if !fl.hasLiveObjects() {
 		return nil
 	}
 	return fl.cleanupPad()
+}
+
+// tryPad is where a call inside a try unwinds to.
+//
+// The try's own pad where nothing of the try's is live. Where something
+// is -- a local declared before the call, a temporary of the expression
+// -- the pad has to destroy it before the handler runs, and what is live
+// differs from call to call, so that one is built here and shares the
+// try's handlers through its dispatch block.
+func (fl *fn) tryPad(t *tryFrame) *ir.Block {
+	if !fl.hasLiveObjectsSince(t.depth) {
+		return t.base
+	}
+	fl.needsEH()
+	pad := fl.f.Pad(fmt.Sprintf("catch_cleanup_%d", fl.nextPad()), t.clauses...)
+	if pad == nil {
+		return t.base
+	}
+	saved, savedIn := fl.blk, fl.inEH
+	fl.blk, fl.inEH = pad, true
+	fl.destroyLiveSince(t.depth)
+	fl.blk.Br(t.dispatch.To(pad.Exn(), pad.Sel()))
+	fl.blk, fl.inEH = saved, savedIn
+	return pad
+}
+
+// hasLiveObjectsSince reports whether anything with a destructor became
+// live at or after a scope depth.
+func (fl *fn) hasLiveObjectsSince(depth int) bool {
+	if len(fl.temps) > 0 {
+		return true
+	}
+	for i := depth; i < len(fl.scopes); i++ {
+		if len(fl.scopes[i].objs) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// destroyLiveSince runs the destructors of everything live at or after a
+// scope depth, latest first.
+func (fl *fn) destroyLiveSince(depth int) {
+	for i := len(fl.temps) - 1; i >= 0; i-- {
+		fl.destroy(fl.temps[i].addr, fl.temps[i].rec)
+	}
+	fl.destroyFrom(depth)
 }
 
 // hasLiveObjects reports whether anything with a destructor is live.
@@ -259,42 +318,70 @@ func (fl *fn) tryStmt(s *ast.TryStmt) {
 	if s.Body == nil {
 		return
 	}
-	fl.needsEH()
-	clauses := make([]ir.PadClause, 0, len(s.Handlers))
-	for _, h := range s.Handlers {
-		clauses = append(clauses, ir.Catch(fl.handlerTypeInfo(h)))
-	}
-	if len(clauses) == 0 {
+	t, done := fl.beginTry(s.Handlers)
+	if t == nil {
 		fl.stmt(s.Body)
 		return
 	}
-	pad := fl.f.Pad(fmt.Sprintf("catch_%d", fl.nextPad()), clauses...)
-	if pad == nil {
-		return
-	}
-	done := fl.block("try_done")
-
-	// The body. Its own destructors run on the normal path as ever; on the
-	// unwinding path the pad is the one that was named.
-	savedPad := fl.ehPad
-	fl.ehPad = pad
 	fl.pushScope()
 	fl.stmt(s.Body)
 	fl.popScope()
-	fl.ehPad = savedPad
+	fl.endTry(s.Handlers, t, done, false)
+}
+
+// beginTry opens a try: the pad its handlers answer from, and the block
+// the normal path and every finished handler go to. Calls emitted after
+// it unwind to the pad until endTry.
+//
+// Nil where there is nothing to answer with, and then the body is
+// ordinary code.
+func (fl *fn) beginTry(handlers []*ast.CatchClause) (*tryFrame, *ir.Block) {
+	if len(handlers) == 0 {
+		return nil, nil
+	}
+	fl.needsEH()
+	clauses := make([]ir.PadClause, 0, len(handlers))
+	for _, h := range handlers {
+		clauses = append(clauses, ir.Catch(fl.handlerTypeInfo(h)))
+	}
+	pad := fl.f.Pad(fmt.Sprintf("catch_%d", fl.nextPad()), clauses...)
+	if pad == nil {
+		return nil, nil
+	}
+	// The handlers are chosen in one place, which every pad of this try
+	// reaches with the exception and the selector it was entered with.
+	dispatch := fl.block("catch_dispatch")
+	exn := dispatch.ParamPtr("exn")
+	sel := dispatch.ParamI32("sel")
+	pad.Br(dispatch.To(pad.Exn(), pad.Sel()))
+
+	t := &tryFrame{clauses: clauses, dispatch: dispatch, base: pad, exn: exn, sel: sel, depth: len(fl.scopes)}
+	done := fl.block("try_done")
+	fl.tries = append(fl.tries, t)
+	return t, done
+}
+
+// endTry closes a try: the normal path joins done, and the pad dispatches
+// on the selector -- the position of the clause that matched, counting
+// from one -- to the handler that answers.
+//
+// rethrow is a constructor's or destructor's function-try-block, whose
+// handler does not swallow what it caught: [except.handle]/15 rethrows
+// when one completes, because the object was never built.
+func (fl *fn) endTry(handlers []*ast.CatchClause, t *tryFrame, done *ir.Block, rethrow bool) {
+	fl.tries = fl.tries[:len(fl.tries)-1]
 	if fl.blk != nil {
 		fl.blk.Br(done.To())
 	}
 
-	// The pad: the selector says which clause matched, counting from one.
-	fl.blk = pad
-	exn, sel := pad.Exn(), pad.Sel()
-	for i, h := range s.Handlers {
+	fl.blk = t.dispatch
+	exn, sel := t.exn, t.sel
+	for i, h := range handlers {
 		hit := fl.block(fmt.Sprintf("catch_hit_%d", fl.nextPad()))
 		next := fl.block(fmt.Sprintf("catch_next_%d", fl.nextPad()))
 		fl.blk.BrIf(fl.blk.I32.Eq(sel, fl.blk.I32.Const(int64(i+1))), hit.To(), next.To())
 		fl.blk = hit
-		fl.handler(h, exn, done)
+		fl.handler(h, exn, done, rethrow)
 		fl.blk = next
 	}
 	// Nothing matched: keep unwinding.
@@ -320,7 +407,7 @@ func (fl *fn) handlerTypeInfo(h *ast.CatchClause) ir.Symbol {
 // handler runs one catch clause: the runtime hands over the object, the
 // parameter is bound to it, the body runs, and the catch ends however the
 // body leaves.
-func (fl *fn) handler(h *ast.CatchClause, exn ir.Ptr, done *ir.Block) {
+func (fl *fn) handler(h *ast.CatchClause, exn ir.Ptr, done *ir.Block, rethrow bool) {
 	caught, isPtr := fl.emitCall1(fl.u.cxaBeginCatch(), exn).(ir.Ptr)
 	if !isPtr {
 		fl.u.errorf(h.Pos(), "lowering: __cxa_begin_catch did not answer with an address")
@@ -335,6 +422,13 @@ func (fl *fn) handler(h *ast.CatchClause, exn ir.Ptr, done *ir.Block) {
 	}
 	fl.popScope()
 	if fl.blk != nil {
+		if rethrow {
+			// A constructor's handler that completes rethrows: the
+			// object was never built, so there is nothing to return to.
+			fl.emitCall(fl.u.cxaRethrow())
+			fl.unreachable(h.Pos())
+			return
+		}
 		fl.emitCall(fl.u.cxaEndCatch())
 		fl.blk.Br(done.To())
 	}

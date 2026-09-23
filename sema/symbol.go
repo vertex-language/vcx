@@ -117,6 +117,13 @@ type FuncSymbol struct {
 	Params      []*VarSymbol
 	Defaults    []ast.Expr
 	Body        *ast.CompoundStmt
+
+	// TryBody is the function-try-block a definition was written with:
+	// `C(int v) try : m(v) { ... } catch (...) { ... }`. Body is its
+	// compound statement, and the handlers answer for the
+	// mem-initializers as well ([except.pre]/4), so lowering opens the
+	// try before it builds anything.
+	TryBody *ast.TryStmt
 	Inline      bool
 	Constexpr   bool
 	Consteval   bool

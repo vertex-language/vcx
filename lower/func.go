@@ -56,11 +56,13 @@ type fn struct {
 	// path they belong to the object and the destructor ends them.
 	partial []localObj
 
-	// ehPad is the handler a call in this region unwinds to; inEH is set
-	// while a pad's own code is emitted, where a call unwinds nowhere.
+	// tries are the try-blocks open around the code being emitted,
+	// innermost last: a call in this region unwinds to the innermost
+	// one's pad. inEH is set while a pad's own code is emitted, where a
+	// call unwinds nowhere.
 	// ehDeclared records that the function has named its personality, and
 	// npads numbers its pads apart. See eh.go.
-	ehPad      *ir.Block
+	tries      []*tryFrame
 	inEH       bool
 	ehDeclared bool
 	npads      int
@@ -127,6 +129,15 @@ func (u *unit) defineFunc(sym *sema.FuncSymbol, f *ir.Func) {
 		}
 	}
 
+	// A function-try-block's handlers answer for the mem-initializers too
+	// ([except.pre]/4), so the try opens before anything is built.
+	isCtor := sym.InClass != nil && sym.SymName == sym.InClass.Name
+	var tryFr *tryFrame
+	var tryDone *ir.Block
+	if sym.TryBody != nil {
+		tryFr, tryDone = fl.beginTry(sym.TryBody.Handlers)
+	}
+
 	// Construct bases, install vptr, then run member initializers -- or,
 	// for a delegating constructor, let the constructor it names do all
 	// of that and run only this one's body afterwards.
@@ -153,6 +164,13 @@ func (u *unit) defineFunc(sym *sema.FuncSymbol, f *ir.Func) {
 	}
 
 	fl.stmt(sym.Body)
+
+	if tryFr != nil {
+		// A constructor's or destructor's handler rethrows when it
+		// completes: the object was never built, and there is nothing
+		// for the caller to have.
+		fl.endTry(sym.TryBody.Handlers, tryFr, tryDone, isCtor || isDtor)
+	}
 
 	// Destroy members and bases in reverse order after a destructor's body.
 	if isDtor {

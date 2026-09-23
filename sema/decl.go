@@ -511,6 +511,15 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 		}
 
 		if ft, ok := fullType.(*types.Func); ok && declInfo.Friend && a.curRecord != nil && a.curScope.Kind == ClassScope && name != "" {
+			// `friend T sum<>(const Pair<T>&);` names a specialization of
+			// a template that already exists ([temp.friend]/1), not a new
+			// function. Declaring one would put a bodiless
+			// non-template `sum` in the namespace beside the template,
+			// and a call would resolve to it and reach the linker.
+			if namesTemplateId(init.Decl) {
+				a.curRecord.FriendFuncs = append(a.curRecord.FriendFuncs, name)
+				continue
+			}
 			// Friend function declared in enclosing namespace.
 			a.curRecord.FriendFuncs = append(a.curRecord.FriendFuncs, name)
 			into := a.curScope
@@ -1392,9 +1401,7 @@ func (a *Analyzer) checkFuncDecl(d *ast.FuncDecl) {
 	}
 
 	if d.Body != nil {
-		if comp, ok := d.Body.(*ast.CompoundStmt); ok {
-			fnSym.Body = comp
-		}
+		a.noteFuncBody(fnSym, d.Body)
 	}
 
 	if name != "" {
@@ -1438,9 +1445,7 @@ func (a *Analyzer) checkFunctionBody(fnSym *FuncSymbol, d *ast.FuncDecl) {
 	if d == nil || d.Body == nil {
 		return
 	}
-	if comp, ok := d.Body.(*ast.CompoundStmt); ok {
-		fnSym.Body = comp
-	}
+	a.noteFuncBody(fnSym, d.Body)
 	if fnSym.Template == nil && a.curTemplateParams == nil {
 		a.functions = append(a.functions, fnSym)
 	}
@@ -1476,9 +1481,7 @@ func (a *Analyzer) checkMethodBody(d *ast.FuncDecl) {
 		return
 	}
 
-	if comp, ok := d.Body.(*ast.CompoundStmt); ok {
-		fnSym.Body = comp
-	}
+	a.noteFuncBody(fnSym, d.Body)
 	fnSym.Decl = d
 	// Functions defined inside their class are inline.
 	fnSym.Inline = true
@@ -3052,6 +3055,35 @@ func hasNoUniqueAddress(groups []*ast.AttrGroup, u ast.Unit) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// noteFuncBody records a definition's body on its symbol, unwrapping a
+// function-try-block: the compound statement is the body, and the
+// handlers are kept beside it for lowering.
+func (a *Analyzer) noteFuncBody(fnSym *FuncSymbol, body ast.Stmt) {
+	switch b := body.(type) {
+	case *ast.CompoundStmt:
+		fnSym.Body = b
+	case *ast.TryStmt:
+		fnSym.Body, fnSym.TryBody = b.Body, b
+	}
+}
+
+// namesTemplateId reports whether a declarator's name is written with a
+// template-argument-list: `sum<>` and `sum<int>` both are, and both name
+// a specialization of a template declared elsewhere.
+func namesTemplateId(d ast.Declarator) bool {
+	if d == nil {
+		return false
+	}
+	switch n := d.DeclName().(type) {
+	case *ast.TemplateName:
+		return true
+	case *ast.QualifiedName:
+		_, isTemplate := n.Name.(*ast.TemplateName)
+		return isTemplate
 	}
 	return false
 }

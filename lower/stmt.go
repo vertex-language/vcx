@@ -812,6 +812,17 @@ func (fl *fn) ifStmt(s *ast.IfStmt) {
 		fl.branch(s, *c)
 		return
 	}
+	if s.Consteval.IsValid() {
+		// [stmt.if]/4: `if consteval` is true only during a constant
+		// evaluation. This is the generated code, so it is false, and
+		// only the else-branch is here -- `if !consteval` is the same
+		// statement with the branches the other way round, which the
+		// parser has already put right.
+		if s.Else != nil {
+			fl.stmt(s.Else)
+		}
+		return
+	}
 	cond, ok := s.Cond.(ast.Expr)
 	if !ok {
 		fl.u.errorf(s.Pos(), "lowering does not handle this declaration as a condition yet")
