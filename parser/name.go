@@ -305,16 +305,33 @@ func (p *parser) isTemplateArgsAt(n int) bool {
 				return false
 			}
 		}
-		if k == token.LSS {
+		// Angles inside parentheses or brackets are the argument's own:
+		// the `>>` of `X<(a >> b)>` is a shift, not two closers.
+		if nest > 0 {
+			continue
+		}
+		switch k {
+		case token.LSS:
 			depth++
-		} else if k == token.GTR {
+		case token.GTR:
 			depth--
 			if depth == 0 {
 				return true
 			}
-		} else if k == token.SHR {
-			// >> treated as two '>'
+		case token.SHR:
+			// `>>` closes two lists, and this scan knows about the ones
+			// it opened itself. Taking the count below zero means the
+			// second `>` belongs to a list around this one -- the inner
+			// `__type_pack_element<_Idx, _Types...>>` of a nested
+			// spelling -- which is only possible if there is one.
+			//
+			// Where there is not, the `>>` is a shift and the `<` was a
+			// comparison: `__w0_ < _EDt - 1 ? T(~0) >> (...)` is how
+			// <random> stopped parsing.
 			depth -= 2
+			if depth < 0 && p.inTemplateArgs == 0 {
+				return false
+			}
 			if depth <= 0 {
 				return true
 			}

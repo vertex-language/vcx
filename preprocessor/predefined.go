@@ -39,6 +39,14 @@ func (p *Preprocessor) installPredefines() {
 	p.builtinMacro("__TIME__", BuiltinTime)
 	p.builtinMacro("__COUNTER__", BuiltinCounter)
 
+	// __extension__ is GCC's and clang's no-op prefix: it says the next
+	// declaration, statement or expression may use an extension without a
+	// pedantic diagnostic, and it means nothing else. It can stand almost
+	// anywhere, so an empty macro is what makes it disappear everywhere at
+	// once. libc++ writes `__extension__ using __calc_type = unsigned
+	// __int128;` and <random> stopped there.
+	p.emptyMacro("__extension__")
+
 	p.valueMacro("__cplusplus", cplusplus(p.cfg.Std))
 	if p.cfg.Hosted {
 		p.valueMacro("__STDC_HOSTED__", "1")
@@ -74,6 +82,11 @@ func (p *Preprocessor) builtinMacro(name string, b Builtin) {
 // valueMacro enters an ordinary object-like macro with a fixed spelling. It
 // goes through the same arena generated tokens use, so its tokens have a
 // position space like every other token in the tree.
+// emptyMacro defines a macro that expands to nothing.
+func (p *Preprocessor) emptyMacro(name string) {
+	p.macros.Define(&Macro{Name: name, ObjLike: true})
+}
+
 func (p *Preprocessor) valueMacro(name, spelling string) {
 	t := p.gen.Mint(token.INT_LIT, spelling)
 	p.macros.Define(&Macro{Name: name, ObjLike: true, Body: []Token{t}})
