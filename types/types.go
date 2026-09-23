@@ -33,6 +33,7 @@ const (
 	ULongLong
 	Int128
 	UInt128
+	Float16
 	Float
 	Double
 	LongDouble
@@ -659,6 +660,8 @@ func (b *Basic) String() string {
 		return "__int128"
 	case UInt128:
 		return "unsigned __int128"
+	case Float16:
+		return "_Float16"
 	case Float:
 		return "float"
 	case Double:

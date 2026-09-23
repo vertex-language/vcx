@@ -336,7 +336,12 @@ func NewAnalyzer(u ast.Unit, model types.Model) *Analyzer {
 		return a.decltypeOf(e)
 	}
 	global.Instantiate = func(tmpl *RecordSymbol, args []types.TemplateArg, at ast.Tok) types.Type {
-		if args == nil || a.dependentContext() {
+		// The arguments decide, not where the spelling sits: the caller
+		// asks only for concrete ones. `R<D>::value` inside a member
+		// template of a class being instantiated has a concrete D, and
+		// R has to be instantiated to have a value -- the member
+		// template's own parameters being open says nothing about R.
+		if args == nil {
 			return nil
 		}
 		inst := a.instantiateClass(tmpl, args, at)
@@ -346,7 +351,14 @@ func NewAnalyzer(u ast.Unit, model types.Model) *Analyzer {
 		return inst.Record
 	}
 	global.AliasInstantiate = func(alias *TypeSymbol, args []types.TemplateArg, at ast.Tok) types.Type {
-		if args == nil || a.dependentContext() {
+		// The arguments decide, not where the spelling sits: the caller
+		// asks only for concrete ones. A base written with an alias --
+		// `struct is_reference : _BoolConstant<__is_reference(T)> {}` --
+		// is resolved once and kept on the record, and a class whose
+		// base stayed a spelling has no members to inherit. That happens
+		// wherever the class is first instantiated, which may be inside
+		// a template that has parameters of its own still open.
+		if args == nil {
 			return nil
 		}
 		return a.instantiateAlias(alias, args, at)
@@ -972,6 +984,10 @@ func (a *Analyzer) packsInNode(e ast.Node) []boundPack {
 func (a *Analyzer) declareBuiltinTypes() {
 	g := a.globalScope
 	g.Insert(&TypeSymbol{SymName: "__builtin_va_list", SymType: a.model.BuiltinVaList(), SymScope: g})
+	// [ISO/IEC TS 18661-3]'s binary16, which clang predeclares and the
+	// SDK's math.h uses without declaring, for the half-precision
+	// functions it exports.
+	g.Insert(&TypeSymbol{SymName: "_Float16", SymType: types.Typ(types.Float16), SymScope: g})
 	if a.model.SizePtr == 8 {
 		g.Insert(&TypeSymbol{SymName: "__int128_t", SymType: types.Typ(types.Int128), SymScope: g})
 		g.Insert(&TypeSymbol{SymName: "__uint128_t", SymType: types.Typ(types.UInt128), SymScope: g})

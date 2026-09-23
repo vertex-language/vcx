@@ -29,7 +29,7 @@ func IsSigned(t Type) bool {
 		return true
 	}
 	switch u.Kind() {
-	case SChar, Short, Int, Long, LongLong, Int128, Float, Double, LongDouble:
+	case SChar, Short, Int, Long, LongLong, Int128, Float16, Float, Double, LongDouble:
 		return true
 	}
 	return false
@@ -60,7 +60,7 @@ func IsFloat(t Type) bool {
 		return false
 	}
 	switch Unqualify(t).Kind() {
-	case Float, Double, LongDouble:
+	case Float16, Float, Double, LongDouble:
 		return true
 	}
 	return false

@@ -435,6 +435,9 @@ func (m Model) basicSize(k Kind) (int64, bool) {
 		return m.SizeLongLong, true
 	case Int128, UInt128:
 		return 16, true
+	case Float16:
+		// [ISO/IEC TS 18661-3] binary16: two bytes, aligned as two.
+		return 2, true
 	case Float:
 		return m.SizeFloat, true
 	case Double:
