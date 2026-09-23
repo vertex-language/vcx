@@ -911,7 +911,12 @@ func (p *parser) isBracedFunctionalCast() bool {
 			for {
 				switch p.peekAt(i) {
 				case token.LSS:
-					depth++
+					// Angles inside a parenthesized argument are its own,
+					// as its closing ones are: counting only one side
+					// left the depth never reaching zero.
+					if parens == 0 {
+						depth++
+					}
 				case token.GTR:
 					if parens == 0 {
 						depth--
@@ -929,8 +934,24 @@ func (p *parser) isBracedFunctionalCast() bool {
 						return false
 					}
 					parens--
-				case token.EOF, token.SEMI, token.LBRACE, token.RBRACE,
-					token.LBRACK, token.RBRACK:
+				case token.LBRACK:
+					// A subscript, or the brackets of a lambda's capture
+					// list, inside an argument: its own, like a paren's.
+					parens++
+				case token.RBRACK:
+					if parens == 0 {
+						return false
+					}
+					parens--
+				case token.LBRACE, token.RBRACE:
+					// A brace inside a parenthesized argument is part of
+					// it -- `Seq<((void)__type_identity<Vs>{}, Ip)...>{}`
+					// -- and one outside means this was never an argument
+					// list: `a < b` and then a block.
+					if parens == 0 {
+						return false
+					}
+				case token.EOF, token.SEMI:
 					// Not a template-argument-list: `a < b` and stop.
 					return false
 				}

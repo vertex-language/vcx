@@ -262,11 +262,18 @@ func (p *parser) parseDecltypeSpec() *ast.DecltypeSpec {
 		Auto:    ast.NoTok,
 	}
 
+	// [temp.names]/3: a `>` ends a template-argument-list only where it is
+	// not nested. `W<decltype(a > b)>` has one inside the parentheses, and
+	// it is the operator -- libc++ compares two declvals exactly this way
+	// to decide whether optional<T> has an operator>.
+	prevTmpl := p.inTemplateArgs
+	p.inTemplateArgs = 0
 	if p.peek() == token.AUTO {
 		dt.Auto = p.next()
 	} else {
 		dt.X = p.parseExpr()
 	}
+	p.inTemplateArgs = prevTmpl
 
 	dt.Rparen = p.expect(token.RPAREN)
 	dt.Span.Hi = dt.Rparen + 1

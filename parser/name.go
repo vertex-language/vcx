@@ -280,10 +280,30 @@ func (p *parser) isTemplateArgsAt(n int) bool {
 		return false
 	}
 	depth := 1
+	// Braces inside parentheses or brackets are part of an argument, not
+	// the end of the guess: `Seq<((void)__type_identity<Vs>{}, Ip)...>`
+	// is a template-argument-list with a braced initializer in it, which
+	// is how libc++ builds a variant's dispatch table. A brace outside
+	// them means this was never an argument list -- `a < b` and then a
+	// block -- and so does a `)` that closes more than was opened here.
+	nest := 0
 	for i := n + 1; ; i++ {
 		k := p.peekAt(i)
-		if k == token.EOF || k == token.SEMI || k == token.LBRACE || k == token.RBRACE {
+		if k == token.EOF || k == token.SEMI {
 			return false
+		}
+		switch k {
+		case token.LPAREN, token.LBRACK:
+			nest++
+		case token.RPAREN, token.RBRACK:
+			nest--
+			if nest < 0 {
+				return false
+			}
+		case token.LBRACE, token.RBRACE:
+			if nest == 0 {
+				return false
+			}
 		}
 		if k == token.LSS {
 			depth++
