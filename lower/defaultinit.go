@@ -69,12 +69,12 @@ func (fl *fn) defaultConstructIn(obj ir.Ptr, rec *types.Record, at ast.Tok, comp
 		}
 	}
 	fl.installVPtr(obj, rec)
-	return fl.defaultMembers(obj, rec, nil, at)
+	return fl.defaultMembers(obj, rec, nil, at, false)
 }
 
 // defaultMembers initializes members of rec at obj not in the skip set
 // from default member initializers or via default-initialization for class types.
-func (fl *fn) defaultMembers(obj ir.Ptr, rec *types.Record, skip map[string]bool, at ast.Tok) bool {
+func (fl *fn) defaultMembers(obj ir.Ptr, rec *types.Record, skip map[string]bool, at ast.Tok, partial bool) bool {
 	fieldOffs := make([]int64, len(rec.Fields))
 	fl.u.model.LayoutWithBases(rec, fieldOffs, make([]int64, len(rec.Bases)))
 	inits := fl.u.res.Info.MemberInits[rec]
@@ -90,6 +90,9 @@ func (fl *fn) defaultMembers(obj ir.Ptr, rec *types.Record, skip map[string]bool
 			if !fl.memberDefault(dst, f.Type, decl) {
 				return false
 			}
+			if partial {
+				fl.trackPartial(dst, f.Type)
+			}
 			continue
 		}
 		if fl.blk == nil {
@@ -104,6 +107,9 @@ func (fl *fn) defaultMembers(obj ir.Ptr, rec *types.Record, skip map[string]bool
 		if fr := classOf(f.Type); fr != nil && fl.u.needsConstruction(fr) {
 			if !fl.defaultConstruct(dst, fr, at) {
 				return false
+			}
+			if partial {
+				fl.trackPartial(dst, f.Type)
 			}
 		}
 	}
@@ -177,5 +183,5 @@ func (fl *fn) memberDefaultsAfter(sym *sema.FuncSymbol) {
 			named[sema.NameString(mi.Name, fl.u.unit)] = true
 		}
 	}
-	fl.defaultMembers(fl.this, sym.InClass, named, sym.SymPos)
+	fl.defaultMembers(fl.this, sym.InClass, named, sym.SymPos, true)
 }

@@ -192,12 +192,12 @@ func (fl *fn) copyObject(dst, src ir.Ptr, rec *types.Record, at ir.Value) bool {
 			fl.u.errorf(fl.sym.SymPos, "lowering has no symbol for the copy constructor of %s", rec.Name)
 			return false
 		}
-		fl.blk.Call(target, dst, src)
+		fl.emitCall(target, dst, src)
 		return true
 	}
 	if fl.u.memberwise(rec, true) {
 		// Call implicit copy constructor for memberwise copy.
-		fl.blk.Call(fl.u.implicitCopy(rec, true), dst, src)
+		fl.emitCall(fl.u.implicitCopy(rec, true), dst, src)
 		return true
 	}
 	return fl.copyObjectBytes(dst, src, rec)

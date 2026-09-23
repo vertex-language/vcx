@@ -30,7 +30,7 @@ func (fl *fn) newExpr(e *ast.NewExpr) ir.Value {
 	}
 
 	size, _ := fl.u.sizeAlign(elem)
-	var res ir.Results
+	var res []ir.Value
 	if alloc := fl.u.res.Info.Allocs[e]; alloc != nil {
 		// Placement new: invoke chosen allocation function with size and placement arguments.
 		target := fl.u.callee(alloc)
@@ -57,7 +57,7 @@ func (fl *fn) newExpr(e *ast.NewExpr) ir.Value {
 			}
 			args = append(args, fl.convert(v, fl.typeOf(p), want))
 		}
-		res = fl.blk.Call(target, args...)
+		res = fl.emitCall(target, args...)
 	} else {
 		if len(e.Placement) > 0 {
 			fl.u.errorf(e.Pos(), "lowering has no allocation function for this placement new")
@@ -71,17 +71,17 @@ func (fl *fn) newExpr(e *ast.NewExpr) ir.Value {
 			if target == nil {
 				return nil
 			}
-			res = fl.blk.Call(target, fl.convert(fl.blk.I64.Const(size), fl.u.sizeT(), op.FuncType.Params[0].Type))
+			res = fl.emitCall(target, fl.convert(fl.blk.I64.Const(size), fl.u.sizeT(), op.FuncType.Params[0].Type))
 		case fl.u.overAlignment(elem) != 0:
-			res = fl.blk.Call(fl.u.operatorNewAligned(), fl.blk.I64.Const(size), fl.blk.I64.Const(fl.u.overAlignment(elem)))
+			res = fl.emitCall(fl.u.operatorNewAligned(), fl.blk.I64.Const(size), fl.blk.I64.Const(fl.u.overAlignment(elem)))
 		default:
-			res = fl.blk.Call(fl.u.operatorNew(), fl.blk.I64.Const(size))
+			res = fl.emitCall(fl.u.operatorNew(), fl.blk.I64.Const(size))
 		}
 	}
-	if res.Len() == 0 {
+	if len(res) == 0 {
 		return nil
 	}
-	obj, isP := res.Value(0).(ir.Ptr)
+	obj, isP := res[0].(ir.Ptr)
 	if !isP {
 		return nil
 	}
@@ -391,7 +391,7 @@ func (fl *fn) deleteExpr(e *ast.DeleteExpr) {
 			return
 		}
 		if d := fl.u.callee(dtor); d != nil {
-			fl.blk.Call(d, p)
+			fl.emitCall(d, p)
 		}
 	}
 	fl.deallocate(p, fl.typeOf(e.X), false)
@@ -418,13 +418,13 @@ func (fl *fn) deallocate(p ir.Ptr, ptrType types.Type, array bool) {
 		if op := fl.u.classAllocator(rec, name, 2); op != nil && !array {
 			if target := fl.u.callee(op); target != nil {
 				size, _ := fl.u.sizeAlign(elem)
-				fl.blk.Call(target, p, fl.convert(fl.blk.I64.Const(size), fl.u.sizeT(), op.FuncType.Params[1].Type))
+				fl.emitCall(target, p, fl.convert(fl.blk.I64.Const(size), fl.u.sizeT(), op.FuncType.Params[1].Type))
 				return
 			}
 		}
 		if op := fl.u.classAllocator(rec, name, 1); op != nil {
 			if target := fl.u.callee(op); target != nil {
-				fl.blk.Call(target, p)
+				fl.emitCall(target, p)
 				return
 			}
 		}
@@ -435,13 +435,13 @@ func (fl *fn) deallocate(p ir.Ptr, ptrType types.Type, array bool) {
 	}
 	switch {
 	case array && align != 0:
-		fl.blk.Call(fl.u.operatorDeleteArrayAligned(), p, fl.blk.I64.Const(align))
+		fl.emitCall(fl.u.operatorDeleteArrayAligned(), p, fl.blk.I64.Const(align))
 	case array:
-		fl.blk.Call(fl.u.operatorDeleteArray(), p)
+		fl.emitCall(fl.u.operatorDeleteArray(), p)
 	case align != 0:
-		fl.blk.Call(fl.u.operatorDeleteAligned(), p, fl.blk.I64.Const(align))
+		fl.emitCall(fl.u.operatorDeleteAligned(), p, fl.blk.I64.Const(align))
 	default:
-		fl.blk.Call(fl.u.operatorDelete(), p)
+		fl.emitCall(fl.u.operatorDelete(), p)
 	}
 }
 
@@ -508,7 +508,7 @@ func (fl *fn) deleteArray(e *ast.DeleteExpr) {
 		if fl.u.model.ABI.IsItanium() {
 			fl.deleteArrayItanium(p, rec, fl.typeOf(e.X))
 		} else if d := fl.u.deletingDtor(rec); d != nil {
-			fl.blk.Call(d, p, fl.blk.I32.Const(3))
+			fl.emitCall(d, p, fl.blk.I32.Const(3))
 		}
 	} else {
 		fl.deallocate(p, fl.typeOf(e.X), true)

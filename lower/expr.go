@@ -158,6 +158,9 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 		}
 		return fl.this
 
+	case *ast.ThrowExpr:
+		return fl.throwExpr(e)
+
 	default:
 		fl.u.errorf(e.Pos(), "lowering does not handle %T yet", e)
 		return nil
@@ -1053,14 +1056,14 @@ func (fl *fn) finishCall(e *ast.CallExpr, callee *sema.FuncSymbol, target ir.Cal
 		return v
 	}
 
-	res := fl.blk.Call(target, args...)
+	res := fl.emitCall(target, args...)
 	if retRec != nil {
 		return result
 	}
-	if res.Len() == 0 {
+	if len(res) == 0 {
 		return nil
 	}
-	return res.Value(0)
+	return res[0]
 }
 
 // indirectCallRaw lowers a call through a function pointer or function value.
@@ -1276,18 +1279,18 @@ func (fl *fn) arrowBase(e *ast.MemberExpr) (ir.Ptr, types.Type, bool) {
 			tmp := fl.alloc(rr, "")
 			fl.temporary(tmp, rr)
 			if !fl.u.plainForReturn(rr) && fl.u.model.ABI.ResultAfterThis() {
-				fl.blk.Call(target, obj, tmp)
+				fl.emitCall(target, obj, tmp)
 			} else {
-				fl.blk.Call(target, tmp, obj)
+				fl.emitCall(target, tmp, obj)
 			}
 			obj = tmp
 			continue
 		}
-		res := fl.blk.Call(target, obj)
-		if res.Len() == 0 {
+		res := fl.emitCall(target, obj)
+		if len(res) == 0 {
 			return ir.Ptr{}, nil, false
 		}
-		p, isPtr := res.Value(0).(ir.Ptr)
+		p, isPtr := res[0].(ir.Ptr)
 		if !isPtr {
 			fl.u.errorf(e.Pos(), "lowering: operator-> did not return a pointer")
 			return ir.Ptr{}, nil, false
@@ -1376,11 +1379,11 @@ func (fl *fn) userLiteral(e *ast.BasicLit, fn *sema.FuncSymbol) ir.Value {
 		}
 		v = fl.blk.I64.Const(n)
 	}
-	res := fl.blk.Call(target, fl.convert(v, from, fn.FuncType.Params[0].Type))
-	if res.Len() == 0 {
+	res := fl.emitCall(target, fl.convert(v, from, fn.FuncType.Params[0].Type))
+	if len(res) == 0 {
 		return nil
 	}
-	return res.Value(0)
+	return res[0]
 }
 
 // userStringLiteral calls the literal operator a string's ud-suffix
@@ -1401,11 +1404,11 @@ func (fl *fn) userStringLiteral(e *ast.StringLit, fn *sema.FuncSymbol) ir.Value 
 		return nil
 	}
 	n := fl.convert(fl.blk.I64.Const(int64(len(s.Units))), types.Typ(types.LongLong), fn.FuncType.Params[1].Type)
-	res := fl.blk.Call(target, p, n)
-	if res.Len() == 0 {
+	res := fl.emitCall(target, p, n)
+	if len(res) == 0 {
 		return nil
 	}
-	return res.Value(0)
+	return res[0]
 }
 
 // convertedScalar lowers user-defined conversion functions or lambda conversion

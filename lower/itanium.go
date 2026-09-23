@@ -530,7 +530,7 @@ func (fl *fn) dynamicCastBody(src ir.Ptr, srcClass, dstClass *types.Record, toVo
 	ok := fl.block("dyncast_ok")
 	fl.blk.BrIf(fl.blk.Ptr.Eq(out, fl.blk.Ptr.Const()), bad.To(), ok.To())
 	fl.blk = bad
-	fl.blk.Call(fl.u.badCastFn())
+	fl.emitCall(fl.u.badCastFn())
 	fl.blk.Br(ok.To())
 	fl.blk = ok
 	return out

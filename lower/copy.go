@@ -226,11 +226,11 @@ func (fl *fn) assignObject(dst, src ir.Ptr, rec *types.Record, at ast.Tok) bool 
 			}
 			arg = tmp
 		}
-		fl.blk.Call(target, dst, arg)
+		fl.emitCall(target, dst, arg)
 		return true
 	}
 	if fl.u.memberwise(rec, false) {
-		fl.blk.Call(fl.u.implicitCopy(rec, false), dst, src)
+		fl.emitCall(fl.u.implicitCopy(rec, false), dst, src)
 		return true
 	}
 	return fl.copyObjectBytes(dst, src, rec)

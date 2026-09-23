@@ -48,6 +48,16 @@ func (fl *fn) track(addr ir.Ptr, t types.Type) {
 	top.objs = append(top.objs, localObj{addr: addr, rec: rec})
 }
 
+// trackPartial registers a subobject a constructor has just built, so that
+// an exception leaving that constructor destroys it.
+func (fl *fn) trackPartial(addr ir.Ptr, t types.Type) {
+	rec := classOf(t)
+	if rec == nil || fl.u.destructor(rec) == nil {
+		return
+	}
+	fl.partial = append(fl.partial, localObj{addr: addr, rec: rec})
+}
+
 // temporary registers a full-expression temporary for destruction at the
 // end of the full-expression, in reverse order of creation.
 func (fl *fn) temporary(addr ir.Ptr, rec *types.Record) {
@@ -105,7 +115,7 @@ func (fl *fn) destroy(addr ir.Ptr, rec *types.Record) {
 		return
 	}
 	if d := fl.u.destructor(rec); d != nil {
-		fl.blk.Call(d, addr)
+		fl.emitCall(d, addr)
 	}
 }
 

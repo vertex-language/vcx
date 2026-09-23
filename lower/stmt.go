@@ -87,6 +87,9 @@ func (fl *fn) stmt(s ast.Stmt) {
 		}
 		fl.labeledStmt(s)
 
+	case *ast.TryStmt:
+		fl.tryStmt(s)
+
 	default:
 		fl.u.errorf(s.Pos(), "lowering does not handle %T yet", s)
 	}
@@ -158,11 +161,11 @@ func (fl *fn) structuredBinding(sb *ast.StructuredBinding) {
 			fl.u.errorf(sb.Pos(), "lowering: get by value is not handled")
 			return
 		}
-		res := fl.blk.Call(target, arg)
-		if res.Len() == 0 {
+		res := fl.emitCall(target, arg)
+		if len(res) == 0 {
 			return
 		}
-		fl.blk.Ptr.Store(res.Value(0).(ir.Ptr), slot)
+		fl.blk.Ptr.Store(res[0].(ir.Ptr), slot)
 	}
 }
 
@@ -429,7 +432,7 @@ func (fl *fn) constructObject(obj ir.Ptr, rec *types.Record, ctor *sema.FuncSymb
 		fl.defaultConstruct(sub, br, at)
 	}
 	fl.installVPtr(obj, rec)
-	fl.defaultMembers(obj, rec, nil, at)
+	fl.defaultMembers(obj, rec, nil, at, false)
 }
 
 // constructWith calls a constructor on an object with the given arguments,
@@ -471,7 +474,7 @@ func (fl *fn) constructWith(obj ir.Ptr, ctor *sema.FuncSymbol, argExprs []ast.Ex
 		}
 		args = append(args, fl.convert(v, fl.typeOf(a), want))
 	}
-	fl.blk.Call(target, args...)
+	fl.emitCall(target, args...)
 }
 
 // initList writes a braced-init-list into storage. Trailing elements are value-initialized.
@@ -650,7 +653,7 @@ func (fl *fn) constructFromInitList(dst ir.Ptr, rec *types.Record, ctor *sema.Fu
 		fl.u.errorf(list.Pos(), "lowering has no symbol for the constructor of %s", rec.Name)
 		return
 	}
-	fl.blk.Call(target, dst, obj)
+	fl.emitCall(target, dst, obj)
 }
 
 // initListArray lays the elements of a braced list out on the frame and

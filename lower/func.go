@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/vertex-language/ir"
 
@@ -48,6 +49,21 @@ type fn struct {
 
 	// temps are the current full-expression's temporaries (see temporary).
 	temps []localObj
+
+	// partial is what a constructor has built so far: bases and members
+	// whose own constructors have run. [except.ctor]/3 destroys these, and
+	// only these, when the constructor does not complete -- on the normal
+	// path they belong to the object and the destructor ends them.
+	partial []localObj
+
+	// ehPad is the handler a call in this region unwinds to; inEH is set
+	// while a pad's own code is emitted, where a call unwinds nowhere.
+	// ehDeclared records that the function has named its personality, and
+	// npads numbers its pads apart. See eh.go.
+	ehPad      *ir.Block
+	inEH       bool
+	ehDeclared bool
+	npads      int
 
 	// labels are the function's goto targets, by name (see goto.go).
 	labels map[string]*label
@@ -230,8 +246,15 @@ func (fl *fn) delegateCtor(sym *sema.FuncSymbol) bool {
 func (fl *fn) constructBases(sym *sema.FuncSymbol) {
 	named := map[string]*ast.MemInit{}
 	for _, mi := range sym.Decl.Inits {
-		if mi.Name != nil {
-			named[sema.NameString(mi.Name, fl.u.unit)] = mi
+		if mi.Name == nil {
+			continue
+		}
+		name := sema.NameString(mi.Name, fl.u.unit)
+		named[name] = mi
+		// A base may be written qualified -- `std::runtime_error` -- but
+		// a record is known by its own name alone.
+		if i := strings.LastIndex(name, "::"); i >= 0 {
+			named[name[i+2:]] = mi
 		}
 	}
 	baseOffs := make([]int64, len(sym.InClass.Bases))
@@ -242,10 +265,12 @@ func (fl *fn) constructBases(sym *sema.FuncSymbol) {
 			continue
 		}
 		var args []ast.Expr
+		var chosen *sema.FuncSymbol
 		if mi, ok := named[br.Name]; ok {
 			args = mi.Args
+			chosen = fl.u.res.Info.MemInits[mi]
 		}
-		fl.constructBase(br, baseOffs[i], args)
+		fl.constructBase(br, baseOffs[i], args, chosen)
 	}
 }
 
@@ -292,6 +317,7 @@ func (fl *fn) memInits(sym *sema.FuncSymbol) {
 			} else if mi.Braced != nil {
 				fl.initList(dst, t, mi.Braced)
 			}
+			fl.trackPartial(dst, t)
 			continue
 		}
 		if _, isArr := types.Unqualify(t).(*types.Array); isArr && mi.Braced != nil {
@@ -317,16 +343,24 @@ func (fl *fn) memInits(sym *sema.FuncSymbol) {
 // constructor overwriting it a moment later, so nothing is needed here
 // either. A base with a user constructor is called on `this + offset`, with
 // the arguments the mem-initializer supplied or none.
-func (fl *fn) constructBase(base *types.Record, off int64, argExprs []ast.Expr) {
+func (fl *fn) constructBase(base *types.Record, off int64, argExprs []ast.Expr, chosen *sema.FuncSymbol) {
 	obj := fl.this
 	if off != 0 {
 		obj = fl.blk.Ptr.Add(obj, fl.blk.I64.Const(off))
+	}
+	if chosen != nil {
+		// The constructor the analysis chose: its parameters decide how
+		// each argument is passed, which the arity match below cannot.
+		fl.constructWith(obj, chosen, argExprs, fl.sym.SymPos)
+		fl.trackPartial(obj, base)
+		return
 	}
 	target := fl.baseConstructor(base, argExprs)
 	if target == nil {
 		if len(argExprs) == 0 {
 			// No constructor of its own: use the implicit one.
 			fl.defaultConstruct(obj, base, fl.sym.SymPos)
+			fl.trackPartial(obj, base)
 		}
 		return
 	}
@@ -338,7 +372,8 @@ func (fl *fn) constructBase(base *types.Record, off int64, argExprs []ast.Expr) 
 		}
 		args = append(args, v)
 	}
-	fl.blk.Call(target, args...)
+	fl.emitCall(target, args...)
+	fl.trackPartial(obj, base)
 }
 
 // alloc reserves a frame slot in the entry block.

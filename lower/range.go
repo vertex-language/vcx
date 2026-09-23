@@ -68,14 +68,14 @@ func (fl *fn) invoke(fn *sema.FuncSymbol, obj ir.Ptr, args []ir.Value, into ir.P
 		}
 		callArgs = append(callArgs, a)
 	}
-	res := fl.blk.Call(target, callArgs...)
+	res := fl.emitCall(target, callArgs...)
 	if retRec != nil {
 		return result
 	}
-	if res.Len() == 0 {
+	if len(res) == 0 {
 		return nil
 	}
-	return res.Value(0)
+	return res[0]
 }
 
 // rangeForClass lowers a range-for loop over a class: begin() and end() iterators

@@ -276,6 +276,15 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		a.CheckExpr(e.X)
 		return ExprInfo{Type: a.noteTypeId(e.Type), ValCat: PrValue}
 
+	case *ast.ThrowExpr:
+		// [expr.throw]: the operand initializes the exception object, and
+		// the expression itself has type void -- `c ? throw x : y` is a
+		// y, not a common type of the two.
+		if e.X != nil {
+			a.CheckExpr(e.X)
+		}
+		return ExprInfo{Type: types.Typ(types.Void), ValCat: PrValue}
+
 	case *ast.NoexceptExpr:
 		// [expr.unary.noexcept]: whether the operand could throw. The
 		// operand is checked -- which is what resolves the calls the

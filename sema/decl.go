@@ -1882,6 +1882,13 @@ func (a *Analyzer) checkMemInits(d *ast.FuncDecl) {
 		if target == nil {
 			if name == a.curRecord.Name && !dependentArguments(args) {
 				a.checkDelegatingInit(mi, args)
+				continue
+			}
+			// A base: its constructor is chosen by the arguments too,
+			// and lowering needs to be told which one, or it would have
+			// nothing but the argument count to go on.
+			if base := a.baseNamed(name); base != nil && !dependentArguments(args) {
+				a.checkBaseInit(mi, base, args)
 			}
 			continue // a base, or a name the class does not have
 		}
@@ -1912,6 +1919,56 @@ func (a *Analyzer) checkMemInits(d *ast.FuncDecl) {
 		if !chosen.Defaulted && a.info != nil {
 			a.info.MemInits[mi] = chosen
 		}
+	}
+}
+
+// baseNamed is the direct or virtual base a mem-initializer names, by the
+// name it was written with.
+func (a *Analyzer) baseNamed(name string) *types.Record {
+	for _, b := range a.curRecord.Bases {
+		if br := types.AsRecord(types.Unqualify(b.Type)); br != nil && sameBaseName(br.Name, name) {
+			return br
+		}
+	}
+	return nil
+}
+
+// sameBaseName matches a base's name against the name a mem-initializer
+// writes it with, which may be qualified -- `std::runtime_error` names the
+// base a record knows as `runtime_error`.
+func sameBaseName(recName, written string) bool {
+	if recName == written {
+		return true
+	}
+	if i := strings.LastIndex(written, "::"); i >= 0 {
+		return recName == written[i+2:]
+	}
+	return false
+}
+
+// checkBaseInit chooses the base's constructor the arguments select, and
+// records it. A base with no user constructor has an implicit one and
+// nothing is recorded, which is the same thing a member gets.
+func (a *Analyzer) checkBaseInit(mi *ast.MemInit, base *types.Record, args []Argument) {
+	if !hasUserConstructor(base) {
+		return
+	}
+	chosen, err := a.chooseConstructor(base, args)
+	if err != nil {
+		a.errorAt(mi.Pos(), fmt.Sprintf("no matching constructor for %s: %v", base.Name, err))
+		return
+	}
+	if chosen == nil {
+		return
+	}
+	for i := len(mi.Args); i < len(chosen.Defaults); i++ {
+		if def := chosen.Defaults[i]; def != nil {
+			mi.Args = append(mi.Args, def)
+			a.CheckExpr(def)
+		}
+	}
+	if !chosen.Defaulted && a.info != nil {
+		a.info.MemInits[mi] = chosen
 	}
 }
 
