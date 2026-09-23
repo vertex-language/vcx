@@ -267,6 +267,11 @@ type Analyzer struct {
 	// prechecked caches expanded pack arguments (see expandPackArgs).
 	prechecked map[ast.Expr]ExprInfo
 
+	// memInitScopes is the scope a clone of an expanded mem-initializer
+	// is checked in: the one with its pack element bound (see
+	// expandMemInits).
+	memInitScopes map[*ast.MemInit]*Scope
+
 	// lastAnonymousRecord holds the record for an anonymous union/struct.
 	lastAnonymousRecord *types.Record
 

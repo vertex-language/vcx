@@ -1117,6 +1117,21 @@ func stripPackDeclarator(d ast.Declarator) (ast.Declarator, bool) {
 
 // packArgs returns template arguments from a pack expansion.
 func packArgs(pn *ast.PackName, scope *Scope, u ast.Unit) []types.TemplateArg {
+	// A parameter pack not yet bound, of either kind. `__tuple_indices<
+	// _Is...>` in a partial specialization's pattern is deduced against
+	// the indices it is given, and it can only be deduced if it is still
+	// the parameter here rather than a name that stands for nothing.
+	for _, sym := range lookupName(pn.Name, scope, u) {
+		if tp, isParam := sym.(*TemplateParamSymbol); isParam && tp.IsPack {
+			if pack, isPack := tp.SymType.(*types.Pack); isPack {
+				return pack.Elems
+			}
+			return []types.TemplateArg{{IsType: true, Type: &types.TemplateParam{
+				Name: tp.SymName, Index: tp.Index, Depth: tp.Depth, IsType: tp.IsType, IsPack: true,
+			}}}
+		}
+		break
+	}
 	if sym := firstTypeSymbol(lookupName(pn.Name, scope, u)); sym != nil && sym.Type() != nil && isTypeLike(sym) {
 		if pack, isPack := sym.Type().(*types.Pack); isPack {
 			return pack.Elems

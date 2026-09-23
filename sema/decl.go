@@ -1854,77 +1854,222 @@ func (a *Analyzer) checkConceptDecl(d *ast.ConceptDecl) {
 
 // checkMemInits checks a constructor's mem-initializer-list.
 func (a *Analyzer) checkMemInits(d *ast.FuncDecl) {
+	d.Inits = a.expandMemInits(d.Inits)
 	for _, mi := range d.Inits {
-		var args []Argument
-		mi.Args = a.expandPackArgs(mi.Args)
-		items := mi.Args
-		if mi.Braced != nil {
-			for _, item := range mi.Braced.Items {
-				if x, isExpr := item.(ast.Expr); isExpr {
-					items = append(items, x)
-				}
-			}
-		}
-		for _, arg := range items {
-			info := a.CheckExpr(arg)
-			args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
-		}
-		if mi.Name == nil || a.curRecord == nil || a.dependentContext() {
+		if sc := a.memInitScopes[mi]; sc != nil {
+			// One element of an expanded mem-initializer: its names mean
+			// what they mean with that element bound.
+			saved := a.curScope
+			a.curScope = sc
+			a.checkOneMemInit(mi)
+			a.curScope = saved
 			continue
 		}
-		name := NameString(mi.Name, a.unit)
-		var target types.Type
-		for _, f := range a.curRecord.Fields {
-			if f.Name == name {
-				target = f.Type
-			}
-		}
-		if target == nil {
-			if name == a.curRecord.Name && !dependentArguments(args) {
-				a.checkDelegatingInit(mi, args)
-				continue
-			}
-			// A base: its constructor is chosen by the arguments too,
-			// and lowering needs to be told which one, or it would have
-			// nothing but the argument count to go on.
-			if base := a.baseNamed(name); base != nil && !dependentArguments(args) {
-				a.checkBaseInit(mi, base, args)
-			}
-			continue // a base, or a name the class does not have
-		}
-		if _, isArr := types.Unqualify(target).(*types.Array); isArr && mi.Braced != nil {
-			// Braced-init-list on an array member.
-			a.checkListInit(mi.Braced, target)
-			continue
-		}
-		rec := types.AsRecord(types.Unqualify(target))
-		if rec == nil || !hasUserConstructor(rec) || dependentArguments(args) {
-			continue
-		}
-		// A single argument of the class itself is a copy, chosen the
-		// same way; anything else is the constructor the arguments pick.
-		chosen, err := a.chooseConstructor(rec, args)
-		if err != nil {
-			a.errorAt(mi.Pos(), fmt.Sprintf("no matching constructor for %s: %v", rec.Name, err))
-			continue
-		}
-		if chosen != nil {
-			for i := len(mi.Args); i < len(chosen.Defaults); i++ {
-				if def := chosen.Defaults[i]; def != nil {
-					mi.Args = append(mi.Args, def)
-					a.CheckExpr(def)
-				}
-			}
-		}
-		if !chosen.Defaulted && a.info != nil {
-			a.info.MemInits[mi] = chosen
-		}
+		a.checkOneMemInit(mi)
 	}
 }
 
-// baseNamed is the direct or virtual base a mem-initializer names, by the
-// name it was written with.
-func (a *Analyzer) baseNamed(name string) *types.Record {
+// expandMemInits turns `__tuple_leaf<_Uf, _Tf>(std::forward<_Up>(__u))...`
+// into one mem-initializer per element, each with its element bound.
+//
+// The packs expand together, as they do in a base-specifier list and in an
+// argument list: the base named, the arguments given to it, and the
+// parameter pack forwarded are all the same length, and the i'th of each
+// belongs with the i'th of the others.
+func (a *Analyzer) expandMemInits(inits []*ast.MemInit) []*ast.MemInit {
+	any := false
+	for _, mi := range inits {
+		if mi.Ellipsis.IsValid() {
+			any = true
+		}
+	}
+	if !any {
+		return inits
+	}
+	out := make([]*ast.MemInit, 0, len(inits))
+	for _, mi := range inits {
+		if !mi.Ellipsis.IsValid() {
+			out = append(out, mi)
+			continue
+		}
+		elems, ok := a.expandOneMemInit(mi)
+		if !ok {
+			// Not bound yet: the template as written, whose
+			// mem-initializers are its instantiations' to expand.
+			out = append(out, mi)
+			continue
+		}
+		out = append(out, elems...)
+	}
+	return out
+}
+
+// expandOneMemInit is the clones of one mem-initializer, and whether the
+// packs it names were bound.
+func (a *Analyzer) expandOneMemInit(mi *ast.MemInit) ([]*ast.MemInit, bool) {
+	packs := a.packsInNode(mi.Name)
+	for _, arg := range mi.Args {
+		for _, p := range a.packsIn(arg) {
+			if !containsPack(packs, p.name) {
+				packs = append(packs, p)
+			}
+		}
+	}
+	var valuePacks []*PackSymbol
+	for _, arg := range mi.Args {
+		for _, p := range a.valuePacksIn(arg) {
+			valuePacks = append(valuePacks, p)
+		}
+	}
+	n := -1
+	for _, p := range packs {
+		if n >= 0 && n != len(p.pack.Elems) {
+			a.errorAt(mi.Pos(), "the packs in this mem-initializer differ in length")
+			return nil, false
+		}
+		n = len(p.pack.Elems)
+	}
+	for _, p := range valuePacks {
+		if n >= 0 && n != len(p.Elems) {
+			a.errorAt(mi.Pos(), "the packs in this mem-initializer differ in length")
+			return nil, false
+		}
+		n = len(p.Elems)
+	}
+	if n < 0 {
+		return nil, false
+	}
+	if a.memInitScopes == nil {
+		a.memInitScopes = map[*ast.MemInit]*Scope{}
+	}
+	out := make([]*ast.MemInit, 0, n)
+	for i := 0; i < n; i++ {
+		bound := NewScope(a.curScope, BlockScope, nil)
+		for _, p := range packs {
+			elem := p.pack.Elems[i]
+			if elem.IsType {
+				bound.Insert(&TypeSymbol{SymName: p.name, SymType: elem.Type, SymScope: bound})
+				continue
+			}
+			vt := elem.ValType
+			if vt == nil {
+				vt = types.Typ(types.Int)
+			}
+			bound.Insert(&VarSymbol{SymName: p.name, SymType: vt, SymScope: bound, Constexpr: true, KnownValue: elem.Val, HasKnownValue: true})
+		}
+		for _, p := range valuePacks {
+			bound.Insert(p.Elems[i])
+		}
+		clone := ast.Clone(mi)
+		clone.Ellipsis = ast.NoTok
+		a.memInitScopes[clone] = bound
+		out = append(out, clone)
+	}
+	return out, true
+}
+
+func containsPack(packs []boundPack, name string) bool {
+	for _, p := range packs {
+		if p.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// checkOneMemInit checks a single mem-initializer.
+func (a *Analyzer) checkOneMemInit(mi *ast.MemInit) {
+	var args []Argument
+	mi.Args = a.expandPackArgs(mi.Args)
+	items := mi.Args
+	if mi.Braced != nil {
+		for _, item := range mi.Braced.Items {
+			if x, isExpr := item.(ast.Expr); isExpr {
+				items = append(items, x)
+			}
+		}
+	}
+	for _, arg := range items {
+		info := a.CheckExpr(arg)
+		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
+	}
+	if mi.Name == nil || a.curRecord == nil || a.dependentContext() {
+		return
+	}
+	name := NameString(mi.Name, a.unit)
+	var target types.Type
+	for _, f := range a.curRecord.Fields {
+		if f.Name == name {
+			target = f.Type
+		}
+	}
+	if target == nil {
+		if name == a.curRecord.Name && !dependentArguments(args) {
+			a.checkDelegatingInit(mi, args)
+			return
+		}
+		// A base: its constructor is chosen by the arguments too,
+		// and lowering needs to be told which one, or it would have
+		// nothing but the argument count to go on.
+		if base := a.baseNamed(name, mi.Name); base != nil && !dependentArguments(args) {
+			a.checkBaseInit(mi, base, args)
+		}
+		return // a base, or a name the class does not have
+	}
+	if _, isArr := types.Unqualify(target).(*types.Array); isArr && mi.Braced != nil {
+		// Braced-init-list on an array member.
+		a.checkListInit(mi.Braced, target)
+		return
+	}
+	rec := types.AsRecord(types.Unqualify(target))
+	if rec == nil || !hasUserConstructor(rec) || dependentArguments(args) {
+		return
+	}
+	// A single argument of the class itself is a copy, chosen the
+	// same way; anything else is the constructor the arguments pick.
+	chosen, err := a.chooseConstructor(rec, args)
+	if err != nil {
+		a.errorAt(mi.Pos(), fmt.Sprintf("no matching constructor for %s: %v", rec.Name, err))
+		return
+	}
+	if chosen != nil {
+		for i := len(mi.Args); i < len(chosen.Defaults); i++ {
+			if def := chosen.Defaults[i]; def != nil {
+				mi.Args = append(mi.Args, def)
+				a.CheckExpr(def)
+			}
+		}
+	}
+	if !chosen.Defaulted && a.info != nil {
+		a.info.MemInits[mi] = chosen
+	}
+}
+
+// baseNamed is the direct or virtual base a mem-initializer names.
+//
+// The name alone does not always say which: two bases of a class built
+// from a pack -- `__tuple_leaf<0, int>` and `__tuple_leaf<1, double>` --
+// are both written `__tuple_leaf`, and are the same record's name with
+// different arguments. So the spelling is resolved first, in the scope the
+// initializer is checked in, and only a name that resolves to nothing
+// falls back to matching by name.
+func (a *Analyzer) baseNamed(name string, spelling ast.Name) *types.Record {
+	if spelling != nil {
+		specs := &ast.DeclSpecs{Span: ast.Span{Lo: spelling.Pos(), Hi: spelling.End()},
+			List: []ast.DeclSpec{&ast.NamedTypeSpec{Span: ast.Span{Lo: spelling.Pos(), Hi: spelling.End()}, Typename: ast.NoTok, Name: spelling}}}
+		ndiags := len(a.diags)
+		info := BuildDeclSpecs(specs, a.curScope, a.unit)
+		a.diags = a.diags[:ndiags]
+		if info.Unresolved == "" {
+			if named := types.AsRecord(types.Unqualify(info.Type)); named != nil {
+				for _, b := range a.curRecord.Bases {
+					if br := types.AsRecord(types.Unqualify(b.Type)); br == named {
+						return br
+					}
+				}
+			}
+		}
+	}
 	for _, b := range a.curRecord.Bases {
 		if br := types.AsRecord(types.Unqualify(b.Type)); br != nil && sameBaseName(br.Name, name) {
 			return br

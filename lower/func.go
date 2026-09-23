@@ -244,17 +244,33 @@ func (fl *fn) delegateCtor(sym *sema.FuncSymbol) bool {
 
 // constructBases runs base subobject constructors in declaration order.
 func (fl *fn) constructBases(sym *sema.FuncSymbol) {
+	// The mem-initializer for a base, by the class it initializes.
+	//
+	// By name, except where the analysis settled it: an expansion of
+	// `__tuple_leaf<Is, Tp>(...)...` is one initializer per element and
+	// they all write the same name, so which base each belongs to is the
+	// constructor that was chosen for it, not what it says.
+	byRecord := map[*types.Record]*ast.MemInit{}
 	named := map[string]*ast.MemInit{}
 	for _, mi := range sym.Decl.Inits {
 		if mi.Name == nil {
 			continue
 		}
+		if ctor := fl.u.res.Info.MemInits[mi]; ctor != nil && ctor.InClass != nil {
+			if _, taken := byRecord[ctor.InClass]; !taken {
+				byRecord[ctor.InClass] = mi
+			}
+		}
 		name := sema.NameString(mi.Name, fl.u.unit)
-		named[name] = mi
+		if _, taken := named[name]; !taken {
+			named[name] = mi
+		}
 		// A base may be written qualified -- `std::runtime_error` -- but
 		// a record is known by its own name alone.
 		if i := strings.LastIndex(name, "::"); i >= 0 {
-			named[name[i+2:]] = mi
+			if _, taken := named[name[i+2:]]; !taken {
+				named[name[i+2:]] = mi
+			}
 		}
 	}
 	baseOffs := make([]int64, len(sym.InClass.Bases))
@@ -264,9 +280,13 @@ func (fl *fn) constructBases(sym *sema.FuncSymbol) {
 		if !isRec || b.Virtual {
 			continue
 		}
+		mi, ok := byRecord[br]
+		if !ok {
+			mi, ok = named[br.Name]
+		}
 		var args []ast.Expr
 		var chosen *sema.FuncSymbol
-		if mi, ok := named[br.Name]; ok {
+		if ok {
 			args = mi.Args
 			chosen = fl.u.res.Info.MemInits[mi]
 		}

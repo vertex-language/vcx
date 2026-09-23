@@ -1107,6 +1107,12 @@ func boundArgs(params []*TemplateParamSymbol, b Binding) ([]types.TemplateArg, b
 			return nil, false
 		case p.IsPack != isPack:
 			return nil, false
+		case isPack:
+			// A pack is carried whole, in the type-shaped slot, whether
+			// its elements are types or values: `<size_t... _Is>` bound
+			// to the indices a tuple was made with is a pack of values
+			// and is no less the argument for _Is.
+			bound[i] = types.TemplateArg{IsType: true, Type: t}
 		case p.IsType && !isVal:
 			bound[i] = types.TemplateArg{IsType: true, Type: t}
 		case !p.IsType && isVal:
