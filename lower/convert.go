@@ -37,8 +37,18 @@ func (fl *fn) convert(v ir.Value, from, to types.Type) ir.Value {
 	case ir.I32:
 		switch want {
 		case ir.TypePtr:
-			// Null pointer constant from integer zero.
-			return b.Ptr.Const()
+			// A null pointer constant from integer zero; any other int is
+			// the address it says, widened as its type widens --
+			// reinterpret_cast<void*>(-2) is RTLD_DEFAULT on Darwin.
+			if in := val.Def().Inst(); in != nil && in.Op().Verb == ir.VConst {
+				if c, ok := in.Lit(); ok && c.Int() == 0 {
+					return b.Ptr.Const()
+				}
+			}
+			if from != nil && !isSigned(from) {
+				return b.Ptr.FromI64(b.I64.ZExtI32(val))
+			}
+			return b.Ptr.FromI64(b.I64.SExtI32(val))
 		case ir.TypeI32:
 			if _, isMP := types.Unqualify(to).(*types.MemberPointer); isMP && from != nil {
 				if _, fromMP := types.Unqualify(from).(*types.MemberPointer); !fromMP {
