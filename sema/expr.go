@@ -3413,6 +3413,11 @@ func (a *Analyzer) noteConversionFunction(e ast.Expr, from types.Type, to types.
 			continue
 		}
 		if fn := a.methodSyms[m]; fn != nil {
+			// The body of a member of a class template's specialization
+			// is left until something uses it, and a conversion is a
+			// use: without this the function was declared, referred to,
+			// and never defined, which the linker said.
+			a.ensureInstantiated(fn)
 			a.info.Conversions[e] = fn
 			return
 		}

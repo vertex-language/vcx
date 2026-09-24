@@ -748,6 +748,17 @@ func (fl *fn) oneOf(t types.Type) ir.Value {
 func (fl *fn) conditional(e *ast.CondExpr) ir.Value {
 	t := fl.typeOf(e)
 
+	// An array glvalue -- `c ? "" : "x"`, two const char[1]s -- is used by
+	// its address, as an array's value is: the chosen arm's, not the
+	// array copied into a slot of its own size, which the decayed pointer
+	// stored into would overrun.
+	if types.IsArray(types.RemoveReference(t)) {
+		if addr, _, ok := fl.conditionalAddr(e); ok {
+			return addr
+		}
+		return nil
+	}
+
 	c := fl.truth(e.Cond)
 	if c == nil {
 		return nil
