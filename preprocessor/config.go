@@ -28,6 +28,18 @@ type Mount struct {
 	// inclusion, and the tolerated-spelling carve-out applies to what the
 	// parser reads out of them.
 	System bool
+
+	// Framework marks a directory of Apple frameworks: `<A/B.h>` is
+	// A.framework/Headers/B.h in it (or PrivateHeaders), as clang's -F
+	// reads one. A name with no directory is never looked for in one.
+	Framework bool
+}
+
+// A ModuleUnit is where a module's interface unit is: a mount and the
+// path of the file within it.
+type ModuleUnit struct {
+	Mount Mount
+	Path  string
 }
 
 // PredefineKind distinguishes the two command-line operations.
@@ -73,6 +85,13 @@ type Config struct {
 	// was found in — but the primary file has no Origin until one is made,
 	// which is what this supplies.
 	Source Mount
+
+	// Modules are the interface units of the named modules this unit may
+	// import, by module name: `import net.tcp;` reads the one named
+	// net.tcp, and so does `module net.tcp;` in an implementation unit.
+	// Nil leaves imports as directives only, for a caller that resolves
+	// them itself.
+	Modules map[string]ModuleUnit
 
 	// Predefines are applied in order before the primary source file is read.
 	Predefines []Predefine

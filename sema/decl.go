@@ -473,6 +473,16 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			if name == "" {
 				continue
 			}
+			// [dcl.typedef]/9: `typedef struct { ... } S;` gives the unnamed
+			// class the name S for linkage purposes -- it is mangled as S,
+			// so a C++ function taking an S* has a symbol -- and the same
+			// for an unnamed enumeration.
+			if rec, isRec := fullType.(*types.Record); isRec && rec.Name == "" {
+				rec.Name = name
+			}
+			if en, isEnum := fullType.(*types.Enum); isEnum && en.Name == "" {
+				en.Name = name
+			}
 			if rec := types.AsRecord(types.Unqualify(fullType)); rec != nil && rec.Name == name {
 				isSameRecord := false
 				for _, existing := range a.curScope.LookupLocal(name) {
@@ -767,6 +777,12 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 		// Static data member definition at namespace scope.
 		if qn, isQualified := init.Decl.DeclName().(*ast.QualifiedName); isQualified && a.curRecord == nil {
 			if member := a.defineStaticMember(qn, init); member != nil {
+				// `inline constexpr weak_ordering weak_ordering::less(...)`:
+				// an inline definition is every unit's that includes it, as
+				// an in-class one is, and is emitted COMDAT.
+				if declInfo.Inline || declInfo.Constexpr {
+					member.Inline = true
+				}
 				a.recordDef(init, member)
 			}
 			continue

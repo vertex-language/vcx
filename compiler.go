@@ -104,6 +104,12 @@ type Compiler struct {
 	MetalStd   string
 	MinOS      string
 	NoFastMath bool
+
+	// Modules are the interface units of the named modules a unit may
+	// import, by module name: path to file. `import net.tcp;` and an
+	// implementation unit's `module net.tcp;` read the file named here.
+	// Nil leaves a module import unresolved.
+	Modules map[string]string
 }
 
 func (c *Compiler) target() (Target, error) {
@@ -130,6 +136,9 @@ type pass struct {
 // C++ unit and for an offload unit, whose host object carries the device
 // pass's image, unless DeviceOnly asks for the device pass alone.
 func (c *Compiler) passFor(in Input) (pass, error) {
+	if err := in.notCXX(); err != nil {
+		return pass{}, err
+	}
 	host, err := c.target()
 	if err != nil {
 		return pass{}, err
@@ -198,6 +207,16 @@ func (c *Compiler) preprocessorConfigFor(in Input, p pass, passErr error) prepro
 		Source: in.mount(),
 		Hosted: !c.Freestanding,
 	}
+	if c.Modules != nil {
+		cfg.Modules = map[string]preprocessor.ModuleUnit{}
+		for name, file := range c.Modules {
+			dir := filepath.Dir(file)
+			cfg.Modules[name] = preprocessor.ModuleUnit{
+				Mount: preprocessor.Mount{Name: dir, FS: os.DirFS(dir)},
+				Path:  filepath.Base(file),
+			}
+		}
+	}
 	for _, inc := range c.IncludeDirs {
 		cfg.Search = append(cfg.Search, preprocessor.Mount{
 			Name: inc,
@@ -221,7 +240,7 @@ func (c *Compiler) preprocessorConfigFor(in Input, p pass, passErr error) prepro
 		if p.lang == LangMetal {
 			break
 		}
-		cfg.Search = append(cfg.Search, preprocessor.Mount{Name: sys.Name, FS: sys.FS, System: true})
+		cfg.Search = append(cfg.Search, preprocessor.Mount{Name: sys.Name, FS: sys.FS, System: true, Framework: sys.Framework})
 	}
 	// The target's own macros first, so that -D and -U on the command line
 	// can shadow any of them. Both passes of an offload unit carry the
@@ -292,6 +311,43 @@ func (c *Compiler) Preprocess(in Input) ([]byte, []Diagnostic, error) {
 	}
 
 	return out, diags, nil
+}
+
+// A Scan is what a unit declares about how it is built, which a build
+// reads before compiling anything: its module directives -- what module it
+// is (`export module M;`, `module M;`) and what it imports -- and the
+// libraries and frameworks its pragmas ask the link for.
+type Scan struct {
+	Modules []preprocessor.ModuleDirective
+	Links   []preprocessor.LinkDirective
+}
+
+// Scan runs phases 1-4 and returns what the unit declares about its build.
+// It is a dependency scan, which is why it stops short of parsing.
+func (c *Compiler) Scan(in Input) (Scan, []Diagnostic, error) {
+	f, diags, err := c.Source(in)
+	if err != nil {
+		return Scan{}, nil, err
+	}
+	p, err := c.passFor(in)
+	if err != nil {
+		return Scan{}, nil, err
+	}
+	cfg := c.preprocessorConfigFor(in, p, nil)
+	// A scan names what a unit imports; it does not read it.
+	cfg.Modules = nil
+	pp := preprocessor.New(cfg)
+	_, ppDiags := pp.Run(f)
+	for _, d := range ppDiags {
+		diags = append(diags, Diagnostic{Severity: d.Severity, Site: d.Site, Message: d.Msg, Name: d.Name})
+	}
+	return Scan{Modules: pp.Modules(), Links: pp.Links()}, diags, nil
+}
+
+// ModuleDirectives is Scan's module directives alone.
+func (c *Compiler) ModuleDirectives(in Input) ([]preprocessor.ModuleDirective, []Diagnostic, error) {
+	sc, diags, err := c.Scan(in)
+	return sc.Modules, diags, err
 }
 
 // Parse runs phases 1-4 and parses the token stream into an ast.File.

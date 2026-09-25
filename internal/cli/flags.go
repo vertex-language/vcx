@@ -33,6 +33,7 @@ type ppFlags struct {
 	cudaPath     string
 	minOS        string
 	noFastMath   bool
+	moduleFiles  stringList
 
 	c *vcx.Compiler
 }
@@ -56,6 +57,7 @@ func (p *ppFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&p.minOS, "mmacosx-version-min", "", "the oldest macOS a .metallib loads on (default 13.0)")
 	fs.BoolVar(&p.noFastMath, "fno-fast-math", false, "precise float math in a .metal file (fast is the default)")
 	fs.Bool("ffast-math", false, "fast float math in a .metal file (the default)")
+	fs.Var(&p.moduleFiles, "fmodule-file", "the interface unit of a module the inputs import: name=path (repeatable)")
 }
 
 func (p *ppFlags) compiler() (*vcx.Compiler, error) {
@@ -88,7 +90,20 @@ func (p *ppFlags) compiler() (*vcx.Compiler, error) {
 		return nil, fmt.Errorf("--cuda-device-only and --cuda-host-only name no pass together")
 	}
 
+	var modules map[string]string
+	for _, mf := range p.moduleFiles {
+		name, file, ok := strings.Cut(mf, "=")
+		if !ok || name == "" || file == "" {
+			return nil, fmt.Errorf("-fmodule-file wants name=path, not %q", mf)
+		}
+		if modules == nil {
+			modules = map[string]string{}
+		}
+		modules[name] = file
+	}
+
 	p.c = &vcx.Compiler{
+		Modules:      modules,
 		Target:       p.target,
 		Std:          std,
 		IncludeDirs:  p.includes,

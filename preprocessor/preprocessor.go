@@ -59,6 +59,13 @@ type Preprocessor struct {
 	deps   *Deps
 
 	files map[string]*cached
+
+	// imported is the modules whose interfaces this unit has read.
+	imported map[string]bool
+
+	// links are the libraries and frameworks the unit's pragmas ask the
+	// link for.
+	links []LinkDirective
 	stack []*reader
 	out   []Token
 	diags []Diagnostic
@@ -633,4 +640,12 @@ func (p *Preprocessor) msPragmaOperator(r *reader) bool {
 		r.toks[r.i].Flags |= token.FlagNLBefore
 	}
 	return true
+}
+
+// skipRest drops what is left of the file: everything after an imported
+// interface's `module :private;`.
+func (r *reader) skipRest() {
+	for r.i < len(r.toks) && r.toks[r.i].Kind != token.EOF {
+		r.i++
+	}
 }

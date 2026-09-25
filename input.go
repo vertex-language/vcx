@@ -1,6 +1,7 @@
 package vcx
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -37,7 +38,7 @@ func (in Input) name() string {
 func (in Input) isSource() bool {
 	ext := strings.ToLower(filepath.Ext(in.Name))
 	switch ext {
-	case ".cpp", ".cc", ".cxx", ".c++", ".cp", ".c", ".cppm", ".ixx", ".ccm", ".cxxm", ".c++m", ".ii",
+	case ".cpp", ".cc", ".cxx", ".c++", ".cp", ".cppm", ".ixx", ".ccm", ".cxxm", ".c++m", ".ii",
 		".cu", ".cuh", ".hip", ".metal":
 		return true
 	}
@@ -89,4 +90,17 @@ func (in Input) mount() preprocessor.Mount {
 		dir = "."
 	}
 	return preprocessor.Mount{Name: dir, FS: os.DirFS(dir)}
+}
+
+// notCXX is why an input is not vcx's to compile: vcx is a C++ compiler,
+// and a .c or .m file is C or Objective-C, whose rules differ from C++'s
+// in ways a C++ front end must not paper over. nil for anything else.
+func (in Input) notCXX() error {
+	switch strings.ToLower(filepath.Ext(in.Name)) {
+	case ".c":
+		return fmt.Errorf("%s is C: v++ compiles C++, so build it with vcc, or port it to C++ as a .cpp", in.Name)
+	case ".m":
+		return fmt.Errorf("%s is Objective-C: v++ compiles C++, so build it with objv, or port it to Objective-C++ as a .mm", in.Name)
+	}
+	return nil
 }

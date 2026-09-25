@@ -38,6 +38,13 @@ type Origin struct {
 	// file was fully read. Empty until then, and empty forever for files that
 	// are not guarded.
 	Guard string
+
+	// Module is set on the interface unit of a module this unit imports:
+	// `import M;`, or the `module M;` of one of M's implementation units,
+	// both of which make M's interface visible here. Its declarations are
+	// seen but not emitted -- M's own object has them -- apart from what
+	// every unit that uses it emits anyway (inline functions, templates).
+	Module string
 }
 
 // Depth reports how many files enclose this one. The primary source file

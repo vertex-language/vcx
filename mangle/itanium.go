@@ -70,15 +70,37 @@ func (m *itanium) thunk(f *Function, adjust int64) (string, error) {
 }
 
 func (m *itanium) variable(v *Variable) (string, error) {
-	// An object at global scope is not mangled at all: `int g;` -> `g`.
+	// An object at global scope is not mangled at all: `int g;` -> `g` --
+	// unless a module owns it, whose name it then carries.
 	if len(v.Scopes) == 0 {
-		return v.Name, nil
+		if v.Module == "" {
+			return v.Name, nil
+		}
+		m.sb.WriteString("_Z")
+		m.moduleName(v.Module)
+		m.sourceName(v.Name)
+		return m.sb.String(), m.err
 	}
 	m.sb.WriteString("_ZN")
 	m.prefix(v.Scopes)
+	m.moduleName(v.Module)
 	m.sourceName(v.Name)
 	m.sb.WriteString("E")
 	return m.sb.String(), m.err
+}
+
+// moduleName is the <module-name> an entity attached to a named module
+// carries before its own name: `W` and a source name for each dotted
+// component, so net.tcp is W3netW3tcp and `_ZW4math3addii` is math's add.
+func (m *itanium) moduleName(module string) {
+	if module == "" {
+		return
+	}
+	for _, part := range strings.Split(module, ".") {
+		m.sb.WriteString("W")
+		m.sb.WriteString(strconv.Itoa(len(part)))
+		m.sb.WriteString(part)
+	}
 }
 
 func (m *itanium) vtable(rec *types.Record) (string, error) {
@@ -122,6 +144,9 @@ func (m *itanium) functionName(f *Function) {
 // specialization enters the template's name -- its prefix and its own name
 // -- as a substitution candidate before the arguments that follow it.
 func (m *itanium) templateName(prefix string, f *Function) {
+	if !f.Member && !f.Static {
+		m.moduleName(f.Module)
+	}
 	start := m.sb.Len()
 	m.unqualifiedName(f)
 	if f.TemplateArgs != nil {

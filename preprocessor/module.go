@@ -1,6 +1,7 @@
 package preprocessor
 
 import (
+	"path"
 	"strings"
 
 	"github.com/vertex-language/vcx/token"
@@ -107,11 +108,62 @@ func (p *Preprocessor) moduleDirective(r *reader) bool {
 	if !ok {
 		return false
 	}
+	r.i += len(line)
+	if r.org.Module != "" {
+		// Inside an imported interface unit, its module directives say
+		// nothing to the unit importing it: its `export module M;` is not
+		// this unit's module declaration, and what follows `module
+		// :private;` is not part of the interface at all.
+		switch d.Kind {
+		case PrivateFragment:
+			r.skipRest()
+		case Import:
+			p.importModule(d, r.org)
+		}
+		return true
+	}
 	p.modules = append(p.modules, d)
 	p.out = append(p.out, intro...)
 	p.out = append(p.out, tail...)
-	r.i += len(line)
+	// An implementation unit sees its module's interface as if it had
+	// imported it ([module.unit]/8), and an import sees what it names.
+	if d.Kind == Implementation || d.Kind == Import {
+		p.importModule(d, r.org)
+	}
 	return true
+}
+
+// importModule makes a module's interface visible here: its tokens follow
+// the directive, as a header's follow an #include, under an Origin that
+// says which module they are. Each module is read once per unit however
+// often it is imported. A partition, or a module the configuration does
+// not know, is left to the directive alone.
+func (p *Preprocessor) importModule(d ModuleDirective, parent *Origin) {
+	name := d.Name
+	if name == "" || strings.Contains(name, ":") || p.cfg.Modules == nil {
+		return
+	}
+	if p.imported[name] {
+		return
+	}
+	unit, ok := p.cfg.Modules[name]
+	if !ok {
+		p.errorf(d.Site, "module %q not found", name)
+		return
+	}
+	if p.imported == nil {
+		p.imported = map[string]bool{}
+	}
+	p.imported[name] = true
+	m := unit.Mount
+	display := path.Join(m.Name, unit.Path)
+	c, err := p.open(&m, unit.Path, display)
+	if err != nil {
+		p.errorf(d.Site, "module %q: %v", name, err)
+		return
+	}
+	p.deps.add(display)
+	p.readFileAs(c, &m, unit.Path, display, d.Site, parent, name)
 }
 
 // opensModuleTail reports whether what follows the introducer can begin a

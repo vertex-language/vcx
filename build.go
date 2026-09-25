@@ -29,6 +29,9 @@ func (c *Compiler) Build(params BuildParams) error {
 	var objects []Input
 	offload := map[Language]bool{}
 	for _, in := range params.Inputs {
+		if err := in.notCXX(); err != nil {
+			return err
+		}
 		if !in.isSource() {
 			// An object built earlier: it needs the runtime if it
 			// registers a device image, which its symbol table says.

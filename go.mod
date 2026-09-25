@@ -11,7 +11,6 @@ require (
 	github.com/vertex-language/ir v0.0.0
 	github.com/vertex-language/ir/lower v0.0.0
 	github.com/vertex-language/ptx v0.0.0
-	github.com/vertex-language/vcc v0.0.0
 )
 
 require (
@@ -34,7 +33,5 @@ replace (
 	github.com/vertex-language/pe => ../pe
 	github.com/vertex-language/ptx => ../ptx
 )
-
-replace github.com/vertex-language/vcc => ../vcc
 
 replace github.com/vertex-language/air => ../air

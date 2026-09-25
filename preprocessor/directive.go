@@ -270,6 +270,13 @@ func (p *Preprocessor) doPragma(r *reader, line []Token, at Site) {
 		return
 	}
 
+	if len(line) > 0 && (line[0].Is("vertex") || line[0].Is("comment")) {
+		if d, ok := linkPragma(line, at); ok {
+			p.links = append(p.links, d)
+			return
+		}
+	}
+
 	// Re-emit pragma line into output for phase 7.
 	hash := p.gen.Mint(token.HASH, "#")
 	hash.Flags = token.FlagNLBefore

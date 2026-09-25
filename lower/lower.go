@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strings"
 
 	"github.com/vertex-language/ir"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/vertex-language/vcx/constexpr"
 	"github.com/vertex-language/vcx/mangle"
 	"github.com/vertex-language/vcx/offload"
+	"github.com/vertex-language/vcx/preprocessor"
 	"github.com/vertex-language/vcx/sema"
 	"github.com/vertex-language/vcx/token"
 	"github.com/vertex-language/vcx/types"
@@ -212,7 +214,11 @@ func (u *unit) linkSymbol(fn *sema.FuncSymbol) string {
 
 // funcSymbol returns the mangled object-file symbol name for fn.
 func (u *unit) funcSymbol(fn *sema.FuncSymbol) string {
-	name, err := mangle.FunctionName(u.opt.ABI, mangle.Describe(fn))
+	d := mangle.Describe(fn)
+	if fn.InClass == nil {
+		d.Module = u.attachedModule(fn.SymPos)
+	}
+	name, err := mangle.FunctionName(u.opt.ABI, d)
 	if err != nil {
 		u.errorf(fn.SymPos, "%v", err)
 		return "_unnameable_" + fn.SymName
@@ -261,6 +267,12 @@ func (u *unit) declare() {
 		if fn.Body == nil {
 			continue
 		}
+		// A function an imported module's interface defines is that
+		// module's to emit: here it is a declaration, and a call to it
+		// is an import the linker resolves.
+		if u.importedDef(fn) {
+			continue
+		}
 		// An offload unit's functions belong to one pass or the other.
 		if !u.lowersFunc(fn) {
 			continue
@@ -302,7 +314,7 @@ func (u *unit) callee(fn *sema.FuncSymbol) ir.Callee {
 		// Defaulted comparison operators get compiler-generated bodies.
 		return u.defaultedComparison(fn)
 	}
-	if fn.Body != nil {
+	if fn.Body != nil && !u.importedDef(fn) {
 		// An inline function reached for the first time: defined in this
 		// object after all, once the function that reached it is done.
 		// It is looked at before the declared-symbol match below, since
@@ -646,8 +658,9 @@ func (u *unit) declareGlobalsIn(scope *sema.Scope, seen map[*sema.Scope]bool) {
 				if s.Template != nil {
 					continue
 				}
-				if !s.Defined {
-					// External declarations without definitions are imported on use.
+				if !s.Defined || u.importedObject(s) {
+					// External declarations without definitions are imported
+					// on use, and so are an imported module's objects.
 					continue
 				}
 				if !u.lowersGlobal(s) {
@@ -672,7 +685,7 @@ func (u *unit) globalFor(v *sema.VarSymbol) (ir.Symbol, bool) {
 	}
 	// Only an extern object or a static data member can be defined in
 	// another unit; anything else undefined here is not an object at all.
-	if v.Defined || v.Template != nil || v.Storage != sema.StorageExtern && v.InClass == nil {
+	if !u.importedObject(v) && (v.Defined || v.Template != nil || v.Storage != sema.StorageExtern && v.InClass == nil) {
 		atNamespace := v.InClass != nil || v.SymScope != nil && (v.SymScope.Kind == sema.GlobalScope || v.SymScope.Kind == sema.NamespaceScope)
 		if v.Defined && atNamespace && u.offload() && !u.lowersGlobal(v) {
 			// The other pass's object: a host variable named in device
@@ -716,7 +729,11 @@ func (u *unit) globalSymbol(v *sema.VarSymbol) string {
 	if v.AsmLabel != "" {
 		return v.AsmLabel
 	}
-	name, err := mangle.VariableName(u.opt.ABI, mangle.DescribeVariable(v, nil))
+	d := mangle.DescribeVariable(v, nil)
+	if v.InClass == nil {
+		d.Module = u.attachedModule(v.SymPos)
+	}
+	name, err := mangle.VariableName(u.opt.ABI, d)
 	if err != nil {
 		u.errorf(v.SymPos, "%v", err)
 		name = "_unnameable_" + v.SymName
@@ -947,4 +964,71 @@ func (u *unit) typeOfTypeId(id *ast.TypeId) types.Type {
 		return nil
 	}
 	return u.res.Info.TypeIds[id]
+}
+
+// imported reports whether pos is in the interface unit of a module this
+// unit imports, rather than in the unit itself or a header it includes.
+func (u *unit) imported(pos ast.Tok) bool {
+	s, ok := u.unit.(interface {
+		Site(ast.Tok) preprocessor.Site
+	})
+	if !ok || !pos.IsValid() {
+		return false
+	}
+	org := s.Site(pos).Origin
+	return org != nil && org.Module != ""
+}
+
+// importedDef reports whether fn's definition is an imported module's,
+// which that module's object holds: written in its interface unit, and
+// neither inline nor internal.
+func (u *unit) importedDef(fn *sema.FuncSymbol) bool {
+	if fn.Body == nil || fn.Inline || fn.Internal {
+		return false
+	}
+	return u.imported(fn.Body.Pos())
+}
+
+// importedObject reports whether v is an object an imported module
+// defines, with the linkage that makes it that module's: one of its
+// namespace-scope variables that is neither inline nor internal.
+func (u *unit) importedObject(v *sema.VarSymbol) bool {
+	if v.Inline || v.Template != nil || !sema.HasExternalLinkage(v) || !u.imported(v.SymPos) {
+		return false
+	}
+	return v.InClass != nil || v.SymScope != nil && (v.SymScope.Kind == sema.GlobalScope || v.SymScope.Kind == sema.NamespaceScope)
+}
+
+// attachedModule is the named module a declaration at pos belongs to: the
+// imported module whose interface it is in, or this unit's own module
+// where it follows the unit's module declaration. "" is the global
+// module: a non-module unit, or a module unit's global module fragment.
+// A partition belongs to its primary module.
+func (u *unit) attachedModule(pos ast.Tok) string {
+	if !pos.IsValid() {
+		return ""
+	}
+	if s, ok := u.unit.(interface {
+		Site(ast.Tok) preprocessor.Site
+	}); ok {
+		if org := s.Site(pos).Origin; org != nil && org.Module != "" {
+			name, _, _ := strings.Cut(org.Module, ":")
+			return name
+		}
+	}
+	for _, d := range u.file.Decls {
+		md, ok := d.(*ast.ModuleDecl)
+		if !ok || len(md.Name) == 0 {
+			continue
+		}
+		if pos < md.End() {
+			return ""
+		}
+		parts := make([]string, len(md.Name))
+		for i, id := range md.Name {
+			parts[i] = id.Text(u.unit)
+		}
+		return strings.Join(parts, ".")
+	}
+	return ""
 }

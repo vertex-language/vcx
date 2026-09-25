@@ -204,7 +204,19 @@ func (p *Preprocessor) searchList(org *Origin, name string, angled, next bool) (
 		rels = append(rels, path.Join(path.Dir(org.Path), name))
 	}
 	for i := start; i < len(p.cfg.Search); i++ {
-		mounts = append(mounts, &p.cfg.Search[i])
+		m := &p.cfg.Search[i]
+		if m.Framework {
+			fw, rest, ok := strings.Cut(name, "/")
+			if !ok || fw == "" || rest == "" {
+				continue
+			}
+			for _, dir := range []string{"Headers", "PrivateHeaders"} {
+				mounts = append(mounts, m)
+				rels = append(rels, path.Join(fw+".framework", dir, rest))
+			}
+			continue
+		}
+		mounts = append(mounts, m)
 		rels = append(rels, name)
 	}
 	return mounts, rels
@@ -305,6 +317,12 @@ func (p *Preprocessor) open(m *Mount, rel, display string) (*cached, error) {
 }
 
 func (p *Preprocessor) readFile(c *cached, m *Mount, rel, display string, at Site, parent *Origin) {
+	p.readFileAs(c, m, rel, display, at, parent, "")
+}
+
+// readFileAs is readFile for the interface unit of an imported module,
+// where module names it.
+func (p *Preprocessor) readFileAs(c *cached, m *Mount, rel, display string, at Site, parent *Origin, module string) {
 	org := &Origin{
 		File:       c.file,
 		Mount:      m,
@@ -313,6 +331,7 @@ func (p *Preprocessor) readFile(c *cached, m *Mount, rel, display string, at Sit
 		IncludePos: at.Pos,
 		System:     m.System,
 		Guard:      c.guard,
+		Module:     module,
 	}
 	toks := make([]Token, len(c.toks))
 	copy(toks, c.toks)

@@ -6,13 +6,15 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/vertex-language/vcc/sysroot"
+	"github.com/vertex-language/vcx/sysroot"
 )
 
 // SystemInclude is a header directory or filesystem for the target.
 type SystemInclude struct {
 	Name string
 	FS   fs.FS
+	// Framework marks a directory of Apple frameworks, searched as -F.
+	Framework bool
 }
 
 // SystemIncludes returns the target's system header search paths in priority order.
@@ -44,6 +46,18 @@ func (c *Compiler) SystemIncludes() []SystemInclude {
 			continue
 		}
 		out = append(out, SystemInclude{Name: e.Name, FS: e.FS})
+	}
+	// An Apple SDK's frameworks, after its headers, as clang searches
+	// them: <CoreFoundation/CoreFoundation.h> is a framework's header.
+	if tgt.OS == "macos" {
+		if sdk, ok := sysroot.SDK(nil); ok {
+			for _, sub := range []string{"System/Library/Frameworks", "System/Library/SubFrameworks"} {
+				dir := filepath.Join(sdk, filepath.FromSlash(sub))
+				if st, err := os.Stat(dir); err == nil && st.IsDir() {
+					out = append(out, SystemInclude{Name: dir, FS: os.DirFS(dir), Framework: true})
+				}
+			}
+		}
 	}
 	return out
 }

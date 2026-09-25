@@ -13,15 +13,14 @@ import (
 	"github.com/vertex-language/pe"
 	pelink "github.com/vertex-language/pe/link"
 
-	"github.com/vertex-language/vcc/sysroot"
+	"github.com/vertex-language/vcx/sysroot"
 )
 
 // The link, below VIR: the three container formats are three
 // vertex-language linkers, each taking bytes and returning bytes, so an
 // object this process just produced never touches the filesystem on
 // its way in. There is no cc on the path and nothing to detect; the
-// platform's own libraries are found the way vcc finds them, through
-// vcc/sysroot.
+// platform's own libraries are found through vcx/sysroot.
 
 // LinkParams is one link.
 type LinkParams struct {

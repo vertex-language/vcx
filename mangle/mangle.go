@@ -83,6 +83,11 @@ type Function struct {
 	// outermost first; for a member, the last one is its class.
 	Scopes []Scope
 	Name   string
+	// Module is the named module a namespace-scope function is attached
+	// to -- declared in its purview -- or "" for the global module. Its
+	// name is part of the symbol, so two modules' functions of one name
+	// are two functions.
+	Module string
 	Type   *types.Func
 	Kind   Kind
 	Conv   types.Type // the target of a conversion function
@@ -114,6 +119,8 @@ type Function struct {
 type Variable struct {
 	Scopes []Scope
 	Name   string
+	// Module is as for a Function.
+	Module string
 	Type   types.Type
 
 	// Static is a static data member -- the last scope is its class.
