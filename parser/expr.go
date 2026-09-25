@@ -750,6 +750,14 @@ func (p *parser) parsePrimaryExpr() ast.Expr {
 		return p.parseParenOrFoldExpr()
 	}
 
+	// GCC's __null, what <stddef.h> makes NULL in C++: an integer null
+	// pointer constant of type long, as clang and GCC read it -- 0L, so that
+	// NULL converts to any pointer and still initializes an integer.
+	if p.peek() == token.IDENT && p.text(p.cur) == "__null" {
+		tok := p.next()
+		return &ast.BasicLit{Span: ast.Span{Lo: tok, Hi: tok + 1}, Kind: token.INT_LIT, Text: "0L"}
+	}
+
 	// __builtin_va_arg(ap, T): an expression, then a type.
 	if p.peek() == token.IDENT && p.text(p.cur) == "__builtin_va_arg" && p.peekAt(1) == token.LPAREN {
 		start := p.pos()

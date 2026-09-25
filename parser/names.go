@@ -126,6 +126,10 @@ func (p *parser) noteTemplate(name string, k nameKind) {
 
 // kindOf is what the innermost scope that mentions name says of it.
 func (p *parser) kindOf(name string) nameKind {
+	if name == "__null" {
+		// A built-in expression (parsePrimaryExpr), never a type.
+		return nameValue
+	}
 	for i := len(p.names) - 1; i >= 0; i-- {
 		if k, seen := p.names[i][name]; seen {
 			return k
