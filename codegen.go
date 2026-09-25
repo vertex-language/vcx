@@ -89,6 +89,10 @@ func emitObject(m *ir.Module, t Target, arch OffloadArch) ([]byte, error) {
 	// i64 halves every backend already has (see ir.Module.LegalizeI128).
 	// The division helpers it names are spelled the platform's way.
 	m.LegalizeI128Opts(ir.I128Options{SymbolPrefix: symbolPrefix(t)})
+	// _Float16 and __bf16 the same way: no backend selects half
+	// instructions yet, so each is carried in an i32 and computed in f32
+	// (see ir.Module.LegalizeHalf).
+	m.LegalizeHalf()
 	if err := m.Err(); err != nil {
 		return nil, err
 	}
