@@ -154,6 +154,15 @@ func (fl *fn) gnuBuiltinCall(name string, e *ast.CallExpr) (ir.Value, bool) {
 		}
 		return fl.convert(fl.expr(e.Args[0]), fl.typeOf(e.Args[0]), types.Typ(types.Long)), true
 
+	case "return_address", "frame_address":
+		// The level is taken to be 0, this function's own: the only one
+		// VIR can say (§D3). GCC requires a constant there, and callers
+		// that walk outward do it through a runtime's unwinder.
+		if base == "frame_address" {
+			return b.Ptr.FrameAddr(), true
+		}
+		return b.Ptr.ReturnAddr(), true
+
 	case "constant_p":
 		// Not evaluated, as gcc does not: a question about the operand's
 		// form, whose answer at run time is always no.

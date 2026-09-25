@@ -249,6 +249,11 @@ func (a *Analyzer) gnuBuiltinCall(name string, c *ast.CallExpr) (ExprInfo, bool)
 		return prv(types.Typ(types.Int)), true
 	case builtinTrap, builtinUnreachable:
 		return prv(types.Typ(types.Void)), true
+	case builtinReturnAddress:
+		// GCC's: the level must be a constant, and only 0 -- this
+		// function's own -- is something VIR can say (§D3).
+		want(1)
+		return prv(&types.Pointer{Elem: types.Typ(types.Void)}), true
 	case builtinAtomic:
 		// vcx's own: the atomic operations VIR has, on an integer or
 		// pointer object named by address. Every one but load and store
@@ -314,21 +319,22 @@ func (a *Analyzer) gnuBuiltinCall(name string, c *ast.CallExpr) (ExprInfo, bool)
 type builtinKind uint8
 
 const (
-	builtinClassify    builtinKind = iota + 1 // isnan(x) and its kin
-	builtinFPClassify                         // fpclassify(nan, inf, normal, subnormal, zero, x)
-	builtinCompare                            // isgreater(x, y) and its kin
-	builtinConstant                           // huge_val(), inf(), nan("")
-	builtinBitCount                           // clz, ctz, popcount, parity
-	builtinBswap                              // bswap16/32/64
-	builtinBitReverse                         // bitreverse8/16/32/64
-	builtinOverflow                           // add_overflow(a, b, &r)
-	builtinExpect                             // expect(x, v)
-	builtinConstantP                          // constant_p(x)
-	builtinTrap                               // trap(), verbose_trap(category, message)
-	builtinIdentity                           // launder(p), assume_aligned(p, n)
-	builtinOperatorNew                        // operator_new(args...), operator_delete(args...)
-	builtinAtomic                             // atomic_add(p, v) and its kin
-	builtinUnreachable                        // unreachable()
+	builtinClassify      builtinKind = iota + 1 // isnan(x) and its kin
+	builtinFPClassify                           // fpclassify(nan, inf, normal, subnormal, zero, x)
+	builtinCompare                              // isgreater(x, y) and its kin
+	builtinConstant                             // huge_val(), inf(), nan("")
+	builtinBitCount                             // clz, ctz, popcount, parity
+	builtinBswap                                // bswap16/32/64
+	builtinBitReverse                           // bitreverse8/16/32/64
+	builtinOverflow                             // add_overflow(a, b, &r)
+	builtinExpect                               // expect(x, v)
+	builtinConstantP                            // constant_p(x)
+	builtinTrap                                 // trap(), verbose_trap(category, message)
+	builtinReturnAddress                        // return_address(level), frame_address(level): level 0 only
+	builtinIdentity                             // launder(p), assume_aligned(p, n)
+	builtinOperatorNew                          // operator_new(args...), operator_delete(args...)
+	builtinAtomic                               // atomic_add(p, v) and its kin
+	builtinUnreachable                          // unreachable()
 )
 
 // builtinKinds are the expression builtins, by name without __builtin_.
@@ -354,6 +360,7 @@ var builtinKinds = map[string]builtinKind{
 	"expect": builtinExpect, "expect_with_probability": builtinExpect,
 	"constant_p": builtinConstantP,
 	"trap":       builtinTrap, "verbose_trap": builtinTrap,
+	"return_address": builtinReturnAddress, "frame_address": builtinReturnAddress,
 	"launder": builtinIdentity, "assume_aligned": builtinIdentity,
 	"unreachable": builtinUnreachable,
 	"atomic_load": builtinAtomic, "atomic_store": builtinAtomic, "atomic_add": builtinAtomic,
