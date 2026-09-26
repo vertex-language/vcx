@@ -138,6 +138,10 @@ type Config struct {
 	// KeepComments retains COMMENT tokens in the output. --emit ii does not
 	// want them dropped silently; the parser never sees them.
 	KeepComments bool
+
+	// Cache, when set, shares header reads with the other units that hold
+	// the same Cache. Nil reads every header afresh for this unit.
+	Cache *Cache
 }
 
 // Default fills in the limits a caller left zero. It does not invent a search

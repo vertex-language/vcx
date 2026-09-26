@@ -354,13 +354,33 @@ func (p *Preprocessor) open(m *Mount, rel, display string) (*cached, error) {
 	if c, ok := p.files[display]; ok {
 		return c, nil
 	}
-	src, err := fs.ReadFile(m.FS, rel)
-	if err != nil {
-		return nil, err
+	if p.cfg.Cache == nil || !shareable(m.FS) {
+		src, err := fs.ReadFile(m.FS, rel)
+		if err != nil {
+			return nil, err
+		}
+		f := token.NewFile(display, src)
+		toks, diags := p.scanRaw(f)
+		c := &cached{file: f, diags: diags, toks: toks}
+		p.files[display] = c
+		return c, nil
 	}
-	f := token.NewFile(display, src)
-	toks, diags := p.scanRaw(f)
-	c := &cached{file: f, diags: diags, toks: toks}
+	key := cacheKey{fsys: m.FS, display: display, rel: rel, mode: p.scanMode(), std: p.cfg.Std}
+	e := p.cfg.Cache.entry(key, func(e *cacheEntry) {
+		src, err := fs.ReadFile(m.FS, rel)
+		if err != nil {
+			e.err = err
+			return
+		}
+		e.file = token.NewFile(display, src)
+		e.toks, e.diags = p.scanRaw(e.file)
+	})
+	if e.err != nil {
+		return nil, e.err
+	}
+	// The tokens are shared: readFileAs copies them before it sets their
+	// Origin, and nothing else writes them.
+	c := &cached{file: e.file, diags: e.diags, toks: e.toks}
 	p.files[display] = c
 	return c, nil
 }

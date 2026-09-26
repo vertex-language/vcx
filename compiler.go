@@ -113,6 +113,12 @@ type Compiler struct {
 	// implementation unit's `module net.tcp;` read the file named here.
 	// Nil leaves a module import unresolved.
 	Modules map[string]string
+
+	// Headers, when set, shares header reads with every other Compiler
+	// holding the same cache: the libc++ and SDK headers each unit
+	// includes are read and scanned once. The cache assumes the files do
+	// not change while it lives, so a caller makes one per build.
+	Headers *preprocessor.Cache
 }
 
 func (c *Compiler) target() (Target, error) {
@@ -223,6 +229,7 @@ func (c *Compiler) preprocessorConfigFor(in Input, p pass, passErr error) prepro
 		Std:    c.Std.tokenStd(),
 		Source: in.mount(),
 		Hosted: !c.Freestanding,
+		Cache:  c.Headers,
 	}
 	if c.Modules != nil {
 		cfg.Modules = map[string]preprocessor.ModuleUnit{}

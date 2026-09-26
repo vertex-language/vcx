@@ -472,14 +472,7 @@ func (p *Preprocessor) Scan(f *token.File) []Token {
 // #if group may legally hold what phase 7 would reject), the bracket stack is
 // off, and a line-opening '#' is returned as HASH rather than swallowed.
 func (p *Preprocessor) scanRaw(f *token.File) ([]Token, []token.Diagnostic) {
-	mode := scanner.ScanPP
-	if p.cfg.ObjC {
-		mode |= scanner.ScanObjC
-	}
-	if p.cfg.KeepComments {
-		mode |= scanner.ScanComments
-	}
-	toks, diags := scanner.Scan(f, p.cfg.Std, mode)
+	toks, diags := scanner.Scan(f, p.cfg.Std, p.scanMode())
 	out := make([]Token, 0, len(toks))
 	for _, t := range toks {
 		if t.Kind == token.COMMENT && !p.cfg.KeepComments {
@@ -488,6 +481,18 @@ func (p *Preprocessor) scanRaw(f *token.File) ([]Token, []token.Diagnostic) {
 		out = append(out, Token{Kind: t.Kind, Flags: t.Flags, Pos: t.Pos, End: t.End})
 	}
 	return out, diags
+}
+
+// scanMode is the scanner's mode for this unit's files.
+func (p *Preprocessor) scanMode() scanner.Mode {
+	mode := scanner.ScanPP
+	if p.cfg.ObjC {
+		mode |= scanner.ScanObjC
+	}
+	if p.cfg.KeepComments {
+		mode |= scanner.ScanComments
+	}
+	return mode
 }
 
 // rescan reports whether a spelling forms a single valid preprocessing token.
