@@ -282,6 +282,16 @@ type Analyzer struct {
 	// prechecked caches expanded pack arguments (see expandPackArgs).
 	prechecked map[ast.Expr]ExprInfo
 
+	// satisfaction is what each concept-id already decided: the concept
+	// and its arguments, as instanceKey spells them, to the answer. libc++
+	// asks whether the same type is copy_constructible thousands of times.
+	satisfaction map[satisfactionKey]constexpr.Value
+
+	// aliases is each alias template specialization already formed: the
+	// alias and its matched arguments, as instanceKey spells them, to the
+	// type it stands for.
+	aliases map[aliasKey]types.Type
+
 	// memInitScopes is the scope a clone of an expanded mem-initializer
 	// is checked in: the one with its pack element bound (see
 	// expandMemInits).

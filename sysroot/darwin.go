@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // darwinEntries resolves the macOS SDK. /usr/include does not exist
@@ -59,7 +60,20 @@ func SDK(h Host) (string, bool) {
 
 // darwinSDK is the three-step lookup: $SDKROOT, then xcrun, then the Command
 // Line Tools SDK at its fixed path.
+//
+// On the real machine the answer is found once per process: xcrun is a
+// subprocess, and one build asks for the SDK from include resolution,
+// object emission and the link -- nine times for a one-file program.
 func darwinSDK(h Host) (string, bool) {
+	if _, real := h.(osHost); real {
+		return hostSDK()
+	}
+	return lookupSDK(h)
+}
+
+var hostSDK = sync.OnceValues(func() (string, bool) { return lookupSDK(osHost{}) })
+
+func lookupSDK(h Host) (string, bool) {
 	if sdk := h.Getenv("SDKROOT"); sdk != "" {
 		return sdk, true
 	}
@@ -79,8 +93,14 @@ func darwinSDK(h Host) (string, bool) {
 // SDKSettings.json states it. A nil Host is the real machine.
 func SDKVersion(h Host) (string, bool) {
 	if h == nil {
-		h = osHost{}
+		return hostSDKVersion()
 	}
+	return darwinSDKVersion(h)
+}
+
+var hostSDKVersion = sync.OnceValues(func() (string, bool) { return darwinSDKVersion(osHost{}) })
+
+func darwinSDKVersion(h Host) (string, bool) {
 	sdk, ok := darwinSDK(h)
 	if !ok {
 		return "", false

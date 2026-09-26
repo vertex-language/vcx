@@ -422,6 +422,33 @@ func (a *Analyzer) instantiateAlias(alias *TypeSymbol, args []types.TemplateArg,
 	if !ok {
 		return nil
 	}
+	// A specialization of concrete arguments is formed once: the same
+	// `__enable_if_t<true, int>` is named all over libc++.
+	var key aliasKey
+	keep := !argsDependent(args)
+	if keep {
+		key = aliasKey{alias: alias, args: instanceKey(args)}
+		if t, done := a.aliases[key]; done {
+			return t
+		}
+	}
+	t := a.formAlias(info, args)
+	if keep && t != nil {
+		if a.aliases == nil {
+			a.aliases = map[aliasKey]types.Type{}
+		}
+		a.aliases[key] = t
+	}
+	return t
+}
+
+type aliasKey struct {
+	alias *TypeSymbol
+	args  string
+}
+
+// formAlias is the type an alias template stands for under args.
+func (a *Analyzer) formAlias(info *AliasTemplate, args []types.TemplateArg) types.Type {
 	paramScope := a.bindTemplateArgs(info.Scope, info.Params, args)
 	id := ast.Clone(info.Type)
 	specs := BuildDeclSpecs(id.Specs, paramScope, a.unit)

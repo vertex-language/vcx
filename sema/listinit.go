@@ -212,7 +212,14 @@ func (a *Analyzer) braceInto(t types.Type, items []ast.Expr, i *int, at *ast.Ini
 	switch bare := types.Unqualify(t).(type) {
 	case *types.Array:
 		for k := int64(0); *i < len(items) && (bare.Incomplete || k < bare.Len); k++ {
+			from := *i
 			out.Items = append(out.Items, a.braceItem(bare.Elem, items, i, at, elided))
+			// An element that took no items -- an empty aggregate --
+			// means every later one takes none either. Without this
+			// an array of unknown bound never ends.
+			if *i == from {
+				break
+			}
 		}
 	default:
 		rec := types.AsRecord(bare)

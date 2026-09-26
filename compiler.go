@@ -379,13 +379,16 @@ func (c *Compiler) ModuleDirectives(in Input) ([]preprocessor.ModuleDirective, [
 // Parse runs phases 1-4 and parses the token stream into an ast.File.
 func (c *Compiler) Parse(in Input, mode parser.Mode) (*ast.File, []Diagnostic, error) {
 	p, err := c.passFor(in)
-	return c.parseFor(in, mode, p, err)
+	file, _, diags, err := c.parseFor(in, mode, p, err)
+	return file, diags, err
 }
 
-func (c *Compiler) parseFor(in Input, mode parser.Mode, p pass, passErr error) (*ast.File, []Diagnostic, error) {
+// parseFor is Parse for one pass. It also returns the link pragmas the
+// preprocessor met, so that a build learns them without a second run.
+func (c *Compiler) parseFor(in Input, mode parser.Mode, p pass, passErr error) (*ast.File, []preprocessor.LinkDirective, []Diagnostic, error) {
 	f, diags, err := c.Source(in)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	cfg := c.preprocessorConfigFor(in, p, passErr)
@@ -418,7 +421,7 @@ func (c *Compiler) parseFor(in Input, mode parser.Mode, p pass, passErr error) (
 		})
 	}
 
-	return file, diags, nil
+	return file, pp.Links(), diags, nil
 }
 
 // Check parses and type checks the input.
@@ -645,20 +648,26 @@ func roundUpTo(n, a int64) int64 {
 // embeds the device pass's image, or the device pass's own under
 // DeviceOnly.
 func (c *Compiler) IR(in Input) (*ir.Module, []Diagnostic, error) {
+	mod, _, diags, err := c.ir(in)
+	return mod, diags, err
+}
+
+// ir is IR, with the link pragmas of the pass it returns.
+func (c *Compiler) ir(in Input) (*ir.Module, []preprocessor.LinkDirective, []Diagnostic, error) {
 	p, err := c.passFor(in)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var images []offload.Image
 	var diags []Diagnostic
 	if c.embedsImages(p) {
 		images, diags, err = c.deviceImages(in, p)
 		if err != nil || HasErrors(diags) {
-			return nil, diags, err
+			return nil, nil, diags, err
 		}
 	}
-	mod, more, err := c.irFor(in, p, images)
-	return mod, append(diags, more...), err
+	mod, links, more, err := c.irFor(in, p, images)
+	return mod, links, append(diags, more...), err
 }
 
 // deviceImages runs the device pass of an offload unit for each
@@ -677,7 +686,7 @@ func (c *Compiler) deviceImages(in Input, p pass) ([]offload.Image, []Diagnostic
 		dp.arch = arch
 		dp.model.DeviceISA = arch.ISA()
 		dp = dp.toDevice()
-		mod, more, err := c.irFor(in, dp, nil)
+		mod, _, more, err := c.irFor(in, dp, nil)
 		diags = append(diags, more...)
 		if err != nil || mod == nil || HasErrors(diags) {
 			return nil, diags, err
@@ -708,10 +717,10 @@ func imageOf(arch OffloadArch, host Target, data []byte) offload.Image {
 }
 
 // irFor is one pass of an input: its module.
-func (c *Compiler) irFor(in Input, p pass, images []offload.Image) (*ir.Module, []Diagnostic, error) {
-	file, diags, err := c.parseFor(in, parser.DefaultMode, p, nil)
+func (c *Compiler) irFor(in Input, p pass, images []offload.Image) (*ir.Module, []preprocessor.LinkDirective, []Diagnostic, error) {
+	file, links, diags, err := c.parseFor(in, parser.DefaultMode, p, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer file.Release()
 	tgt, model := p.tgt, p.model
@@ -721,12 +730,12 @@ func (c *Compiler) irFor(in Input, p pass, images []offload.Image) (*ir.Module, 
 		diags = append(diags, Diagnostic{Severity: d.Severity, Site: d.Site, Message: d.Message})
 	}
 	if HasErrors(diags) {
-		return nil, diags, nil
+		return nil, nil, diags, nil
 	}
 
 	irTgt, err := irTarget(tgt)
 	if err != nil {
-		return nil, diags, err
+		return nil, nil, diags, err
 	}
 
 	mod, lowDiags := lower.Lower(file, res, lower.Options{
@@ -744,24 +753,30 @@ func (c *Compiler) irFor(in Input, p pass, images []offload.Image) (*ir.Module, 
 			Message:  d.Message,
 		})
 	}
-	return mod, diags, nil
+	return mod, links, diags, nil
 }
 
 // Object lowers the input and writes a relocatable object file.
 func (c *Compiler) Object(in Input) ([]byte, []Diagnostic, error) {
-	mod, diags, err := c.IR(in)
+	obj, _, diags, err := c.object(in)
+	return obj, diags, err
+}
+
+// object is Object, with the link pragmas the unit declared.
+func (c *Compiler) object(in Input) ([]byte, []preprocessor.LinkDirective, []Diagnostic, error) {
+	mod, links, diags, err := c.ir(in)
 	if err != nil {
-		return nil, diags, err
+		return nil, nil, diags, err
 	}
 	if mod == nil || HasErrors(diags) {
-		return nil, diags, nil
+		return nil, nil, diags, nil
 	}
 	p, err := c.passFor(in)
 	if err != nil {
-		return nil, diags, err
+		return nil, nil, diags, err
 	}
 	obj, err := emitObject(mod, p.tgt, p.arch)
-	return obj, diags, err
+	return obj, links, diags, err
 }
 
 // siteOf maps a token index back to its source position.

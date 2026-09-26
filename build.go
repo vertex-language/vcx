@@ -28,6 +28,8 @@ func (c *Compiler) Build(params BuildParams) error {
 		return c.buildMetal(params)
 	}
 	var objects []Input
+	// The link pragmas the units declared, as their compiles met them.
+	var links []preprocessor.LinkDirective
 	offload := map[Language]bool{}
 	for _, in := range params.Inputs {
 		if err := in.notCXX(); err != nil {
@@ -47,7 +49,7 @@ func (c *Compiler) Build(params BuildParams) error {
 			objects = append(objects, in)
 			continue
 		}
-		obj, diags, err := c.Object(in)
+		obj, inLinks, diags, err := c.object(in)
 		if err != nil {
 			return err
 		}
@@ -61,6 +63,7 @@ func (c *Compiler) Build(params BuildParams) error {
 			offload[lang] = true
 		}
 		objects = append(objects, ObjectBytes(moduleName(in)+c.objectExt(in), obj))
+		links = append(links, inLinks...)
 	}
 
 	if params.CompileOnly || c.DeviceOnly {
@@ -110,20 +113,11 @@ func (c *Compiler) Build(params BuildParams) error {
 	}
 	// What the units' link pragmas name: `#pragma vertex framework("AppKit")`.
 	frameworks := append([]string(nil), params.Frameworks...)
-	for _, in := range params.Inputs {
-		if !in.isSource() {
-			continue
-		}
-		sc, _, err := c.Scan(in)
-		if err != nil {
-			continue
-		}
-		for _, l := range sc.Links {
-			if l.Kind == preprocessor.LinkFramework {
-				frameworks = append(frameworks, l.Name)
-			} else {
-				libs = append(libs, l.Name)
-			}
+	for _, l := range links {
+		if l.Kind == preprocessor.LinkFramework {
+			frameworks = append(frameworks, l.Name)
+		} else {
+			libs = append(libs, l.Name)
 		}
 	}
 	return c.Link(LinkParams{Objects: objects, Output: out, Libs: libs, LibDirs: libDirs, Frameworks: frameworks})

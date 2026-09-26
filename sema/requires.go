@@ -9,7 +9,50 @@ import (
 )
 
 // satisfyConcept evaluates a concept-id with parameters bound to concrete types.
+//
+// The answer depends on nothing but the concept and the arguments, so it
+// is kept, as clang keeps its satisfaction cache. Dependent arguments and
+// packs are decided afresh, and so is an evaluation that failed.
 func (a *Analyzer) satisfyConcept(ctx *constexpr.Context, concept *ConceptSymbol, args []types.Type) (constexpr.Value, error) {
+	key, keep := satisfactionKeyOf(concept, args)
+	if keep {
+		if v, done := a.satisfaction[key]; done {
+			return v, nil
+		}
+	}
+	v, err := a.decideConcept(ctx, concept, args)
+	if keep && err == nil && v != nil {
+		if a.satisfaction == nil {
+			a.satisfaction = map[satisfactionKey]constexpr.Value{}
+		}
+		a.satisfaction[key] = v
+	}
+	return v, err
+}
+
+type satisfactionKey struct {
+	concept *ConceptSymbol
+	args    string
+}
+
+// satisfactionKeyOf is what a concept-id's answer is kept under, and
+// whether it may be kept at all.
+func satisfactionKeyOf(concept *ConceptSymbol, args []types.Type) (satisfactionKey, bool) {
+	targs := make([]types.TemplateArg, len(args))
+	for i, t := range args {
+		if t == nil || isDependentType(t) {
+			return satisfactionKey{}, false
+		}
+		if _, isPack := t.(*types.Pack); isPack {
+			return satisfactionKey{}, false
+		}
+		targs[i] = types.TemplateArg{IsType: true, Type: t}
+	}
+	return satisfactionKey{concept: concept, args: instanceKey(targs)}, true
+}
+
+// decideConcept is satisfyConcept without the cache.
+func (a *Analyzer) decideConcept(ctx *constexpr.Context, concept *ConceptSymbol, args []types.Type) (constexpr.Value, error) {
 	bound := NewScope(concept.SymScope, BlockScope, nil)
 	for i, param := range concept.Params {
 		if param != nil && param.IsPack && param.SymName != "" {
