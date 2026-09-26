@@ -1095,7 +1095,7 @@ func (a *Analyzer) checkClassSpec(s *ast.ClassSpec) {
 		// class being made, not a second instantiation of it.
 		if a.primary != nil && a.primary.ClassTemplate != nil && a.instArgs != nil {
 			rec.TemplateArgs = a.instArgs
-			primaryRecords[rec] = a.primary.Record
+			rec.Primary = a.primary.Record
 			a.primary.ClassTemplate.Instances[instanceKey(a.instArgs)] = recSym
 		}
 	}

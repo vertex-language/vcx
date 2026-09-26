@@ -721,14 +721,11 @@ func deduceReferenced(param, arg types.Type, out Binding) bool {
 
 // primaryOf returns the primary class template record for a specialization.
 func primaryOf(rec *types.Record) *types.Record {
-	if p, known := primaryRecords[rec]; known {
-		return p
+	if rec != nil && rec.Primary != nil {
+		return rec.Primary
 	}
 	return rec
 }
-
-// primaryRecords maps specialization records to their primary template record.
-var primaryRecords = map[*types.Record]*types.Record{}
 
 // bindNestedValue matches one argument of a nested template-id where
 // either side is a value.

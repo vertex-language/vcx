@@ -419,6 +419,10 @@ type Record struct {
 	// arguments it was instantiated with, which are part of its name.
 	TemplateArgs []TemplateArg
 
+	// Primary is the primary class template's record, on a specialization
+	// made from one; nil elsewhere.
+	Primary *Record
+
 	Bases    []BaseSpec
 	Fields   []Field
 	Methods  []*Method

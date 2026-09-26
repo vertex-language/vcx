@@ -2774,7 +2774,7 @@ func (a *Analyzer) templateNamedAsArgument(syms []Symbol) *types.TemplateRef {
 			continue
 		}
 		for r := a.curRecord; r != nil; r = nil {
-			if r == rs.Record || primaryRecords[r] == rs.Record {
+			if r == rs.Record || r.Primary == rs.Record {
 				return nil
 			}
 		}

@@ -357,7 +357,7 @@ func (a *Analyzer) instantiateClass(tmpl *RecordSymbol, args []types.TemplateArg
 			return held
 		}
 		rec := &types.Record{Tag: tmpl.Record.Tag, Name: tmpl.Record.Name, Scopes: tmpl.Record.Scopes, TemplateArgs: args}
-		primaryRecords[rec] = tmpl.Record
+		rec.Primary = tmpl.Record
 		held := &RecordSymbol{SymName: tmpl.SymName, Record: rec, SymPos: tmpl.SymPos, SymScope: tmpl.SymScope, TemplateOf: tmpl}
 		if info.Incomplete == nil {
 			info.Incomplete = map[string]*RecordSymbol{}
@@ -400,7 +400,7 @@ func (a *Analyzer) instantiateClass(tmpl *RecordSymbol, args []types.TemplateArg
 	}
 	inst.Record.TemplateArgs = args
 	inst.Record.Scopes = tmpl.Record.Scopes
-	primaryRecords[inst.Record] = tmpl.Record
+	inst.Record.Primary = tmpl.Record
 	info.Instances[ikey] = inst
 
 	// The members its pattern defines out of line, now that there is a
