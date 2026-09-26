@@ -61,6 +61,9 @@ func (u *unit) noteDynamicInit(v *sema.VarSymbol, g *ir.Global) {
 		} else {
 			needsCode = true
 		}
+	case v.Init != nil && types.IsFloat(types.Unqualify(v.SymType)):
+		_, ok := u.constantInit(v.SymType, v.Init)
+		needsCode = !ok
 	case v.Init != nil:
 		_, err := u.evalInt(v.Init)
 		needsCode = err != nil

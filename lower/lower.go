@@ -778,7 +778,13 @@ func (u *unit) initializeGlobal(v *sema.VarSymbol, g *ir.Global) {
 		return
 	}
 	if v.Init != nil && classOf(v.SymType) == nil {
-		if n, err := u.evalInt(v.Init); err == nil {
+		// A floating object's constant is a float, whatever the literal:
+		// `static double scale = 1;` holds 1.0.
+		if types.IsFloat(types.Unqualify(v.SymType)) {
+			if image, ok := u.constantInit(v.SymType, v.Init); ok {
+				g.Init(image)
+			}
+		} else if n, err := u.evalInt(v.Init); err == nil {
 			g.Init(ir.Lit(ir.Int(n)))
 		}
 	}

@@ -306,3 +306,14 @@ func (r *reader) peekLine() []Token {
 	}
 	return r.toks[start:i]
 }
+
+// opensModuleLine reports whether the tokens at r's cursor begin as a
+// module or import directive does: `module`, `import`, or `export`
+// followed by either. moduleDirective decides whether they are one.
+func opensModuleLine(r *reader) bool {
+	t := r.peekAt(0)
+	if t.Kind == token.EXPORT {
+		t = r.peekAt(1)
+	}
+	return t.Is("module") || t.Is("import")
+}

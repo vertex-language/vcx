@@ -38,8 +38,14 @@ export namespace math { int mul(int a, int b); }
 int hidden(int x) { return x * 2; }
 export int counter = 7;
 `)
-	impl := write("math_impl.cpp", `module geo.math;
-namespace math { int mul(int a, int b) { return a * b + hidden(0) + (int)Code::ok; } }
+	// Declarations in the implementation unit's global module fragment:
+	// the `module geo.math;` after them is still a directive, and the
+	// interface is still seen.
+	impl := write("math_impl.cpp", `module;
+extern "C" int abs(int);
+namespace detail { inline int one() { return 1; } }
+module geo.math;
+namespace math { int mul(int a, int b) { return a * b + hidden(0) + (int)Code::ok + abs(detail::one()) - 1; } }
 `)
 	main := write("main.cpp", `import geo.math;
 #include <cstdio>

@@ -264,11 +264,20 @@ func destringize(lit string) string {
 
 // expandText expands tokens from the current position to the next directive.
 func (p *Preprocessor) expandText(r *reader) {
+	first := true
 	s := &stream{more: func() (Token, bool) {
 		t, ok := r.peek()
 		if !ok || (t.Kind == token.HASH && t.StartsLine()) {
 			return Token{}, false
 		}
+		// So does a line that may open a module directive: `module M;`
+		// after declarations in the global module fragment is one, and
+		// the loop above is where it is recognized. The run's own first
+		// token is text already -- the loop has turned it down.
+		if !first && t.StartsLine() && opensModuleLine(r) {
+			return Token{}, false
+		}
+		first = false
 		// A `_Pragma(...)` ends this run of text for the same reason a
 		// line-opening `#` does: it is a directive wearing an operator's
 		// clothes, and the loop above is where directives are executed.
