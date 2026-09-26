@@ -38,7 +38,7 @@ func (in Input) name() string {
 func (in Input) isSource() bool {
 	ext := strings.ToLower(filepath.Ext(in.Name))
 	switch ext {
-	case ".cpp", ".cc", ".cxx", ".c++", ".cp", ".cppm", ".ixx", ".ccm", ".cxxm", ".c++m", ".ii",
+	case ".cpp", ".cc", ".cxx", ".c++", ".cp", ".cppm", ".mm", ".ixx", ".ccm", ".cxxm", ".c++m", ".ii",
 		".cu", ".cuh", ".hip", ".metal":
 		return true
 	}

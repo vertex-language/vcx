@@ -63,6 +63,13 @@ func (p *Preprocessor) directive(r *reader, hash Token, line []Token) {
 		p.doInclude(r, rest, at)
 	case "include_next":
 		p.doIncludeNext(r, rest, at)
+	case "import":
+		if !p.cfg.ObjC {
+			p.errorf(at, "#import is a GNU directive; vcx preprocesses ISO C++")
+			p.note(at, gnuDirectives["import"])
+			return
+		}
+		p.doImport(r, rest, at)
 	case "if":
 		r.beginIf("#if", at, func() bool { return p.Eval(rest, at) })
 		r.noteGuardIf(rest)

@@ -19,6 +19,11 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 	if r := fl.u.res.Info.Rewrites[e]; r != nil {
 		return fl.expr(r)
 	}
+	if fl.u.objc != nil {
+		if v, ok := fl.objcExpr(e); ok {
+			return v
+		}
+	}
 
 	switch e := e.(type) {
 	case *ast.BasicLit:
@@ -67,6 +72,17 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 		return fl.call(e)
 
 	case *ast.CastExpr:
+		if list, isList := e.X.(*ast.InitList); isList {
+			// A compound literal, `(T){...}`: a temporary of T.
+			t := fl.typeOf(e)
+			tmp := fl.alloc(t, "compound")
+			fl.initList(tmp, t, list)
+			if rec := classOf(t); rec != nil {
+				fl.temporary(tmp, rec)
+				return tmp
+			}
+			return fl.load(tmp, t)
+		}
 		if _, _, isRef := fl.castRef(e); isRef {
 			return fl.rvalue(e)
 		}
@@ -90,6 +106,9 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 			return fl.rvalue(e)
 		}
 		return fl.castOperand(e.X, fl.typeOf(e))
+
+	case *ast.StmtExpr:
+		return fl.stmtExpr(e)
 
 	case *ast.CondExpr:
 		return fl.conditional(e)
@@ -220,6 +239,11 @@ func (fl *fn) rvalue(e ast.Expr) ir.Value {
 	if classOf(t) != nil {
 		return slot
 	}
+	if fl.arcOn() {
+		if v, weak := fl.objcLoad(slot, t); weak {
+			return v
+		}
+	}
 	return fl.load(slot, t)
 }
 
@@ -227,6 +251,17 @@ func (fl *fn) rvalue(e ast.Expr) ir.Value {
 func (fl *fn) lvalue(e ast.Expr) (ir.Ptr, types.Type, bool) {
 	if op := fl.u.res.Info.Operators[e]; op != nil && isReference(op.FuncType.Ret) {
 		return fl.operatorAddr(e)
+	}
+	if fl.u.objc != nil {
+		if addr, t, ok, handled := fl.objcByrefAddr(e); handled {
+			return addr, t, ok
+		}
+		if addr, t, ok, handled := fl.objcIvarAddr(e); handled {
+			return addr, t, ok
+		}
+		if addr, t, ok, handled := fl.objcObjectTemp(e); handled {
+			return addr, t, ok
+		}
 	}
 	switch e := e.(type) {
 	case *ast.ParenExpr:
@@ -559,6 +594,13 @@ func isComparison(k token.Kind) bool {
 
 // assign stores into an lvalue and yields the value stored.
 func (fl *fn) assign(e *ast.AssignExpr) ir.Value {
+	if fl.arcOn() && e.Op == token.ASSIGN && ownership(fl.typeOf(e.Lhs)) != 0 {
+		// ARC evaluates the value before the location: copying a block
+		// may move the __block variable it is being stored into.
+		if v, handled := fl.objcAssignExpr(e); handled {
+			return v
+		}
+	}
 	slot, t, ok := fl.lvalue(e.Lhs)
 	if !ok {
 		return nil
@@ -759,6 +801,9 @@ func (fl *fn) conditional(e *ast.CondExpr) ir.Value {
 		return nil
 	}
 
+	if e.Then == nil {
+		return fl.elvis(e, t)
+	}
 	c := fl.truth(e.Cond)
 	if c == nil {
 		return nil
@@ -829,6 +874,11 @@ func (fl *fn) call(e *ast.CallExpr) ir.Value {
 		fl.blk.MemSet(tmp, fl.blk.I32.Const(0), fl.blk.I64.Const(size))
 		fl.defaultConstruct(tmp, rec, e.Pos())
 		return tmp
+	}
+	if fl.u.objc != nil {
+		if bp, isBlock := types.Unqualify(types.RemoveReference(fl.typeOf(e.Fun))).(*types.BlockPointer); isBlock {
+			return fl.blockCall(e, bp)
+		}
 	}
 	if id, isIdent := e.Fun.(*ast.Ident); isIdent {
 		if v, isBuiltin := fl.builtinCall(id.Text(fl.u.unit), e); isBuiltin {
@@ -1006,17 +1056,22 @@ func (fl *fn) finishCall(e *ast.CallExpr, callee *sema.FuncSymbol, target ir.Cal
 			if !ok {
 				return nil
 			}
-			if !fl.u.plainForCalls(rec) {
+			if !fl.u.plainForCalls(rec) || fl.u.paramDestroyedInCallee(rec) {
 				// The parameter object is a copy this caller makes, by
 				// the copy constructor, and passes by address. Who
 				// destroys it afterwards is the ABI's call: the callee
 				// under Microsoft (defineFunc tracks it), the caller
 				// under Itanium, at the end of the full-expression.
+				if fl.u.paramDestroyedInCallee(rec) && fl.takeTemporary(addr) {
+					// A prvalue is the parameter itself, handed over.
+					args = append(args, addr)
+					continue
+				}
 				tmp := fl.alloc(rec, "")
 				if !fl.copyObject(tmp, addr, rec, nil) {
 					return nil
 				}
-				if !fl.u.model.ABI.CalleeDestroysParameters() {
+				if !fl.u.paramDestroyedInCallee(rec) {
 					fl.temporary(tmp, rec)
 				}
 				addr = tmp
@@ -1032,6 +1087,21 @@ func (fl *fn) finishCall(e *ast.CallExpr, callee *sema.FuncSymbol, target ir.Cal
 			}
 			args = append(args, addr)
 			continue
+		}
+		if rec := classOf(fl.typeOf(a)); want == nil && rec != nil {
+			// A class past a variadic function's parameters.
+			if addr, ok := fl.objectOf(a); ok {
+				if words, ok := fl.variadicClass(addr, rec); ok {
+					args = append(args, words...)
+					continue
+				}
+			}
+		}
+		if fl.arcOn() {
+			if out, ok := fl.objcOutArg(a, want); ok {
+				args = append(args, out)
+				continue
+			}
 		}
 		v, _, converted := fl.convertedScalar(a)
 		if !converted {
@@ -1074,6 +1144,9 @@ func (fl *fn) finishCall(e *ast.CallExpr, callee *sema.FuncSymbol, target ir.Cal
 	}
 
 	res := fl.emitCall(target, args...)
+	if len(fl.writebacks) > 0 {
+		fl.objcWriteBack()
+	}
 	if retRec != nil {
 		return result
 	}
@@ -2006,4 +2079,78 @@ func (fl *fn) bindingAddr(v *sema.VarSymbol) (ir.Ptr, types.Type, bool) {
 	}
 	fl.u.errorf(v.SymPos, "lowering cannot place the part %q of a structured binding", v.SymName)
 	return ir.Ptr{}, nil, false
+}
+
+// elvis lowers GNU's `a ?: b`: a once, and b only where a is false.
+func (fl *fn) elvis(e *ast.CondExpr, t types.Type) ir.Value {
+	v := fl.expr(e.Cond)
+	if v == nil {
+		return nil
+	}
+	ct := fl.typeOf(e.Cond)
+	c := fl.truthOf(v, e.Pos())
+	if c == nil {
+		return nil
+	}
+	slot := fl.alloc(t, "")
+	fl.store(slot, fl.convert(v, ct, t), t)
+	els := fl.block("elvis_else")
+	join := fl.block("elvis_join")
+	fl.blk.BrIf(*c, join.To(), els.To())
+	fl.blk = els
+	if w := fl.expr(e.Else); w != nil {
+		fl.store(slot, fl.convert(w, fl.typeOf(e.Else), t), t)
+	}
+	if fl.blk != nil {
+		fl.blk.Br(join.To())
+	}
+	fl.blk = join
+	return fl.load(slot, t)
+}
+
+// stmtExpr lowers GNU's ({ ... }): the statements in a scope of their
+// own, and the last one's value, taken before that scope's objects are
+// destroyed.
+func (fl *fn) stmtExpr(e *ast.StmtExpr) ir.Value {
+	t := fl.typeOf(e)
+	stmts := e.Body.Stmts
+	var last *ast.ExprStmt
+	if n := len(stmts); n > 0 && t != nil && !types.IsVoid(types.Unqualify(t)) {
+		if x, ok := stmts[n-1].(*ast.ExprStmt); ok && x.X != nil {
+			last, stmts = x, stmts[:n-1]
+		}
+	}
+	fl.pushScope()
+	for _, s := range stmts {
+		fl.stmt(s)
+	}
+	var slot ir.Ptr
+	rec := classOf(t)
+	if last != nil && fl.blk != nil && fl.arcOn() && retainable(t) {
+		// ARC: the object is retained before the scope that may own it
+		// ends, and is the full-expression's at +1 after.
+		v := fl.objcRetained(last.X, t)
+		fl.popScope()
+		if v == nil || fl.blk == nil {
+			return nil
+		}
+		return fl.objcOwn(v)
+	}
+	if last != nil && fl.blk != nil {
+		slot = fl.alloc(t, "stmtexpr")
+		if rec != nil {
+			fl.exprInto(slot, last.X, rec)
+		} else if v := fl.expr(last.X); v != nil {
+			fl.store(slot, fl.convert(v, fl.typeOf(last.X), t), t)
+		}
+	}
+	fl.popScope()
+	if last == nil || fl.blk == nil {
+		return nil
+	}
+	if rec != nil {
+		fl.temporary(slot, rec)
+		return slot
+	}
+	return fl.load(slot, t)
 }

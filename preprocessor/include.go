@@ -53,6 +53,9 @@ type cached struct {
 	// to be read again, and nothing the program does afterwards withdraws the
 	// request.
 	once bool
+
+	// imported is set when #import read the file: it is read once.
+	imported bool
 }
 
 // doInclude implements [cpp.include].
@@ -68,6 +71,24 @@ func (p *Preprocessor) doInclude(r *reader, line []Token, at Site) {
 		return
 	}
 	p.include(r, name, angled, at, false)
+}
+
+// doImport is Objective-C's #import: an #include of a file that has not
+// been read already, and that nothing reads again after -- as if the file
+// had said #pragma once.
+func (p *Preprocessor) doImport(r *reader, line []Token, at Site) {
+	name, angled, n, ok := p.headerName(line, at)
+	if !ok {
+		return
+	}
+	p.expectEnd(line[n:], "#import")
+	if len(p.stack) >= p.cfg.MaxIncludeDepth {
+		p.errorf(at, "#import nested too deeply (limit %d)", p.cfg.MaxIncludeDepth)
+		return
+	}
+	p.importing = true
+	p.include(r, name, angled, at, false)
+	p.importing = false
 }
 
 // doIncludeNext is GNU's #include_next: the same search, resumed after the
@@ -203,6 +224,18 @@ func (p *Preprocessor) searchList(org *Origin, name string, angled, next bool) (
 		mounts = append(mounts, org.Mount)
 		rels = append(rels, path.Join(path.Dir(org.Path), name))
 	}
+	// A header of an umbrella framework finds its sub-frameworks, in the
+	// umbrella's Frameworks directory: CoreServices.h's "AE/AE.h" is
+	// CoreServices.framework/Frameworks/AE.framework/Headers/AE.h.
+	if !next && org != nil && org.Mount != nil && org.Mount.Framework {
+		if i := strings.Index(org.Path, ".framework/"); i >= 0 {
+			if fw, rest, ok := strings.Cut(name, "/"); ok && fw != "" && rest != "" {
+				umbrella := org.Path[:i+len(".framework")]
+				mounts = append(mounts, org.Mount)
+				rels = append(rels, path.Join(umbrella, "Frameworks", fw+".framework", "Headers", rest))
+			}
+		}
+	}
 	for i := start; i < len(p.cfg.Search); i++ {
 		m := &p.cfg.Search[i]
 		if m.Framework {
@@ -277,6 +310,22 @@ func (p *Preprocessor) include(r *reader, name string, angled bool, at Site, nex
 		// standing behind the request that the program could undefine.
 		if c.done && (c.once || (c.guard != "" && p.macros.Defined(c.guard))) {
 			return
+		}
+		if c.imported {
+			// A file #import read is not read again, by either directive,
+			// even while it is still being read.
+			p.importing = false
+			return
+		}
+		if p.importing {
+			// #import: read once, and never again, whichever directive
+			// asks -- marked before the file is read, so that a file that
+			// imports another that imports it back reads it once.
+			p.importing = false
+			if c.done {
+				return
+			}
+			c.once, c.imported = true, true
 		}
 		p.readFile(c, m, rel, display, at, r.org)
 		return
@@ -358,6 +407,6 @@ func (p *Preprocessor) readFileAs(c *cached, m *Mount, rel, display string, at S
 	if !c.done {
 		c.done = true
 		c.guard = r.guardFound
-		c.once = r.once
+		c.once = c.once || r.once
 	}
 }

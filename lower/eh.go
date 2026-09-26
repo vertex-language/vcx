@@ -66,6 +66,12 @@ func (u *unit) cxaEndCatch() ir.Callee {
 // personality is the routine the unwinder asks about this frame. Naming it
 // is what makes the backend write the tables at all.
 func (u *unit) personality() ir.Callee {
+	if u.objc != nil {
+		// Objective-C++'s, which answers for @catch clauses and defers
+		// to the C++ personality for the rest, as clang has it on Apple's
+		// runtime.
+		return u.rtImport("__objc_personality_v0", ir.NewSig().Ret(ir.TypeI32))
+	}
 	return u.rtImport("__gxx_personality_v0", ir.NewSig().Ret(ir.TypeI32))
 }
 
@@ -174,7 +180,19 @@ func (fl *fn) hasLiveObjectsSince(depth int) bool {
 		return true
 	}
 	for i := depth; i < len(fl.scopes); i++ {
-		if len(fl.scopes[i].objs) > 0 {
+		if fl.scopes[i].unwinds() {
+			return true
+		}
+	}
+	return false
+}
+
+// unwinds reports whether a scope holds anything an exception passing
+// through must end: an autorelease pool is popped only on the normal ways
+// out, as clang has it, so a pool alone needs no landing pad.
+func (s *scope) unwinds() bool {
+	for _, o := range s.objs {
+		if o.arc != arcPool {
 			return true
 		}
 	}
@@ -185,7 +203,7 @@ func (fl *fn) hasLiveObjectsSince(depth int) bool {
 // scope depth, latest first.
 func (fl *fn) destroyLiveSince(depth int) {
 	for i := len(fl.temps) - 1; i >= 0; i-- {
-		fl.destroy(fl.temps[i].addr, fl.temps[i].rec)
+		fl.destroyObj(fl.temps[i])
 	}
 	fl.destroyFrom(depth)
 }
@@ -196,7 +214,7 @@ func (fl *fn) hasLiveObjects() bool {
 		return true
 	}
 	for _, s := range fl.scopes {
-		if len(s.objs) > 0 {
+		if s.unwinds() {
 			return true
 		}
 	}
@@ -221,8 +239,8 @@ func (fl *fn) cleanupPad() *ir.Block {
 	fl.destroyLive()
 	// Unwinding out of a handler ends it: the exception it caught is
 	// done with, and the one now in flight is the runtime's to carry.
-	for i := 0; i < fl.catchDepth; i++ {
-		fl.blk.Call(fl.u.cxaEndCatch())
+	for i := len(fl.catchEnds) - 1; i >= 0; i-- {
+		fl.blk.Call(fl.catchEnds[i])
 	}
 	fl.blk.Resume(pad.Exn())
 	fl.blk, fl.inEH = saved, savedIn
@@ -233,14 +251,14 @@ func (fl *fn) cleanupPad() *ir.Block {
 // temporaries of the full-expression being evaluated, then each scope.
 func (fl *fn) destroyLive() {
 	for i := len(fl.temps) - 1; i >= 0; i-- {
-		fl.destroy(fl.temps[i].addr, fl.temps[i].rec)
+		fl.destroyObj(fl.temps[i])
 	}
 	fl.destroyFrom(0)
 
 	// Then what a constructor has built of the object itself, members
 	// before bases, each in reverse order of construction.
 	for i := len(fl.partial) - 1; i >= 0; i-- {
-		fl.destroy(fl.partial[i].addr, fl.partial[i].rec)
+		fl.destroyObj(fl.partial[i])
 	}
 }
 
@@ -429,6 +447,7 @@ func (fl *fn) handler(h *ast.CatchClause, exn ir.Ptr, done *ir.Block, rethrow bo
 	}
 	fl.pushScope()
 	fl.catchDepth++
+	fl.catchEnds = append(fl.catchEnds, fl.u.cxaEndCatch())
 	if sym, _ := fl.u.res.Info.Defs[h.Param].(*sema.VarSymbol); sym != nil && sym.SymName != "" {
 		fl.bindCaught(sym, caught)
 	}
@@ -436,6 +455,7 @@ func (fl *fn) handler(h *ast.CatchClause, exn ir.Ptr, done *ir.Block, rethrow bo
 		fl.stmt(h.Body)
 	}
 	fl.catchDepth--
+	fl.catchEnds = fl.catchEnds[:len(fl.catchEnds)-1]
 	fl.popScope()
 	if fl.blk != nil {
 		if rethrow {
@@ -480,9 +500,35 @@ func (fl *fn) endOpenCatches() {
 	if fl.blk == nil {
 		return
 	}
-	for i := 0; i < fl.catchDepth; i++ {
+	for i := len(fl.catchEnds) - 1; i >= 0; i-- {
 		// A plain call: the path out of the function has nothing left to
 		// unwind, and __cxa_end_catch does not throw here.
-		fl.blk.Call(fl.u.cxaEndCatch())
+		fl.blk.Call(fl.catchEnds[i])
 	}
+}
+
+// emitCallInd is emitCall through a function pointer of type t.
+func (fl *fn) emitCallInd(p ir.Ptr, t *ir.Type, args ...ir.Value) []ir.Value {
+	if fl.blk == nil {
+		return nil
+	}
+	pad := fl.unwindPad()
+	if pad == nil {
+		res := fl.blk.CallInd(p, t, args...)
+		out := make([]ir.Value, res.Len())
+		for i := range out {
+			out[i] = res.Value(i)
+		}
+		return out
+	}
+	fl.needsEH()
+	rets := t.Sig().Rets()
+	cont := fl.block("resume")
+	out := make([]ir.Value, 0, len(rets))
+	for i, r := range rets {
+		out = append(out, cont.Param(r.Type, fmt.Sprintf("r%d", i)))
+	}
+	fl.blk.InvokeInd(p, t, args, cont.To(), pad)
+	fl.blk = cont
+	return out
 }

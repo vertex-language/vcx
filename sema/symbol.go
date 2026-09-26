@@ -62,6 +62,9 @@ type VarSymbol struct {
 	// Defined marks a declaration that is a definition.
 	Defined bool
 
+	// ByRefBlock is a __block variable: blocks that capture it share it.
+	ByRefBlock bool
+
 	// KnownValue is the value of a non-type template parameter in an
 	// instantiation, where there is no initializer to evaluate.
 	KnownValue    int64

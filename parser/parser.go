@@ -22,6 +22,10 @@ const (
 
 	// Tolerant keeps parsing past the resync budget.
 	Tolerant
+
+	// ObjC parses Objective-C++: @ declarations and expressions, message
+	// sends, blocks and fast enumeration (see objc.go).
+	ObjC
 )
 
 const DefaultMode Mode = 0
@@ -97,6 +101,13 @@ type parser struct {
 	// halfGtr tracks when the first '>' of a '>>' token closed a template argument list.
 	halfGtr bool
 
+	// The Objective-C names the unit has declared: classes and protocols,
+	// the type parameters in scope, and each generic class's parameters.
+	objcClasses     map[string]bool
+	objcProtocols   map[string]bool
+	objcTypeParams  map[string]bool
+	objcClassParams map[string][]string
+
 	// names is what the parser has learned about identifiers: which are
 	// types and which are not. See names.go.
 	names []map[string]nameKind
@@ -132,7 +143,7 @@ type parser struct {
 }
 
 func newParser(u *Unit, mode Mode) *parser {
-	return &parser{
+	p := &parser{
 		u:         u,
 		cur:       0,
 		mode:      mode,
@@ -141,6 +152,12 @@ func newParser(u *Unit, mode Mode) *parser {
 		maxDepth:  defaultMaxDepth,
 		names:     []map[string]nameKind{{}},
 	}
+	if mode&ObjC != 0 {
+		// instancetype is a type everywhere in Objective-C; id, Class and
+		// SEL are the runtime header's typedefs.
+		p.noteType("instancetype")
+	}
+	return p
 }
 
 func (p *parser) pos() ast.Tok {

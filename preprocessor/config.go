@@ -93,6 +93,9 @@ type Config struct {
 	// them itself.
 	Modules map[string]ModuleUnit
 
+	// ObjC is Objective-C++: @ is a token, and #import includes a file once.
+	ObjC bool
+
 	// Predefines are applied in order before the primary source file is read.
 	Predefines []Predefine
 

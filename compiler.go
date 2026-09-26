@@ -52,6 +52,9 @@ type BuildParams struct {
 
 	// CompileOnly stops at objects: -c.
 	CompileOnly bool
+
+	// Frameworks are Apple frameworks to link: -framework.
+	Frameworks []string
 }
 
 // Compiler is the central compiler driver.
@@ -113,10 +116,23 @@ type Compiler struct {
 }
 
 func (c *Compiler) target() (Target, error) {
+	t := DefaultTarget()
+	t.MinOS = c.MinOS
 	if c.Target == "" {
-		return DefaultTarget(), nil
+		// With no target named, clang builds for this Mac's release, as
+		// the SDK states it; a named target without a version is built
+		// for the oldest release the architecture has.
+		if t.MinOS == "" {
+			t.MinOS = sdkRelease()
+		}
+		return t, nil
 	}
-	return TargetByName(c.Target)
+	named, err := TargetByName(c.Target)
+	if err != nil {
+		return named, err
+	}
+	named.MinOS = c.MinOS
+	return named, nil
 }
 
 // A pass is one compilation of an input: the target it is compiled for
@@ -144,7 +160,8 @@ func (c *Compiler) passFor(in Input) (pass, error) {
 		return pass{}, err
 	}
 	p := pass{lang: c.language(in), host: host, tgt: host, model: types.ModelForTarget(host.Arch, host.OS)}
-	if p.lang == LangCXX {
+	if p.lang == LangCXX || p.lang == LangObjCXX {
+		p.model.ObjC = p.lang == LangObjCXX
 		return p, nil
 	}
 	if p.lang == LangMetal {
@@ -193,7 +210,7 @@ func (p pass) toDevice() pass {
 // device pass's image: every host pass of an offload unit, unless
 // HostOnly asked for the host alone.
 func (c *Compiler) embedsImages(p pass) bool {
-	return p.lang != LangCXX && !p.device && !c.HostOnly
+	return p.lang != LangCXX && p.lang != LangObjCXX && !p.device && !c.HostOnly
 }
 
 func (c *Compiler) preprocessorConfig(in Input) preprocessor.Config {
@@ -251,6 +268,15 @@ func (c *Compiler) preprocessorConfigFor(in Input, p pass, passErr error) prepro
 		cfg.Predefines = append(cfg.Predefines, offloadPredefines(p.lang, p.arch, p.device)...)
 		if p.host.Dialect == DialectGNU || p.device {
 			cfg.Vendor = p.tgt.gnuVendor()
+		}
+		if p.lang == LangObjCXX {
+			cfg.ObjC = true
+			cfg.Predefines = append(cfg.Predefines, objcPredefines()...)
+			if cfg.Vendor != nil {
+				for _, f := range objcFeatures {
+					cfg.Vendor.Features[f] = true
+				}
+			}
 		}
 	}
 	for _, d := range c.Defs {
@@ -379,6 +405,9 @@ func (c *Compiler) parseFor(in Input, mode parser.Mode, p pass, passErr error) (
 	}
 
 	unit := parser.NewUnit(toks)
+	if p.lang == LangObjCXX {
+		mode |= parser.ObjC
+	}
 	file, parseDiags := parser.Parse(unit, mode)
 
 	for _, d := range parseDiags {

@@ -152,6 +152,9 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 			info.Explicit = true
 			info.ExplicitCond = s.Cond
 
+		case *ast.ObjCTypeSpec:
+			customType = objcSpecType(s, scope, u, &info)
+
 		case *ast.NamedTypeSpec:
 			var syms []Symbol
 			var tmplName *ast.TemplateName
@@ -355,7 +358,7 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 	}
 
 	if customType != nil {
-		info.Type = types.Qualify(customType, info.Quals)
+		info.Type = types.Qualify(customType, info.Quals|objcOwnershipAttr(specs.Attrs, u))
 		return info
 	}
 
@@ -432,6 +435,31 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 	return info
 }
 
+// objcOwnershipAttr is the ownership qualifier an objc_ownership(...)
+// attribute among attrs spells -- what __weak and its kin expand to -- or 0.
+func objcOwnershipAttr(groups []*ast.AttrGroup, u ast.Unit) types.Qual {
+	var q types.Qual
+	for _, g := range groups {
+		q |= objcOwnershipOf(g.Attrs, u)
+	}
+	return q
+}
+
+func objcOwnershipOf(attrs []*ast.Attr, u ast.Unit) types.Qual {
+	var q types.Qual
+	for _, at := range attrs {
+		if at == nil || at.Name == nil || strings.Trim(at.Name.Text(u), "_") != "objc_ownership" {
+			continue
+		}
+		for t := at.Args.Lo; t < at.Args.Hi; t++ {
+			if w := types.OwnershipNamed(u.Text(t)); w != 0 {
+				q = w
+			}
+		}
+	}
+	return q
+}
+
 // BuildDeclarator wraps baseType with pointers, references, arrays, and functions from d.
 // resolveClassName is the class named to the left of the `::*` in a
 // pointer-to-member declarator.
@@ -495,6 +523,20 @@ func BuildDeclarator(d ast.Declarator, baseType types.Type, scope *Scope, u ast.
 			}
 		}
 
+		// An ownership qualifier written among the specifiers --
+		// `__weak NSString *s` -- rode on the class and belongs to the
+		// pointer to it; one written after the * is the pointer's own.
+		own := objcOwnershipOf(decl.Attrs, u)
+		if q := types.QualsOf(baseType) & types.QObjCOwnership; q != 0 {
+			if _, isClass := types.Unqualify(baseType).(*types.ObjCInterface); isClass && decl.Kind == token.MUL {
+				baseType = types.WithOwnership(baseType, 0)
+				if own == 0 {
+					own = q
+				}
+			}
+		}
+		quals |= own
+
 		var wrapped types.Type
 		switch decl.Kind {
 		case token.MUL:
@@ -509,6 +551,14 @@ func BuildDeclarator(d ast.Declarator, baseType types.Type, scope *Scope, u ast.
 			wrapped = types.AddLValueReference(baseType)
 		case token.LAND:
 			wrapped = types.AddRValueReference(baseType)
+		case token.XOR:
+			// A block pointer, `void (^f)(int)`: of a function type
+			// only; anything else was already an error to write.
+			if fn, isFunc := types.Unqualify(baseType).(*types.Func); isFunc {
+				wrapped = types.Qualify(&types.BlockPointer{Func: fn}, quals)
+			} else {
+				wrapped = baseType
+			}
 		default:
 			wrapped = baseType
 		}
@@ -541,7 +591,7 @@ func BuildDeclarator(d ast.Declarator, baseType types.Type, scope *Scope, u ast.
 		paramScope := NewScope(scope, BlockScope, nil)
 		for i, p := range decl.Params {
 			pInfo := BuildDeclSpecs(p.Specs, paramScope, u)
-			pType := BuildDeclarator(p.Decl, pInfo.Type, paramScope, u)
+			pType := objcIndirectParam(BuildDeclarator(p.Decl, pInfo.Type, paramScope, u))
 			// [dcl.fct]/23: `auto` for a parameter makes the function a
 			// template, with one invented parameter per placeholder. The
 			// name is the position, which nothing can write, so the
@@ -1361,4 +1411,15 @@ func invented(t types.Type) (*types.TemplateParam, bool) {
 		return invented(x.Elem)
 	}
 	return nil, false
+}
+
+// objcIndirectParam is ARC's default for a parameter that points to an
+// object pointer with no ownership written, `NSError **`: the object
+// pointer it reaches is __autoreleasing.
+func objcIndirectParam(t types.Type) types.Type {
+	p, ok := types.Unqualify(t).(*types.Pointer)
+	if !ok || !types.IsObjCRetainable(p.Elem) || types.QualsOf(p.Elem)&types.QObjCOwnership != 0 {
+		return t
+	}
+	return types.Qualify(&types.Pointer{Elem: types.WithOwnership(p.Elem, types.QObjCAutoreleasing)}, types.QualsOf(t))
 }

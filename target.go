@@ -87,6 +87,10 @@ type Target struct {
 	ABI          ABI
 	Dialect      Dialect
 	Freestanding bool
+
+	// MinOS is the Apple deployment target a Mach-O image is built for,
+	// -mmacosx-version-min; empty is the SDK's release (macOSMinimum).
+	MinOS string
 }
 
 var targets = map[string]Target{

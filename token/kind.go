@@ -86,6 +86,11 @@ const (
 
 	// CARET_CARET is the reflection operator (^^) under C++26 (P2996).
 	CARET_CARET // ^^
+
+	// AT is Objective-C's @, scanned only in an Objective-C++ unit. What
+	// follows it -- interface, "text", [ -- is an ordinary token, and the
+	// parser reads the two as one: @interface, @"text", @[...].
+	AT // @
 	punct_end
 
 	// Keywords ([lex.key]). Contextual keywords (import, module, override, final) are parsed as identifiers.
@@ -179,7 +184,12 @@ const (
 	cxx26_keyword_end
 
 	// Extension keywords.
-	RESTRICT  // __restrict, __restrict__
+	RESTRICT // __restrict, __restrict__
+	// NULLABILITY is clang's _Nonnull, _Nullable, _Null_unspecified and
+	// _Nullable_result: what a pointer promises about nil, which the
+	// Apple SDK's headers write on every pointer. It changes nothing a
+	// program means, so the parser reads it and passes over it.
+	NULLABILITY
 	TYPEOF    // __typeof__, __typeof, typeof
 	ATTRIBUTE // __attribute__
 	DECLSPEC  // __declspec
@@ -272,6 +282,7 @@ var names = [...]string{
 	COMMA:       ",",
 	HASH:        "#",
 	HASHHASH:    "##",
+	AT:          "@",
 	CARET_CARET: "^^",
 
 	ALIGNAS:          "alignas",
@@ -460,10 +471,17 @@ var aliases = map[string]Kind{
 	"__nullptr": NULLPTR,
 
 	// Extensions
-	"__restrict":   RESTRICT,
-	"__restrict__": RESTRICT,
-	"__typeof":     TYPEOF,
-	"typeof":       TYPEOF,
+	"_Nonnull":           NULLABILITY,
+	"_Nullable":          NULLABILITY,
+	"_Null_unspecified":  NULLABILITY,
+	"_Nullable_result":   NULLABILITY,
+	"__nonnull":          NULLABILITY,
+	"__nullable":         NULLABILITY,
+	"__null_unspecified": NULLABILITY,
+	"__restrict":         RESTRICT,
+	"__restrict__":       RESTRICT,
+	"__typeof":           TYPEOF,
+	"typeof":             TYPEOF,
 }
 
 // Lookup maps an identifier spelling to its keyword or operator kind, or returns IDENT.

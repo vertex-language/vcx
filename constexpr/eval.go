@@ -902,6 +902,9 @@ func (ctx *Context) evalCond(c *ast.CondExpr) (Value, error) {
 		return nil, err
 	}
 	if cond.ToBool() {
+		if c.Then == nil {
+			return cond, nil // a ?: b
+		}
 		return ctx.Eval(c.Then)
 	}
 	return ctx.Eval(c.Else)

@@ -29,6 +29,10 @@ const (
 	LangCUDA
 	LangHIP
 	LangMetal
+	// LangObjCXX is Objective-C++: C++ with Objective-C's classes, messages,
+	// blocks and ARC on top. It is a C++ unit like any other in every other
+	// way, so it has the host pass alone.
+	LangObjCXX
 )
 
 func (l Language) String() string {
@@ -39,6 +43,8 @@ func (l Language) String() string {
 		return "hip"
 	case LangMetal:
 		return "metal"
+	case LangObjCXX:
+		return "objective-c++"
 	}
 	return "c++"
 }
@@ -67,8 +73,10 @@ func ParseLanguage(s string) (Language, error) {
 		return LangHIP, nil
 	case "metal":
 		return LangMetal, nil
+	case "objective-c++", "objc++", "objcxx", "mm":
+		return LangObjCXX, nil
 	}
-	return LangCXX, fmt.Errorf("unknown language %q (supported: c++, cuda, hip, metal)", s)
+	return LangCXX, fmt.Errorf("unknown language %q (supported: c++, objective-c++, cuda, hip, metal)", s)
 }
 
 // Language is the language the input's name says it is written in: .cu
@@ -82,6 +90,8 @@ func (in Input) Language() Language {
 		return LangHIP
 	case ".metal":
 		return LangMetal
+	case ".mm":
+		return LangObjCXX
 	}
 	return LangCXX
 }

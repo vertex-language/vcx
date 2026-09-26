@@ -53,13 +53,13 @@ func (fl *fn) invoke(fn *sema.FuncSymbol, obj ir.Ptr, args []ir.Value, into ir.P
 	for i, a := range args {
 		if i < len(fn.FuncType.Params) {
 			// A class passed by value is a copy the caller makes.
-			if rec := classOf(fn.FuncType.Params[i].Type); rec != nil && !fl.u.plainForCalls(rec) {
+			if rec := classOf(fn.FuncType.Params[i].Type); rec != nil && (!fl.u.plainForCalls(rec) || fl.u.paramDestroyedInCallee(rec)) {
 				if src, isPtr := a.(ir.Ptr); isPtr {
 					tmp := fl.alloc(rec, "")
 					if !fl.copyObject(tmp, src, rec, nil) {
 						return nil
 					}
-					if !fl.u.model.ABI.CalleeDestroysParameters() {
+					if !fl.u.paramDestroyedInCallee(rec) {
 						fl.temporary(tmp, rec)
 					}
 					a = tmp

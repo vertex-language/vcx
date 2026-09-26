@@ -56,6 +56,58 @@ func (fl *fn) vaArg(e *ast.VaArgExpr) ir.Value {
 			return b.Ptr.VaArg(ap)
 		}
 	}
+	if rec := classOf(t); rec != nil && fl.u.model.VaList == types.VaListPointer && fl.u.model.ABI == types.ItaniumAppleARM64 {
+		return fl.vaArgAppleARM64(ap, rec)
+	}
 	fl.u.errorf(e.Pos(), "va_arg of %s is not lowered yet", t)
 	return nil
+}
+
+// vaArgAppleARM64 reads a class argument from Apple's arm64 va_list, a
+// pointer into the stack where every variadic argument has 8-byte slots
+// of its own: a class of up to 16 bytes is there by value, in as many
+// slots as it fills, and a larger one by the address of a copy the caller
+// made. What is read is copied into a temporary, the va_arg's value.
+func (fl *fn) vaArgAppleARM64(ap ir.Ptr, rec *types.Record) ir.Value {
+	b := fl.blk
+	size, _ := fl.u.sizeAlign(rec)
+	cur := b.Ptr.Load(ap)
+	src, step := cur, roundUp(size, 8)
+	if size > 16 {
+		src, step = b.Ptr.Load(cur), 8
+	}
+	b.Ptr.Store(b.Ptr.Add(cur, b.I64.Const(step)), ap)
+	tmp := fl.alloc(rec, "va_arg")
+	b.MemCpy(tmp, src, b.I64.Const(size))
+	return tmp
+}
+
+// variadicClass is a class argument passed past a variadic function's
+// parameters, on Apple's arm64: where every variadic argument has stack
+// slots of its own, a class of up to 16 bytes is its bytes as 8-byte
+// words, one slot each, and a larger one the address of a copy -- what
+// vaArgAppleARM64 reads back. False on any other target.
+func (fl *fn) variadicClass(addr ir.Ptr, rec *types.Record) ([]ir.Value, bool) {
+	if fl.u.model.VaList != types.VaListPointer || fl.u.model.ABI != types.ItaniumAppleARM64 {
+		return nil, false
+	}
+	b := fl.blk
+	size, _ := fl.u.sizeAlign(rec)
+	if size > 16 {
+		tmp := fl.alloc(rec, "vararg")
+		if !fl.copyObject(tmp, addr, rec, nil) {
+			return nil, false
+		}
+		return []ir.Value{tmp}, true
+	}
+	// The words are read from a copy padded to whole slots, so the last
+	// one reads no further than the class.
+	words := roundUp(size, 8) / 8
+	buf := fl.entry.Ptr.Alloc(uint64(words*8), 8)
+	b.MemCpy(buf, addr, b.I64.Const(size))
+	var out []ir.Value
+	for i := int64(0); i < words; i++ {
+		out = append(out, b.I64.Load(b.Ptr.Add(buf, b.I64.Const(i*8))))
+	}
+	return out, true
 }

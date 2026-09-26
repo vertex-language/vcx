@@ -64,7 +64,9 @@ func Lower(file *ast.File, res *sema.Result, opt Options) (*ir.Module, []Diagnos
 	u.mod = ir.NewModule(u.opt.Name, opt.Target)
 
 	u.declare()
+	u.initObjC()
 	u.define()
+	u.emitObjCMetadata()
 
 	if err := u.mod.Err(); err != nil {
 		u.errorf(ast.NoTok, "internal: the IR builder rejected this unit: %v", err)
@@ -181,6 +183,9 @@ type unit struct {
 	// kernelStubs are the kernels the host pass defined stubs for, in
 	// order, for the registration constructor.
 	kernelStubs []*sema.FuncSymbol
+
+	// objc is an Objective-C++ unit's state (objc.go), nil otherwise.
+	objc *objcState
 }
 
 func (u *unit) errorf(pos ast.Tok, format string, args ...any) {

@@ -12,8 +12,12 @@ func (p *parser) parseStmt() ast.Stmt {
 		return nil
 	}
 
+	if p.objc() && p.peek() == token.AT && !p.objcDeclAhead() {
+		return p.parseObjCStmt()
+	}
+
 	// Attribute statement: [[...]] stmt
-	if p.peek() == token.LBRACK && p.peekAt(1) == token.LBRACK {
+	if p.peek() == token.LBRACK && p.peekAt(1) == token.LBRACK && p.opensAttribute() {
 		attrs := p.parseAttrGroups()
 		stmt := p.parseStmt()
 		return &ast.AttrStmt{
@@ -452,6 +456,11 @@ func (p *parser) parseForStmt() ast.Stmt {
 	start := p.pos()
 	kw := p.expect(token.FOR)
 	lp := p.expect(token.LPAREN)
+
+	// Fast enumeration: `for (T x in c)`.
+	if p.isForIn() {
+		return p.parseObjCForIn(start, kw)
+	}
 
 	// Check if this is a range-for or standard for
 	// Range-for: `for ( init-statement_opt decl : range )`

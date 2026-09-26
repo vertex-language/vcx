@@ -25,7 +25,7 @@ func isCommand(word string) bool {
 // valueFlags are v++'s flags that take a value in the next argument.
 var valueFlags = map[string]bool{
 	"I": true, "D": true, "U": true, "target": true, "std": true, "x": true, "o": true,
-	"l": true, "L": true, "offload-arch": true, "arch": true, "emit": true,
+	"l": true, "L": true, "framework": true, "offload-arch": true, "arch": true, "emit": true,
 	"cudart": true, "cuda-path": true, "mmacosx-version-min": true,
 }
 

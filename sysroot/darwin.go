@@ -1,6 +1,10 @@
 package sysroot
 
-import "strings"
+import (
+	"encoding/json"
+	"path/filepath"
+	"strings"
+)
 
 // darwinEntries resolves the macOS SDK. /usr/include does not exist
 // on modern macOS; headers live only inside an SDK, found in the
@@ -69,4 +73,25 @@ func darwinSDK(h Host) (string, bool) {
 		return clt, true
 	}
 	return "", false
+}
+
+// SDKVersion is the version of the macOS SDK -- "26.4" -- as its
+// SDKSettings.json states it. A nil Host is the real machine.
+func SDKVersion(h Host) (string, bool) {
+	if h == nil {
+		h = osHost{}
+	}
+	sdk, ok := darwinSDK(h)
+	if !ok {
+		return "", false
+	}
+	data, err := h.ReadFile(filepath.Join(sdk, "SDKSettings.json"))
+	if err != nil {
+		return "", false
+	}
+	var settings struct{ Version string }
+	if json.Unmarshal([]byte(data), &settings) != nil || settings.Version == "" {
+		return "", false
+	}
+	return settings.Version, true
 }

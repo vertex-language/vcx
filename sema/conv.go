@@ -133,6 +133,11 @@ func classifyConversion(from, to types.Type, fromIsLValue, allowUser bool) Conve
 		f = decayed
 	}
 
+	// Objective-C++'s object pointers and blocks.
+	if rank, ok := objcConversion(f, t); ok {
+		return ConversionSequence{From: from, To: to, Rank: rank, Valid: true}
+	}
+
 	// Promotions
 	if isPromotion(f, t) {
 		return ConversionSequence{From: from, To: to, Rank: RankPromotion, Valid: true}

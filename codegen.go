@@ -3,6 +3,7 @@ package vcx
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/vertex-language/air"
 	"github.com/vertex-language/air/metallib"
@@ -15,6 +16,7 @@ import (
 	i386elf "github.com/vertex-language/i386/obj/elf"
 	machocore "github.com/vertex-language/macho"
 	ptxtext "github.com/vertex-language/ptx/text"
+	"github.com/vertex-language/vcx/sysroot"
 
 	"github.com/vertex-language/ir"
 	airlower "github.com/vertex-language/ir/lower/air"
@@ -69,12 +71,24 @@ func symbolPrefix(t Target) string {
 	return ""
 }
 
-// macOSMinimum returns the minimum deployment target version for Mach-O binaries.
+// macOSMinimum returns the minimum deployment target version for Mach-O
+// binaries: the one asked for -- Compiler.target fills in the SDK's
+// release where no target was named -- or the oldest the architecture has.
 func macOSMinimum(t Target) string {
+	if t.MinOS != "" {
+		return t.MinOS
+	}
 	if t.Arch == "arm64" {
 		return "11.0"
 	}
 	return "10.13"
+}
+
+// macOSSDK is the SDK version a Mach-O image records, "" where no SDK was
+// found.
+func macOSSDK() string {
+	v, _ := sysroot.SDKVersion(nil)
+	return v
 }
 
 // emitObject lowers a VIR module and encodes it in the target container
@@ -232,4 +246,18 @@ func i386Object(m *ir.Module, t Target) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// sdkRelease is the major release of the macOS SDK, "26.0", which clang
+// builds for when no target is named: a program built here runs here, and
+// the frameworks see a program of their own generation (CoreFoundation
+// and AppKit choose behaviour by the version a program was built for).
+// "" where there is no SDK.
+func sdkRelease() string {
+	if v, ok := sysroot.SDKVersion(nil); ok {
+		if major, _, _ := strings.Cut(v, "."); major != "" {
+			return major + ".0"
+		}
+	}
+	return ""
 }

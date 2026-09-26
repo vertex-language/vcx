@@ -419,6 +419,10 @@ func (m *itanium) cv(q types.Qual) {
 // typ writes one type, through the substitution table for anything that
 // is not a builtin.
 func (m *itanium) typ(t types.Type) {
+	if q, ok := t.(*types.Qualified); ok && q.Q&^types.QCV != 0 {
+		// ARC's ownership qualifiers are not part of a function's type.
+		t = types.Qualify(q.T, q.Q&types.QCV)
+	}
 	if t == nil {
 		m.sb.WriteString("v")
 		return
@@ -468,6 +472,24 @@ func (m *itanium) typ(t types.Type) {
 	case *types.Enum:
 		m.className(append(Scopes(t.Scopes...), Scope{Name: t.Name}))
 		return
+	case *types.ObjCInterface:
+		// An Objective-C class is a class of its name; id and
+		// instancetype are the runtime's objc_object, and Class its
+		// objc_class, as <objc/objc.h> declares them.
+		name := t.Name
+		switch types.ObjCBase(t) {
+		case types.ObjCIdObject, types.ObjCInstancetypeObject:
+			name = "objc_object"
+		case types.ObjCClassObject:
+			name = "objc_class"
+		}
+		m.className([]Scope{{Name: name}})
+		return
+	case *types.BlockPointer:
+		// A block is a vendor-qualified function type, as clang spells
+		// it: U13block_pointerFiiE for int (^)(int).
+		m.sb.WriteString("U13block_pointer")
+		m.typ(t.Func)
 	case *types.TemplateRef:
 		// A template template argument is the template's own name, with
 		// no argument list: `unwrap<Box, int>` names Box itself.

@@ -3,6 +3,7 @@ package lower
 import (
 	"github.com/vertex-language/ir"
 
+	"github.com/vertex-language/vcx/ast"
 	"github.com/vertex-language/vcx/mangle"
 	"github.com/vertex-language/vcx/sema"
 	"github.com/vertex-language/vcx/types"
@@ -23,6 +24,17 @@ type localObj struct {
 	addr ir.Ptr
 	rec  *types.Record
 	arr  types.Type
+
+	// arc is what ARC does with the pointer at addr instead of running a
+	// destructor (arc.go): release it, or destroy a weak reference. val
+	// is the +1 value an owned temporary holds, by which it is taken.
+	arc arcKind
+	val ir.Value
+
+	// fin is an @finally block, run where the scope is left, with the
+	// scopes outside depth only (objcTry).
+	fin   *ast.CompoundStmt
+	depth int
 }
 
 // pushScope opens a block.
@@ -104,7 +116,7 @@ func (fl *fn) endFullExpr() {
 	temps := fl.temps
 	fl.temps = nil
 	for i := len(temps) - 1; i >= 0; i-- {
-		fl.destroy(temps[i].addr, temps[i].rec)
+		fl.destroyObj(temps[i])
 	}
 }
 
@@ -129,11 +141,7 @@ func (fl *fn) extendTemporary(addr ir.Ptr) {
 // destroyScope runs one scope's destructors, last constructed first.
 func (fl *fn) destroyScope(s *scope) {
 	for i := len(s.objs) - 1; i >= 0; i-- {
-		if s.objs[i].arr != nil {
-			fl.destroyElements(s.objs[i].addr, s.objs[i].arr)
-			continue
-		}
-		fl.destroy(s.objs[i].addr, s.objs[i].rec)
+		fl.destroyObj(s.objs[i])
 	}
 }
 
@@ -200,7 +208,7 @@ func (u *unit) needsDestructor(rec *types.Record) bool {
 			return true
 		}
 	}
-	return false
+	return u.hasARCMembers(rec)
 }
 
 // elementOf is an array's innermost element type, or t itself.
@@ -381,6 +389,18 @@ func (fl *fn) destroyMembersAndBases(sym *sema.FuncSymbol) {
 	fl.u.model.LayoutWithBases(rec, fieldOffs, baseOffs)
 	for i := len(rec.Fields) - 1; i >= 0; i-- {
 		f := rec.Fields[i]
+		if k := arcMember(f.Type); k != arcNone && fl.u.objc != nil {
+			at := fl.this
+			if fieldOffs[i] != 0 {
+				at = fl.blk.Ptr.Add(at, fl.blk.I64.Const(fieldOffs[i]))
+			}
+			if types.IsArray(types.Unqualify(f.Type)) {
+				fl.destroyObj(localObj{addr: at, arr: f.Type, arc: k})
+			} else {
+				fl.destroyObj(localObj{addr: at, arc: k})
+			}
+			continue
+		}
 		fr := classOf(elementOf(f.Type))
 		if fr == nil || fl.u.destructor(fr) == nil {
 			continue
@@ -421,4 +441,17 @@ func (fl *fn) destroyElements(addr ir.Ptr, t types.Type) {
 	if rec := classOf(t); rec != nil {
 		fl.destroy(addr, rec)
 	}
+}
+
+// takeTemporary takes a full-expression temporary at addr out of the
+// temporaries, to be destroyed by whoever it is handed to; false where
+// addr is not one.
+func (fl *fn) takeTemporary(addr ir.Ptr) bool {
+	for i := len(fl.temps) - 1; i >= 0; i-- {
+		if fl.temps[i].addr == addr && fl.temps[i].arc == arcNone {
+			fl.temps = append(fl.temps[:i], fl.temps[i+1:]...)
+			return true
+		}
+	}
+	return false
 }

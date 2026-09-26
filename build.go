@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"github.com/vertex-language/vcx/preprocessor"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,7 +57,7 @@ func (c *Compiler) Build(params BuildParams) error {
 		if obj == nil {
 			return fmt.Errorf("no object produced for %s", in.Name)
 		}
-		if lang := c.language(in); lang != LangCXX && !c.DeviceOnly {
+		if lang := c.language(in); lang != LangCXX && lang != LangObjCXX && !c.DeviceOnly {
 			offload[lang] = true
 		}
 		objects = append(objects, ObjectBytes(moduleName(in)+c.objectExt(in), obj))
@@ -107,7 +108,25 @@ func (c *Compiler) Build(params BuildParams) error {
 	if out == "" {
 		out = c.defaultExecutable()
 	}
-	return c.Link(LinkParams{Objects: objects, Output: out, Libs: libs, LibDirs: libDirs})
+	// What the units' link pragmas name: `#pragma vertex framework("AppKit")`.
+	frameworks := append([]string(nil), params.Frameworks...)
+	for _, in := range params.Inputs {
+		if !in.isSource() {
+			continue
+		}
+		sc, _, err := c.Scan(in)
+		if err != nil {
+			continue
+		}
+		for _, l := range sc.Links {
+			if l.Kind == preprocessor.LinkFramework {
+				frameworks = append(frameworks, l.Name)
+			} else {
+				libs = append(libs, l.Name)
+			}
+		}
+	}
+	return c.Link(LinkParams{Objects: objects, Output: out, Libs: libs, LibDirs: libDirs, Frameworks: frameworks})
 }
 
 // writeObjects writes each object where -c and -o say: one output for

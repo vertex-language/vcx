@@ -20,6 +20,11 @@ func (p *parser) parseDeclaratorInternal(abstract bool) ast.Declarator {
 	// a declarator begins -- `void (__cdecl *f)(int)`, `int __cdecl g()`
 	// -- and says nothing on this target (see msDiscarded).
 	p.skipMSDiscarded()
+	for p.peek() == token.ATTRIBUTE {
+		// An attribute where the declarator begins says nothing lowering
+		// reads: noescape, nonnull.
+		p.parseAttrGroups()
+	}
 
 	// Prefix ptr-operators: *, &, &&, C::*
 	if p.isPtrOp() {
@@ -33,6 +38,9 @@ func (p *parser) isPtrOp() bool {
 	switch p.peek() {
 	case token.MUL, token.AND, token.LAND:
 		return true
+	case token.XOR:
+		// A block pointer, `void (^f)(int)`.
+		return p.objc()
 	case token.SCOPE, token.IDENT:
 		// Check pointer-to-member: C::*
 		if p.peek() == token.SCOPE || p.peekAt(1) == token.SCOPE {
@@ -83,10 +91,15 @@ func (p *parser) parsePointerDeclarator(abstract bool) ast.Declarator {
 				Span: ast.Span{Lo: tok, Hi: tok + 1},
 				Kind: k,
 			})
-		} else if k == token.UNALIGNED || (k == token.IDENT && msDiscarded[p.text(p.cur)]) {
+		} else if k == token.UNALIGNED || k == token.NULLABILITY || (k == token.IDENT && msDiscarded[p.text(p.cur)]) {
 			// `char *__ptr64 p`, `T *__unaligned q`: modifiers on the
 			// pointer, read and dropped.
 			p.next()
+		} else if k == token.ATTRIBUTE {
+			// `NSError * _Nullable __autoreleasing *`: the pointer's.
+			for _, ag := range p.parseAttrGroups() {
+				attrList = append(attrList, ag.Attrs...)
+			}
 		} else {
 			break
 		}
@@ -182,6 +195,12 @@ func (p *parser) parseDirectDeclarator(abstract bool) ast.Declarator {
 		}
 		if p.peek() == token.LBRACK {
 			d = p.parseArraySuffix(d)
+			// `void *args[0] __attribute__((packed))`: an attribute after
+			// an array's bound, which appertains to the member and says
+			// nothing its layout does not already.
+			if p.peek() == token.ATTRIBUTE {
+				p.parseAttrGroups()
+			}
 		} else if p.peek() == token.LPAREN {
 			if p.inNewTypeId {
 				// A new-declarator has no parameter list; '(' begins the initializer.
@@ -276,13 +295,34 @@ func (p *parser) isParenDeclarator(abstract bool) bool {
 	if p.peekAt(1) == token.RPAREN {
 		return false
 	}
-	// If followed by a ptr-op, it is a parenthesized declarator (skipping calling conventions).
+	// If followed by a ptr-op, it is a parenthesized declarator (skipping calling conventions,
+	// and GNU attributes: Foundation's `void (NS_NOESCAPE ^)(id)`).
 	i := 1
-	for p.peekAt(i) == token.IDENT && msDiscarded[p.text(p.peekTok(i))] || p.peekAt(i) == token.UNALIGNED {
-		i++
+	for {
+		if p.peekAt(i) == token.IDENT && msDiscarded[p.text(p.peekTok(i))] || p.peekAt(i) == token.UNALIGNED {
+			i++
+			continue
+		}
+		if p.peekAt(i) == token.ATTRIBUTE && p.peekAt(i+1) == token.LPAREN {
+			depth := 0
+			j := i + 1
+			for ; p.peekAt(j) != token.EOF; j++ {
+				if p.peekAt(j) == token.LPAREN {
+					depth++
+				} else if p.peekAt(j) == token.RPAREN {
+					depth--
+					if depth == 0 {
+						break
+					}
+				}
+			}
+			i = j + 1
+			continue
+		}
+		break
 	}
 	k := p.peekAt(i)
-	if k == token.MUL || k == token.AND || k == token.LAND {
+	if k == token.MUL || k == token.AND || k == token.LAND || (k == token.XOR && p.objc()) {
 		return true
 	}
 	// Handle parenthesized function names like (max)(args...).
@@ -320,7 +360,7 @@ func (p *parser) parseArraySuffix(inner ast.Declarator) ast.Declarator {
 	// a call or its ABI depends on, so they are read and passed over.
 	for {
 		k := p.peek()
-		if k != token.CONST && k != token.VOLATILE && k != token.RESTRICT && k != token.STATIC {
+		if k != token.CONST && k != token.VOLATILE && k != token.RESTRICT && k != token.STATIC && k != token.NULLABILITY {
 			break
 		}
 		p.next()

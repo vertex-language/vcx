@@ -98,6 +98,13 @@ func (fl *fn) defaultMembers(obj ir.Ptr, rec *types.Record, skip map[string]bool
 		if fl.blk == nil {
 			return false
 		}
+		if fl.u.objc != nil && arcMember(f.Type) != arcNone {
+			// ARC: an object member begins nil, and a weak one is
+			// registered with the runtime by the first store to it.
+			size, _ := fl.u.sizeAlign(f.Type)
+			fl.blk.MemSet(dst, fl.blk.I32.Const(0), fl.blk.I64.Const(size))
+			continue
+		}
 		if arr, isArr := types.Unqualify(f.Type).(*types.Array); isArr {
 			if er := classOf(elementOf(f.Type)); er != nil && fl.u.needsConstruction(er) {
 				fl.defaultElements(dst, arr, at)

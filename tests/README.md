@@ -1,8 +1,9 @@
 # tests
 
 A ladder: one small thing per file, numbered in the order the rungs climb.
-The root is C++, `001`–`250`, and each offload language has its own ladder
-of `001`–`050` beside it: `cuda/`, `hip/` and `metal/`.
+The root is C++, `001`–`253`, and each offload language has its own ladder
+of `001`–`050` beside it: `cuda/`, `hip/` and `metal/`. `objc/` is
+Objective-C++.
 
 Nothing here writes down an expected value. Every file is built twice,
 once by vcx and once by the language's own compiler, and the two results
@@ -15,6 +16,7 @@ disagreement with it is a bug in vcx by definition.
 | `tests/cuda/` | `001`–`050` `.cu` | nvcc, on a machine with an NVIDIA GPU | stdout and the exit status |
 | `tests/hip/` | `001`–`050` `.hip` | hipcc, on a machine with an AMD GPU and ROCm | stdout and the exit status |
 | `tests/metal/` | `001`–`050` `.metal` | `xcrun metal`, on a Mac's GPU | every buffer after the dispatch |
+| `tests/objc/` | `101`–`224` `.mm` | clang++ `-x objective-c++ -fobjc-arc`, on macOS | stdout and the exit status |
 
 Where no GPU or oracle is present, the CUDA and HIP programs are still
 compiled through both passes, and must compile. The Metal ladder needs
@@ -112,3 +114,16 @@ $ go test -run TestCUDA .             # the CUDA ladder
 $ go test -run TestHIP .              # the HIP ladder
 $ go test -run TestMetal .            # the Metal ladder
 ```
+
+## Objective-C++: `tests/objc/`
+
+objv's Objective-C rungs, as `.mm` files, numbered as they are in objv:
+classes, ivars, properties and their synthesis, `dealloc`, `super`, messages
+to nil, float and struct results, categories, extensions, protocols,
+literals and boxing, fast enumeration, blocks and `__block`, `@try` and
+`@finally`, `@synchronized`, and ARC one rule at a time -- strong, weak,
+unsafe_unretained, method families, the return handshake, parameters,
+globals, loops, pool exits, ivars, bridging, structs and arrays that own
+objects. ARC is always on, as SwiftPM compiles a `.mm`. A rung names what it
+links beyond Foundation on a line of its own: `// frameworks: CoreGraphics`,
+`// libraries: m`.

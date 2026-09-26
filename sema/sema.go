@@ -44,6 +44,11 @@ type Result struct {
 // Info records semantic analysis results: expression types, name resolutions,
 // and overload resolutions for lowering.
 type Info struct {
+	// ObjC is what lowering needs of an Objective-C++ unit (objc.go), and
+	// Blocks its block literals (objc_expr.go).
+	ObjC   *ObjCInfo
+	Blocks map[*ast.BlockExpr]*BlockInfo
+
 	Types map[ast.Expr]types.Type
 	Uses  map[ast.Expr]Symbol
 	Calls map[*ast.CallExpr]*FuncSymbol
@@ -254,6 +259,16 @@ type Analyzer struct {
 
 	// curTemplateParams holds active template parameters for concepts and nested declarations.
 	curTemplateParams []*TemplateParamSymbol
+
+	// linkageDirect is set while the declaration directly inside a
+	// one-declaration `extern "C" decl` is checked.
+	linkageDirect bool
+
+	// objcMethod is the Objective-C method whose body is being checked, and
+	// objcBlocks the block literals, innermost last.
+	objcMethod     *objcMethodContext
+	objcBlocks     []*BlockInfo
+	objcBlockCount int
 
 	// methodSyms maps methods to their corresponding FuncSymbols.
 	methodSyms map[*types.Method]*FuncSymbol

@@ -30,6 +30,10 @@ type Model struct {
 	// a unit is compiled in.
 	Offload Offload
 
+	// ObjC is Objective-C++: id, Class, SEL and the Objective-C types
+	// exist, and so do messages, blocks and ARC.
+	ObjC bool
+
 	// DeviceISA is the device the unit's kernels are compiled for, in
 	// either pass: which family of builtins is declared (__nvvm_* or
 	// __builtin_amdgcn_*), the way clang's host pass keeps the device's
@@ -222,7 +226,7 @@ func (m Model) Sizeof(t Type) (int64, bool) {
 	switch u := Unqualify(t).(type) {
 	case *Basic:
 		return m.basicSize(u.K)
-	case *Pointer:
+	case *Pointer, *BlockPointer:
 		return m.SizePtr, true
 	case *LValueReference, *RValueReference:
 		return m.SizePtr, true
@@ -461,7 +465,7 @@ func (m Model) Alignof(t Type) (int64, bool) {
 			return m.AlignLongDouble, true
 		}
 		return m.basicSize(u.K)
-	case *Pointer, *LValueReference, *RValueReference:
+	case *Pointer, *BlockPointer, *LValueReference, *RValueReference:
 		return m.SizePtr, true
 	case *MemberPointer:
 		// A member pointer aligns to whatever it is made of, not to a

@@ -21,7 +21,7 @@ func (p *parser) parseAttrGroups() []*ast.AttrGroup {
 // parseAttrGroup parses a single attribute group.
 func (p *parser) parseAttrGroup() *ast.AttrGroup {
 	// Standard C++ attribute: [[ ... ]]
-	if p.peek() == token.LBRACK && p.peekAt(1) == token.LBRACK {
+	if p.peek() == token.LBRACK && p.peekAt(1) == token.LBRACK && p.opensAttribute() {
 		start := p.pos()
 		p.next() // [
 		p.next() // [

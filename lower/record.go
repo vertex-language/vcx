@@ -147,7 +147,20 @@ func (u *unit) plainForCalls(rec *types.Record) bool {
 			return false
 		}
 	}
+	// A struct that is not trivial only for its ARC members still travels
+	// in registers, as clang has it in Objective-C++; the callee owns the
+	// copy it was passed and destroys it (paramDestroyedInCallee).
 	return true
+}
+
+// paramDestroyedInCallee reports whether a parameter of class rec is the
+// callee's to destroy: under Microsoft's ABI every class parameter is, and
+// in Objective-C++ so is a class that is plain but for its ARC members.
+func (u *unit) paramDestroyedInCallee(rec *types.Record) bool {
+	if u.model.ABI.CalleeDestroysParameters() {
+		return true
+	}
+	return u.hasARCMembers(rec) && u.plainForCalls(rec)
 }
 
 // plainForReturn is whether a class comes back from a call as bytes,
@@ -253,7 +266,7 @@ func (u *unit) needsConstruction(rec *types.Record) bool {
 			return true
 		}
 	}
-	return false
+	return u.hasARCMembers(rec)
 }
 
 // hasUserCopy reports a user-provided copy constructor anywhere in the
@@ -309,6 +322,12 @@ func (fl *fn) exprInto(dst ir.Ptr, e ast.Expr, rec *types.Record) bool {
 	case *ast.InitList:
 		fl.initList(dst, rec, x)
 		return true
+	case *ast.CastExpr:
+		// A compound literal, `(T){...}`, which C++ compilers take from C.
+		if list, isList := x.X.(*ast.InitList); isList {
+			fl.initList(dst, rec, list)
+			return true
+		}
 	case *ast.CondExpr:
 		// Whichever branch is chosen constructs into dst.
 		c := fl.truth(x.Cond)

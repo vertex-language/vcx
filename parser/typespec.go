@@ -16,7 +16,7 @@ func (p *parser) isTypeStart(k token.Kind) bool {
 	case token.INT8, token.INT16, token.INT32, token.INT64, token.INT128:
 		return true
 
-	case token.CONST, token.VOLATILE, token.RESTRICT, token.UNALIGNED:
+	case token.CONST, token.VOLATILE, token.RESTRICT, token.UNALIGNED, token.NULLABILITY:
 		return true
 
 	case token.STATIC, token.EXTERN, token.THREAD_LOCAL, token.MUTABLE, token.REGISTER:
@@ -60,9 +60,17 @@ func (p *parser) parseDeclSpecs() *ast.DeclSpecs {
 	specs := &ast.DeclSpecs{
 		Span: ast.Span{Lo: start, Hi: start},
 	}
+	kindofAt := ast.NoTok
 
 	for !p.atEOF() {
 		k := p.peek()
+
+		// Nullability says what a pointer promises about nil, and nothing
+		// about what the program means.
+		if k == token.NULLABILITY {
+			p.next()
+			continue
+		}
 
 		// Basic keywords
 		switch k {
@@ -162,6 +170,24 @@ func (p *parser) parseDeclSpecs() *ast.DeclSpecs {
 			continue
 		}
 
+		// An Objective-C object type: a class, id, Class or instancetype,
+		// with its angle-bracket lists, and __kindof before it.
+		if p.objc() && k == token.IDENT && !p.hasTypeSpec(specs) {
+			if p.text(p.cur) == "__kindof" {
+				kindofAt = p.next()
+				continue
+			}
+			if p.isObjCObjectName(p.text(p.cur)) {
+				lo := p.pos()
+				if kindofAt.IsValid() {
+					lo = kindofAt
+				}
+				specs.List = append(specs.List, p.parseObjCTypeSpec(kindofAt.IsValid(), lo))
+				kindofAt = ast.NoTok
+				continue
+			}
+		}
+
 		// Check if this is an identifier naming a type or concept
 		if k == token.IDENT || k == token.SCOPE {
 			// In C++, if we already have a type in specs.List (like int, or class X),
@@ -242,7 +268,7 @@ func (p *parser) hasTypeSpec(specs *ast.DeclSpecs) bool {
 				return true
 			}
 		case *ast.NamedTypeSpec, *ast.ClassSpec, *ast.EnumSpec, *ast.ElaboratedSpec,
-			*ast.DecltypeSpec, *ast.ConstrainedAutoSpec, *ast.TypeTransformSpec:
+			*ast.DecltypeSpec, *ast.ConstrainedAutoSpec, *ast.TypeTransformSpec, *ast.ObjCTypeSpec:
 			return true
 		}
 	}

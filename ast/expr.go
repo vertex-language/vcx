@@ -428,3 +428,15 @@ func (*RequiresExpr) exprNode()       {}
 func (*InitList) exprNode()           {}
 func (*DesignatedInit) exprNode()     {}
 func (*TypeTraitExpr) exprNode()      {}
+
+// StmtExpr is GNU's statement expression, `({ stmts; last; })`: the
+// statements run in a scope of their own, and the value is the last
+// one's, where that is an expression statement.
+type StmtExpr struct {
+	Span
+	Lparen Tok
+	Body   *CompoundStmt
+	Rparen Tok
+}
+
+func (*StmtExpr) exprNode() {}

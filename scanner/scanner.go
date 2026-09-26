@@ -19,6 +19,10 @@ const (
 	// # is scanned as HASH, bracket balancing checks are disabled, and literal
 	// value diagnostics are deferred.
 	ScanPP
+
+	// ScanObjC scans Objective-C++: @ is a token (AT), where in C++ it is
+	// not one.
+	ScanObjC
 )
 
 // Scan tokenizes the entire file, returning tokens ending in EOF along with diagnostics.
@@ -370,6 +374,13 @@ func (s *scanner) scanPunct() {
 		default:
 			k = token.REM
 		}
+	case '@':
+		if s.mode&ScanObjC == 0 {
+			s.off++
+			s.other(start, fmt.Sprintf("illegal character %q", c))
+			return
+		}
+		k = token.AT
 	case '#':
 		if c1 == '#' {
 			k, adv = token.HASHHASH, 2

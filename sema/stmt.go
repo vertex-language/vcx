@@ -145,6 +145,9 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 	case *ast.EmptyStmt:
 		return
 
+	case *ast.ObjCAutoreleaseStmt, *ast.ObjCSyncStmt, *ast.ObjCThrowStmt, *ast.ObjCTryStmt, *ast.ObjCForInStmt:
+		a.checkObjCStmt(s)
+
 	case *ast.ExprStmt:
 		a.CheckExpr(s.X)
 

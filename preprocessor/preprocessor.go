@@ -60,6 +60,9 @@ type Preprocessor struct {
 
 	files map[string]*cached
 
+	// importing is set while an #import resolves its file.
+	importing bool
+
 	// imported is the modules whose interfaces this unit has read.
 	imported map[string]bool
 
@@ -461,6 +464,9 @@ func (p *Preprocessor) Scan(f *token.File) []Token {
 // off, and a line-opening '#' is returned as HASH rather than swallowed.
 func (p *Preprocessor) scanRaw(f *token.File) ([]Token, []token.Diagnostic) {
 	mode := scanner.ScanPP
+	if p.cfg.ObjC {
+		mode |= scanner.ScanObjC
+	}
 	if p.cfg.KeepComments {
 		mode |= scanner.ScanComments
 	}
@@ -481,7 +487,11 @@ func (p *Preprocessor) rescan(spelling string) (token.Kind, bool) {
 		return r.kind, r.ok
 	}
 	f := token.NewFile("<paste>", []byte(spelling+"\n"))
-	toks, diags := scanner.Scan(f, p.cfg.Std, scanner.ScanPP)
+	mode := scanner.ScanPP
+	if p.cfg.ObjC {
+		mode |= scanner.ScanObjC
+	}
+	toks, diags := scanner.Scan(f, p.cfg.Std, mode)
 	var res pasteResult
 	if len(diags) == 0 && len(toks) == 2 && toks[1].Kind == token.EOF {
 		res.kind, res.ok = toks[0].Kind, true

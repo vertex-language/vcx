@@ -41,6 +41,10 @@ type LinkParams struct {
 	// the platform's directories, and added after every object.
 	LibDirs []string
 	Libs    []string
+
+	// Frameworks are Apple frameworks to link, by name: Foundation is
+	// Foundation.framework in the SDK.
+	Frameworks []string
 }
 
 // Link produces an executable from objects for the compiler's target.
@@ -67,6 +71,23 @@ func (c *Compiler) Link(p LinkParams) error {
 		return c.linkMachO(t, p)
 	}
 	return fmt.Errorf("no linker for %s", t.Container)
+}
+
+// framework reads the SDK's stub of the framework name.
+func (c *Compiler) framework(name string) (Input, error) {
+	sdk, ok := sysroot.SDK(nil)
+	if !ok {
+		return Input{}, fmt.Errorf("framework %s: no macOS SDK found", name)
+	}
+	for _, dir := range []string{"System/Library/Frameworks", "System/Library/SubFrameworks"} {
+		for _, base := range []string{name + ".tbd", name} {
+			path := filepath.Join(sdk, dir, name+".framework", base)
+			if data, err := os.ReadFile(path); err == nil {
+				return Input{Name: path, Data: data}, nil
+			}
+		}
+	}
+	return Input{}, fmt.Errorf("cannot find framework %q in %s", name, sdk)
 }
 
 // libraryDirs is where a -l name is looked for: the caller's first,
@@ -243,6 +264,15 @@ func (c *Compiler) linkELF(t Target, p LinkParams) error {
 	if err := addInputs(l.AddFile, libs); err != nil {
 		return linkErr(err)
 	}
+	for _, name := range p.Frameworks {
+		fw, err := c.framework(name)
+		if err != nil {
+			return err
+		}
+		if err := l.AddFile(fw.Name, fw.Data); err != nil {
+			return linkErr(err)
+		}
+	}
 	img, err := l.Link()
 	if err != nil {
 		return linkErr(err)
@@ -264,6 +294,9 @@ func (c *Compiler) linkMachO(t Target, p LinkParams) error {
 	target := macho.Target{CPU: cpu, SubCPU: sub, Platform: macho.PlatformMacOS, Endian: macho.LittleEndian}
 	if v, err := macho.ParseVersion(macOSMinimum(t)); err == nil {
 		target.MinOS = v
+	}
+	if v, err := macho.ParseVersion(macOSSDK()); err == nil {
+		target.SDK = v
 	}
 	l, err := macholink.New(target)
 	if err != nil {
@@ -295,6 +328,15 @@ func (c *Compiler) linkMachO(t Target, p LinkParams) error {
 	}
 	if err := addInputs(l.AddFile, libs); err != nil {
 		return linkErr(err)
+	}
+	for _, name := range p.Frameworks {
+		fw, err := c.framework(name)
+		if err != nil {
+			return err
+		}
+		if err := l.AddStub(fw.Name, fw.Data); err != nil {
+			return linkErr(err)
+		}
 	}
 	img, err := l.Link()
 	if err != nil {

@@ -58,7 +58,7 @@ func (u *unit) memberwise(rec *types.Record, ctor bool) bool {
 			return true
 		}
 	}
-	return false
+	return u.hasARCMembers(rec)
 }
 
 // userCopy is whether a class has a user-provided copy constructor (ctor)
@@ -169,6 +169,10 @@ func (fl *fn) copyMembers(dst, src ir.Ptr, rec *types.Record, ctor bool, at ast.
 // copyElements copies one member: an array element by element, a class
 // by its copy, a scalar by value.
 func (fl *fn) copyElements(dst, src ir.Ptr, t types.Type, ctor bool, at ast.Tok) {
+	if fl.u.objc != nil && arcMember(t) != arcNone {
+		fl.objcCopyMember(dst, src, t, ctor)
+		return
+	}
 	if arr, isArr := types.Unqualify(t).(*types.Array); isArr {
 		if classOf(elementOf(t)) == nil {
 			size, _ := fl.u.sizeAlign(t)

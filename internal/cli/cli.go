@@ -158,6 +158,8 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 	compileOnly := fs.Bool("c", false, "compile to objects, do not link")
 	var libs, libDirs stringList
 	fs.Var(&libs, "l", "link a library (repeatable)")
+	var frameworks stringList
+	fs.Var(&frameworks, "framework", "link an Apple framework (repeatable)")
 	fs.Var(&libDirs, "L", "add a library search directory (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -222,6 +224,7 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 		Output:      *outPath,
 		Inputs:      inputs,
 		Libs:        libs,
+		Frameworks:  frameworks,
 		LibDirs:     libDirs,
 		CompileOnly: *compileOnly,
 	})

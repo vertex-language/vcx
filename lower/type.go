@@ -49,8 +49,9 @@ func (u *unit) regType(t types.Type) ir.RegType {
 			return ir.TypeI64
 		}
 		return ir.TypePtr
-	case *types.Pointer, *types.Array, *types.Func:
-		// Arrays and functions decay to pointers in expression position.
+	case *types.Pointer, *types.Array, *types.Func, *types.BlockPointer:
+		// Arrays and functions decay to pointers in expression position,
+		// and a block is a pointer to its literal.
 		return ir.TypePtr
 	case *types.LValueReference, *types.RValueReference:
 		// A reference is an address at machine level.

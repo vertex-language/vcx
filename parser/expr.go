@@ -36,6 +36,10 @@ func (p *parser) parseBinaryExprRemainder(lhs ast.Expr, minPrec int) ast.Expr {
 		if p.inLaunch > 0 && p.launchCloses() {
 			break
 		}
+		// In a message, `and:` is the next selector piece, not &&.
+		if p.objc() && p.peekAt(1) == token.COLON && p.selectorTok(0) && k != token.IDENT && !k.IsKeyword() {
+			break
+		}
 
 		// Assignment operators (right-associative, below conditional)
 		if p.isAssignOp(k) && minPrec <= 2 {
@@ -54,7 +58,12 @@ func (p *parser) parseBinaryExprRemainder(lhs ast.Expr, minPrec int) ast.Expr {
 		// Conditional operator: cond ? then : else
 		if k == token.QUESTION && minPrec <= 2 {
 			qTok := p.next()
-			thenExpr := p.parseExpr()
+			// GNU's `a ?: b` is `a ? a : b` with a evaluated once: Then
+			// is left nil.
+			var thenExpr ast.Expr
+			if p.peek() != token.COLON {
+				thenExpr = p.parseExpr()
+			}
 			colonTok := p.expect(token.COLON)
 			elseExpr := p.parseAssignmentExpr()
 			lhs = &ast.CondExpr{
@@ -207,6 +216,22 @@ func (p *parser) parseCastOrUnaryExpr() ast.Expr {
 		}
 	}
 
+	// ARC's bridged casts: (__bridge T)x.
+	if p.objc() && p.peek() == token.LPAREN && p.peekAt(1) == token.IDENT {
+		switch kind := p.text(p.peekTok(1)); kind {
+		case "__bridge", "__bridge_retained", "__bridge_retain", "__bridge_transfer":
+			lp := p.next()
+			p.next()
+			if kind == "__bridge_retain" {
+				kind = "__bridge_retained"
+			}
+			typeId := p.parseTypeId()
+			p.expect(token.RPAREN)
+			x := p.parseCastOrUnaryExpr()
+			return &ast.ObjCBridgeCast{Span: ast.Span{Lo: lp, Hi: p.pos()}, Lparen: lp, Kind: kind, Type: typeId, X: x}
+		}
+	}
+
 	// C-style cast vs parenthesized expression: ( Type ) x
 	if p.peek() == token.LPAREN {
 		if p.isCastExpr() {
@@ -308,7 +333,7 @@ func typeIdToken(k token.Kind) bool {
 		token.MUL, token.AND, token.LAND,
 		token.LBRACK, token.RBRACK, token.LSS, token.GTR, token.SHR,
 		token.INT_LIT,
-		token.CONST, token.VOLATILE, token.RESTRICT,
+		token.CONST, token.VOLATILE, token.RESTRICT, token.NULLABILITY,
 		token.TYPENAME, token.DECLTYPE, token.AUTO,
 		token.CLASS, token.STRUCT, token.UNION, token.ENUM,
 		token.VOID, token.BOOL, token.CHAR, token.CHAR8_T, token.CHAR16_T,
@@ -331,6 +356,9 @@ func (p *parser) isExprStart(k token.Kind) bool {
 		token.STATIC_CAST, token.DYNAMIC_CAST, token.CONST_CAST, token.REINTERPRET_CAST,
 		token.TYPEID:
 		return true
+	case token.AT, token.XOR:
+		// An Objective-C literal or message, and a block.
+		return p.objc()
 
 	// Functional cast start: int(a) or double{x}.
 	case token.VOID, token.BOOL, token.CHAR, token.CHAR8_T, token.CHAR16_T,
@@ -686,6 +714,16 @@ func (p *parser) parsePostfixExpr() ast.Expr {
 func (p *parser) parsePrimaryExpr() ast.Expr {
 	start := p.pos()
 
+	if p.objc() && p.peek() == token.IDENT {
+		switch p.text(p.cur) {
+		case "__objc_yes", "__objc_no":
+			tok := p.next()
+			return &ast.ObjCBoolLit{Span: ast.Span{Lo: tok, Hi: tok + 1}, Value: p.text(tok) == "__objc_yes"}
+		case "__builtin_available":
+			return p.parseObjCAvailable(start, start)
+		}
+	}
+
 	switch p.peek() {
 	case token.INT_LIT, token.FLOAT_LIT, token.CHAR_LIT:
 		k := p.peek()
@@ -713,8 +751,24 @@ func (p *parser) parsePrimaryExpr() ast.Expr {
 		}
 
 	case token.LBRACK:
-		// Lambda expression: [captures] ...
+		// An Objective-C message, [receiver selector], where one parses;
+		// otherwise a lambda expression: [captures] ...
+		if p.objc() {
+			if m, ok := p.tryObjCMessage(); ok {
+				return m
+			}
+		}
 		return p.parseLambdaExpr()
+
+	case token.AT:
+		if p.objc() {
+			return p.parseObjCAtExpr()
+		}
+
+	case token.XOR:
+		if p.objc() {
+			return p.parseBlockExpr()
+		}
 
 	case token.LBRACE:
 		// Braced-init-list: { ... }
@@ -747,6 +801,15 @@ func (p *parser) parsePrimaryExpr() ast.Expr {
 		return p.parseRequiresExpr()
 
 	case token.LPAREN:
+		if p.peekAt(1) == token.LBRACE {
+			// GNU's statement expression, ({ ... }).
+			lp := p.next()
+			p.pushNames()
+			body := p.parseCompoundStmt()
+			p.popNames()
+			rp := p.expect(token.RPAREN)
+			return &ast.StmtExpr{Span: ast.Span{Lo: lp, Hi: p.pos()}, Lparen: lp, Body: body, Rparen: rp}
+		}
 		return p.parseParenOrFoldExpr()
 	}
 

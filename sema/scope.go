@@ -80,6 +80,10 @@ type Scope struct {
 
 	// RecordSymbols maps record types to their defining symbols on the root scope.
 	RecordSymbols map[*types.Record]*RecordSymbol
+
+	// ObjC is an Objective-C++ unit's classes and protocols (objc.go),
+	// on the root scope.
+	ObjC *ObjCTables
 }
 
 // remove takes a symbol out of the scope it was inserted into.

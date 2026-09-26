@@ -82,7 +82,7 @@ func IsScalar(t Type) bool {
 		return true
 	}
 	switch u.(type) {
-	case *MemberPointer:
+	case *MemberPointer, *BlockPointer:
 		return true
 	case *Basic:
 		return u.Kind() == NullptrKind

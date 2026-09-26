@@ -68,12 +68,23 @@ type fn struct {
 	// of, which a path leaving the function has to end (see
 	// endOpenCatches).
 	catchDepth int
+	// catchEnds are the calls that end each of those handlers, innermost
+	// last: __cxa_end_catch for a C++ catch, objc_end_catch for an
+	// Objective-C @catch.
+	catchEnds  []ir.Callee
 	inEH       bool
 	ehDeclared bool
 	npads      int
 
 	// labels are the function's goto targets, by name (see goto.go).
 	labels map[string]*label
+
+	// writebacks are the out-parameters of the call being lowered (arc.go).
+	writebacks []writeback
+
+	// byrefs are the __block variables this function reaches, by the
+	// address of their byref structure (block.go).
+	byrefs map[*sema.VarSymbol]ir.Ptr
 
 	// bitFields notes which addresses are bit-fields' storage units, for
 	// load and store to shift and mask (see bitfield.go).
@@ -91,7 +102,7 @@ func (u *unit) defineFunc(sym *sema.FuncSymbol, f *ir.Func) {
 		u.defineKernelStub(sym, f)
 		return
 	}
-	fl := &fn{u: u, sym: sym, f: f, slots: map[sema.Symbol]ir.Ptr{}}
+	fl := &fn{u: u, sym: sym, f: f, slots: map[sema.Symbol]ir.Ptr{}, byrefs: map[*sema.VarSymbol]ir.Ptr{}}
 	fl.entry = f.Entry()
 	fl.blk = f.Block("body")
 	if p, has := u.srets[sym]; has {
@@ -121,7 +132,7 @@ func (u *unit) defineFunc(sym *sema.FuncSymbol, f *ir.Func) {
 		}
 		byValueClass := !isReference(p.SymType) && classOf(p.SymType) != nil
 		if p.SymName == "" {
-			if u.model.ABI.CalleeDestroysParameters() && byValueClass {
+			if byValueClass && u.paramDestroyedInCallee(classOf(p.SymType)) {
 				if addr, isPtr := args[i].(ir.Ptr); isPtr {
 					fl.track(addr, p.SymType)
 				}
@@ -129,9 +140,12 @@ func (u *unit) defineFunc(sym *sema.FuncSymbol, f *ir.Func) {
 			continue // unnamed: passed, never read
 		}
 		fl.spillParam(p, args[i])
-		if u.model.ABI.CalleeDestroysParameters() && byValueClass {
+		if byValueClass && u.paramDestroyedInCallee(classOf(p.SymType)) {
 			fl.track(fl.slots[p], p.SymType)
 		}
+	}
+	if b := u.blockOf(sym); b != nil {
+		fl.enterBlock(b)
 	}
 
 	// A function-try-block's handlers answer for the mem-initializers too
@@ -169,6 +183,9 @@ func (u *unit) defineFunc(sym *sema.FuncSymbol, f *ir.Func) {
 	}
 
 	fl.stmt(sym.Body)
+	if fl.u.objc != nil && fl.blk != nil {
+		fl.objcEndMethod()
+	}
 
 	if tryFr != nil {
 		// A constructor's or destructor's handler rethrows when it
@@ -204,6 +221,9 @@ func (fl *fn) spillParam(p *sema.VarSymbol, arg ir.Value) {
 	slot := fl.alloc(p.SymType, p.SymName+"_addr")
 	fl.slots[p] = slot
 	fl.store(slot, arg, p.SymType)
+	if fl.arcOn() && retainable(p.SymType) {
+		fl.objcParam(p, slot)
+	}
 }
 
 // returnDefault ends a block that ran out of statements.

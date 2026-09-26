@@ -20,7 +20,7 @@ func (p *parser) isDeclStart() bool {
 		token.WCHAR_T, token.INT, token.SHORT, token.LONG, token.SIGNED, token.UNSIGNED,
 		token.FLOAT, token.DOUBLE, token.AUTO,
 		token.INT8, token.INT16, token.INT32, token.INT64, token.INT128,
-		token.CONST, token.VOLATILE, token.RESTRICT,
+		token.CONST, token.VOLATILE, token.RESTRICT, token.NULLABILITY,
 		token.TYPENAME, token.DECLTYPE:
 		return true
 
@@ -36,8 +36,8 @@ func (p *parser) isDeclStart() bool {
 		return true
 
 	case token.LBRACK:
-		if p.peekAt(1) == token.LBRACK {
-			return true // [[attribute]]
+		if p.peekAt(1) == token.LBRACK && p.opensAttribute() {
+			return true // [[attribute]], and not [[obj msg] msg]
 		}
 
 	case token.ALIGNAS, token.ATTRIBUTE, token.DECLSPEC:
@@ -70,6 +70,12 @@ func (p *parser) isDeclStart() bool {
 			return true
 		}
 		if p.peekAt(1) == token.LSS && p.isTemplateArgsAt(1) {
+			return true
+		}
+		// `V2 (^add)(V2, V2)`: a block variable. No call can have that
+		// shape, since a block literal never ends at its return type.
+		if p.objc() && p.peekAt(1) == token.LPAREN && p.peekAt(2) == token.XOR &&
+			p.peekAt(3) == token.IDENT && p.peekAt(4) == token.RPAREN {
 			return true
 		}
 	}
@@ -105,6 +111,12 @@ func (p *parser) parseDeclInternal(expectSemi bool) ast.Decl {
 			Span: ast.Span{Lo: semi, Hi: semi + 1},
 			Semi: semi,
 		}
+	}
+
+	// An Objective-C declaration: @interface, @implementation, @protocol,
+	// @class, with the attributes written before it.
+	if p.objcDeclAhead() {
+		return p.parseObjCDecl()
 	}
 
 	// Template declaration: template <...>
@@ -172,6 +184,7 @@ func (p *parser) parseDeclInternal(expectSemi bool) ast.Decl {
 
 	// Declaration specifiers
 	specs := p.parseDeclSpecs()
+	attrs = p.moveTypeAttrs(attrs, specs)
 
 	// If specs ends with class/struct/enum definition and no declarator follows before semicolon
 	if len(specs.List) > 0 && p.peek() == token.SEMI {

@@ -465,6 +465,56 @@ func (b *Builder) addStmt(stmt ast.Stmt) {
 		b.curBlock.TerminatorPos = s.Pos()
 		b.addEdge(b.curBlock, b.cfg.Exit, EdgeReturn)
 		b.curBlock = nil
+
+	// Objective-C++'s statements.
+	case *ast.ObjCSyncStmt:
+		b.addStmt(s.Body)
+	case *ast.ObjCAutoreleaseStmt:
+		b.addStmt(s.Body)
+	case *ast.ObjCThrowStmt:
+		b.curBlock.Stmts = append(b.curBlock.Stmts, s)
+		b.curBlock.NoReturn = true
+	case *ast.ObjCForInStmt:
+		// As a range-for: the body runs zero or more times.
+		header := b.newBlock()
+		bodyBlock := b.newBlock()
+		exitBlock := b.newBlock()
+		b.addEdge(b.curBlock, header, EdgeFallthrough)
+		b.addEdge(header, bodyBlock, EdgeBranchTrue)
+		b.addEdge(header, exitBlock, EdgeBranchFalse)
+		oldBreak, oldCont := b.breakDst, b.contDst
+		b.breakDst, b.contDst = exitBlock, header
+		b.curBlock = bodyBlock
+		b.addStmt(s.Body)
+		if b.curBlock != nil && len(b.curBlock.Succs) == 0 {
+			b.addEdge(b.curBlock, header, EdgeJump)
+		}
+		b.breakDst, b.contDst = oldBreak, oldCont
+		b.curBlock = exitBlock
+	case *ast.ObjCTryStmt:
+		// As a try: the body and each @catch join what follows. A
+		// @finally runs on every way out, so it is where they join.
+		entry := b.curBlock
+		after := b.newBlock()
+		b.addStmt(s.Body)
+		if b.curBlock != nil {
+			b.addEdge(b.curBlock, after, EdgeFallthrough)
+		}
+		for _, c := range s.Catches {
+			hb := b.newBlock()
+			if entry != nil {
+				b.addEdge(entry, hb, EdgeFallthrough)
+			}
+			b.curBlock = hb
+			b.addStmt(c.Body)
+			if b.curBlock != nil {
+				b.addEdge(b.curBlock, after, EdgeFallthrough)
+			}
+		}
+		b.curBlock = after
+		if s.Finally != nil {
+			b.addStmt(s.Finally)
+		}
 	}
 }
 

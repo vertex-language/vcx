@@ -7,6 +7,7 @@ import (
 
 	"github.com/vertex-language/vcx/ast"
 	"github.com/vertex-language/vcx/sema"
+	"github.com/vertex-language/vcx/token"
 	"github.com/vertex-language/vcx/types"
 )
 
@@ -27,6 +28,9 @@ func (fl *fn) stmt(s ast.Stmt) {
 		}
 	}
 
+	if fl.u.objc != nil && fl.objcStmt(s) {
+		return
+	}
 	switch s := s.(type) {
 	case *ast.AttrStmt:
 		fl.stmt(s.Stmt)
@@ -39,6 +43,9 @@ func (fl *fn) stmt(s ast.Stmt) {
 		fl.popScope()
 
 	case *ast.EmptyStmt:
+
+	case *ast.AsmStmt:
+		fl.asmStmt(s)
 
 	case *ast.DeclStmt:
 		fl.declStmt(s)
@@ -186,6 +193,11 @@ func (fl *fn) declareLocal(init *ast.InitDeclarator) {
 		return
 	}
 
+	if sym.ByRefBlock && fl.u.objc != nil {
+		defer fl.endFullExpr()
+		fl.declareByref(sym, init)
+		return
+	}
 	slot := fl.allocVar(sym)
 	fl.slots[sym] = slot
 	defer fl.endFullExpr()
@@ -207,6 +219,18 @@ func (fl *fn) declareLocal(init *ast.InitDeclarator) {
 		fl.construct(slot, classOf(sym.SymType), ctor, init)
 		fl.track(slot, sym.SymType)
 		return
+	}
+	if fl.arcOn() {
+		if _, k := arcArrayElem(sym.SymType); k != arcNone {
+			fl.objcInitLocal(slot, sym.SymType, nil)
+			if init.Braced != nil {
+				fl.initList(slot, sym.SymType, init.Braced)
+			}
+			return
+		}
+		if init.Braced == nil && fl.objcInitLocal(slot, sym.SymType, init.Value) {
+			return
+		}
 	}
 	fl.track(slot, sym.SymType)
 
@@ -259,7 +283,11 @@ func (fl *fn) declareStaticLocal(init *ast.InitDeclarator, sym *sema.VarSymbol) 
 	u := fl.u
 	_, align := u.sizeAlign(sym.SymType)
 	fl.nstatics++
-	base := fmt.Sprintf("?%s@?%d?%s@4", sym.SymName, fl.nstatics, u.funcSymbol(fl.sym))
+	owner := fl.sym.AsmLabel // an Objective-C method's _c_Class__sel
+	if owner == "" {
+		owner = u.funcSymbol(fl.sym)
+	}
+	base := fmt.Sprintf("?%s@?%d?%s@4", sym.SymName, fl.nstatics, owner)
 	g := u.mod.Global(u.symbolName(base+"A"), u.domainOf(sym), u.storageType(sym.SymType))
 	g.Internal()
 	g.Align(uint64(align))
@@ -570,6 +598,9 @@ func (fl *fn) initList(dst ir.Ptr, t types.Type, list *ast.InitList) {
 						fl.exprInto(at, item, fr)
 						continue
 					}
+					if fl.arcOn() && fl.objcInitAt(at, f.Type, item) {
+						continue
+					}
 					if val := fl.expr(item); val != nil {
 						fl.store(at, fl.convert(val, fl.typeOf(item), f.Type), f.Type)
 						continue
@@ -714,6 +745,9 @@ func (fl *fn) initArrayElement(at ir.Ptr, elem types.Type, item ast.Expr) bool {
 		if rec := classOf(elem); rec != nil {
 			return fl.exprInto(at, item, rec)
 		}
+		if fl.arcOn() && fl.objcInitAt(at, elem, item) {
+			return true
+		}
 		if val := fl.expr(item); val != nil {
 			fl.store(at, fl.convert(val, fl.typeOf(item), elem), elem)
 			return true
@@ -767,6 +801,21 @@ func (fl *fn) returnStmt(s *ast.ReturnStmt) {
 		fl.destroyFrom(0)
 		fl.endOpenCatches()
 		fl.blk.Return(addr)
+		fl.blk = nil
+		return
+	}
+	if fl.arcOn() && retainable(ret) {
+		// The object at +1 before the scopes end -- the variable it may
+		// be is released by them -- and at the handshake's +0 after.
+		v := fl.objcReturnValue(s.X, ret)
+		if v == nil {
+			fl.returnDefault()
+			return
+		}
+		fl.endFullExpr()
+		fl.destroyFrom(0)
+		fl.endOpenCatches()
+		fl.objcReturn(v)
 		fl.blk = nil
 		return
 	}
@@ -1160,4 +1209,31 @@ func (fl *fn) bitFieldInit(dst ir.Ptr, rec *types.Record, i int, f types.Field, 
 	}
 	fl.bitFieldStore(unit, bf, fl.convert(val, from, f.Type))
 	return true
+}
+
+// asmStmt lowers a GNU asm statement. Only an empty template with no
+// operands is lowered yet: nothing, or, where it clobbers memory, the
+// compiler barrier <dispatch/once.h> and the kernel's headers write it
+// for -- a fence that orders nothing but the compiler.
+func (fl *fn) asmStmt(s *ast.AsmStmt) {
+	var strs []string
+	operands := false
+	for t := s.Body.Lo; t < s.Body.Hi; t++ {
+		switch fl.u.unit.Kind(t) {
+		case token.STRING_LIT:
+			strs = append(strs, fl.u.unit.Text(t))
+		case token.LPAREN:
+			operands = true
+		}
+	}
+	if len(strs) == 0 || strs[0] != `""` || operands {
+		fl.u.errorf(s.Pos(), "lowering does not handle this asm statement yet")
+		return
+	}
+	for _, c := range strs[1:] {
+		if c == `"memory"` {
+			fl.blk.Fence(ir.SeqCst, ir.SingleThread)
+			return
+		}
+	}
 }

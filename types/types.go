@@ -60,6 +60,10 @@ const (
 	PackKind
 	TemplateRefKind
 	TransformKind
+
+	// Objective-C++ (objc.go)
+	ObjCInterfaceKind
+	BlockPointerKind
 )
 
 // Type is the interface all C++ types implement.
@@ -106,7 +110,21 @@ type Qual uint8
 const (
 	QConst Qual = 1 << iota
 	QVolatile
+
+	// The Objective-C ownership qualifiers ARC reads, on an object or
+	// block pointer: __strong where written (it is the default), __weak,
+	// __unsafe_unretained and __autoreleasing.
+	QObjCStrong
+	QObjCWeak
+	QObjCUnsafe
+	QObjCAutoreleasing
 )
+
+// QObjCOwnership is every ownership qualifier.
+const QObjCOwnership = QObjCStrong | QObjCWeak | QObjCUnsafe | QObjCAutoreleasing
+
+// QCV is the qualifiers C++ itself has.
+const QCV = QConst | QVolatile
 
 // Qualified wraps a Type with cv-qualifiers.
 type Qualified struct {
@@ -417,6 +435,11 @@ type Record struct {
 
 	// Final is the contextual `final` on the class-head.
 	Final bool
+
+	// LinkageName says Name came from a typedef, `typedef struct { } S;`
+	// ([dcl.typedef]/9): the class has no tag of its own, which is what an
+	// Objective-C type encoding writes as ?.
+	LinkageName bool
 
 	// InheritedCtors are direct bases whose constructors were inherited via using-declarations.
 	InheritedCtors []*Record

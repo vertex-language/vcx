@@ -20,6 +20,9 @@ func (a *Analyzer) CheckDecl(decl ast.Decl) {
 	case *ast.EmptyDecl:
 		return
 
+	case *ast.ObjCForwardDecl, *ast.ObjCAliasDecl, *ast.ObjCProtocolDecl, *ast.ObjCInterfaceDecl, *ast.ObjCImplDecl:
+		a.checkObjCDecl(d)
+
 	case *ast.NamespaceDecl:
 		a.checkNamespaceDecl(d)
 
@@ -65,10 +68,15 @@ func (a *Analyzer) CheckDecl(decl ast.Decl) {
 				a.externC = false
 			}
 		}
+		// [dcl.link]/8: a declaration directly in the one-declaration
+		// form is as if it said extern -- `extern "C" int x;` declares
+		// x, and defines nothing.
+		oldDirect := a.linkageDirect
+		a.linkageDirect = !d.Lbrace.IsValid()
 		for _, child := range d.Decls {
 			a.CheckDecl(child)
 		}
-		a.externC = old
+		a.externC, a.linkageDirect = old, oldDirect
 
 	case *ast.StructuredBinding:
 		a.checkStructuredBinding(d)
@@ -479,6 +487,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			// for an unnamed enumeration.
 			if rec, isRec := fullType.(*types.Record); isRec && rec.Name == "" {
 				rec.Name = name
+				rec.LinkageName = true
 			}
 			if en, isEnum := fullType.(*types.Enum); isEnum && en.Name == "" {
 				en.Name = name
@@ -692,6 +701,19 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			})
 		}
 
+		// [basic.scope.pdecl]/1: a variable's point of declaration is
+		// right after its declarator, so its initializer may name it --
+		// `D d = {&d}`. It goes in as a declaration first, and the
+		// definition below takes its place, object and all.
+		var early *VarSymbol
+		if name != "" && a.curRecord == nil && (init.Value != nil || init.Braced != nil) && fullType != nil &&
+			!mentionsAuto(fullType) && !isDependentType(fullType) && a.curTemplateParams == nil &&
+			!a.instantiating && a.templateOwner == nil &&
+			!types.IsArray(types.Unqualify(fullType)) && len(a.curScope.LookupLocal(name)) == 0 {
+			early = &VarSymbol{SymName: name, SymType: fullType, SymPos: init.Pos(), SymScope: a.curScope, Storage: declInfo.Storage}
+			a.curScope.Insert(early)
+		}
+
 		if init.Braced != nil {
 			// List-initialization.
 			if rec := types.AsRecord(types.Unqualify(fullType)); rec == nil || !hasUserConstructor(rec) {
@@ -743,7 +765,7 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			SymType:    fullType,
 			SymPos:     init.Pos(),
 			SymScope:   a.curScope,
-			Storage:    declInfo.Storage,
+			Storage:    a.linkageStorage(declInfo.Storage, init),
 			Constexpr:  declInfo.Constexpr,
 			Consteval:  declInfo.Consteval,
 			Init:       init.Value,
@@ -754,7 +776,9 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			Align:      a.alignasOf(append(append([]*ast.AttrGroup{}, d.Attrs...), d.Specs.Aligns...)),
 			Memory:     a.memSpaceOf(d.Specs.AllAttrs(d.Attrs), init.Pos(), fullType),
 			// Defined unless extern without an initializer.
-			Defined: declInfo.Storage != StorageExtern || init.Value != nil || init.Braced != nil,
+			Defined: declInfo.Storage != StorageExtern && !a.linkageDirect || init.Value != nil || init.Braced != nil,
+			// __block, which is __attribute__((__blocks__(byref))).
+			ByRefBlock: hasAttr(d.Specs.Attrs, "blocks", a.unit) || hasAttr(d.Attrs, "blocks", a.unit),
 		}
 		// Variable template declaration.
 		if a.templateOwner == d && a.curTemplateParams != nil && !a.instantiating {
@@ -829,6 +853,12 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			}
 		}
 
+		if early != nil {
+			// The declaration the initializer saw becomes this variable.
+			a.curScope.remove(early)
+			*early = *varSym
+			varSym = early
+		}
 		if name != "" {
 			into := a.curScope
 			if varSym.Template != nil {
@@ -3194,4 +3224,13 @@ func (a *Analyzer) noteAutoConcepts(invented []*TemplateParamSymbol, d ast.Decla
 			}
 		}
 	}
+}
+
+// linkageStorage is a variable's storage class, extern for one declared
+// without an initializer directly in `extern "C" decl` ([dcl.link]/8).
+func (a *Analyzer) linkageStorage(s StorageClass, init *ast.InitDeclarator) StorageClass {
+	if a.linkageDirect && init.Value == nil && init.Braced == nil {
+		return StorageExtern
+	}
+	return s
 }

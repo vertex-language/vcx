@@ -66,6 +66,13 @@ func (a *Analyzer) CheckExpr(expr ast.Expr) ExprInfo {
 
 func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 	switch e := expr.(type) {
+	case *ast.ObjCMessageExpr, *ast.ObjCStringLit, *ast.ObjCSelectorExpr, *ast.ObjCProtocolExpr,
+		*ast.ObjCEncodeExpr, *ast.ObjCBoolLit, *ast.ObjCAvailableExpr, *ast.ObjCBoxedExpr,
+		*ast.ObjCArrayLit, *ast.ObjCDictLit, *ast.ObjCBridgeCast, *ast.BlockExpr,
+		*ast.ObjCSuperExpr, *ast.ObjCClassRecv:
+		info, _ := a.checkObjCExpr(e)
+		return info
+
 	case *ast.BasicLit:
 		return a.checkBasicLit(e)
 
@@ -123,9 +130,13 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 			a.errorAt(e.Lo, fmt.Sprintf("use of undeclared identifier %q", name))
 			return ExprInfo{Type: types.Typ(types.Int), ValCat: LValue}
 		}
+		if iv, isIvar := syms[0].(*ObjCIvarSymbol); isIvar {
+			return a.objcIvarExpr(e, iv)
+		}
 		a.record(e, syms[0])
 		if v, isVar := syms[0].(*VarSymbol); isVar {
 			a.implicitCapture(e, v)
+			a.objcBlockCapture(v)
 		}
 		return a.foldConstant(e, a.symToExprInfo(syms[0]), syms[0])
 
@@ -231,12 +242,30 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		}
 		return ExprInfo{Type: types.Unqualify(sub.Type), ValCat: PrValue}
 
+	case *ast.StmtExpr:
+		a.CheckStmt(e.Body)
+		if n := len(e.Body.Stmts); n > 0 {
+			if last, ok := e.Body.Stmts[n-1].(*ast.ExprStmt); ok && last.X != nil && a.info != nil {
+				if t := a.info.Types[last.X]; t != nil {
+					return ExprInfo{Type: types.Unqualify(types.Decay(types.RemoveReference(t))), ValCat: PrValue}
+				}
+			}
+		}
+		return ExprInfo{Type: types.Typ(types.Void), ValCat: PrValue}
+
 	case *ast.CondExpr:
 		cond := a.CheckExpr(e.Cond)
 		if !isDependentExpr(cond) && !contextuallyConvertibleToBool(cond.Type) {
 			a.errorAt(e.Cond.Pos(), "condition expression must be convertible to bool")
 		}
-		thenInfo := a.CheckExpr(e.Then)
+		thenInfo := cond
+		if e.Then != nil {
+			thenInfo = a.CheckExpr(e.Then)
+		} else {
+			// `a ?: b`: the first arm is the condition's value.
+			thenInfo.Type = types.Decay(types.RemoveReference(cond.Type))
+			thenInfo.ValCat = PrValue
+		}
 		elseInfo := a.CheckExpr(e.Else)
 		if isDependentExpr(cond) || isDependentExpr(thenInfo) || isDependentExpr(elseInfo) {
 			return dependentExpr()
@@ -1044,7 +1073,10 @@ func (a *Analyzer) checkAssignExpr(as *ast.AssignExpr) ExprInfo {
 	}
 
 	cs := ClassifyConversion(right.Type, target, right.ValCat == LValue)
-	if !cs.Valid && !isDependentType(target) {
+	// A null pointer constant converts to any pointer: `d->h = NULL`,
+	// where NULL is __null, 0L.
+	nullToPointer := isNullConstant(as.Rhs, right) && isPointerLike(target)
+	if !cs.Valid && !nullToPointer && !isDependentType(target) {
 		a.errorAt(as.Rhs.Pos(), fmt.Sprintf("cannot convert %q to %q in assignment", right.Type, target))
 	}
 
@@ -1372,6 +1404,11 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 		}
 	}
 
+	// A block is called as a function pointer is.
+	if bp, isBlock := types.Unqualify(types.RemoveReference(calleeInfo.Type)).(*types.BlockPointer); isBlock {
+		return a.checkBlockCall(c, bp)
+	}
+
 	// Dependent call.
 	if isDependentExpr(calleeInfo) {
 		return dependentExpr()
@@ -1475,7 +1512,19 @@ func (a *Analyzer) calleeNamesAType(fun ast.Expr) (types.Type, bool) {
 }
 
 func (a *Analyzer) checkMemberExpr(m *ast.MemberExpr) ExprInfo {
+	if a.model.ObjC && m.Op == token.PERIOD {
+		// `NSColor.redColor`: a class property, whose receiver is a class
+		// name rather than an expression.
+		if c := a.objcClassNamed(m.X); c != nil {
+			return a.objcPropRef(m, c, NameString(m.Sel, a.unit), true)
+		}
+	}
 	lhs := a.CheckExpr(m.X)
+	if a.model.ObjC {
+		if info, ok := a.objcMemberOf(m, lhs); ok {
+			return info
+		}
+	}
 
 	// Dependent member access -- including through a placeholder-typed
 	// parameter, `auto& __parse_ctx`, which makes its function a template.
@@ -1587,6 +1636,11 @@ func (a *Analyzer) checkIndexExpr(idx *ast.IndexExpr) ExprInfo {
 	}
 	if isDependentExpr(base) || isDependentExpr(arg) {
 		return dependentExpr()
+	}
+	if a.model.ObjC {
+		if info, ok := a.checkObjCSubscript(idx, base, arg); ok {
+			return info
+		}
 	}
 	// Overloaded operator[].
 	if rec := types.AsRecord(types.Unqualify(types.RemoveReference(base.Type))); rec != nil && len(idx.Args) == 1 {
@@ -2345,13 +2399,13 @@ func conditionalType(thenInfo, elseInfo ExprInfo, e *ast.CondExpr) types.Type {
 		if isNullConstant(e.Else, elseInfo) {
 			return t1
 		}
-		if isNullConstant(e.Then, thenInfo) {
+		if e.Then != nil && isNullConstant(e.Then, thenInfo) {
 			return t2
 		}
 		return t1
 	case p1 && (isNullConstant(e.Else, elseInfo) || types.Unqualify(t2).Kind() == types.NullptrKind):
 		return t1
-	case p2 && (isNullConstant(e.Then, thenInfo) || types.Unqualify(t1).Kind() == types.NullptrKind):
+	case p2 && (e.Then != nil && isNullConstant(e.Then, thenInfo) || types.Unqualify(t1).Kind() == types.NullptrKind):
 		return t2
 	}
 	if ct := types.CommonType(thenInfo.Type, elseInfo.Type); ct != nil {
