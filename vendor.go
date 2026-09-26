@@ -22,6 +22,9 @@ var gnuFeatures = []string{
 	"cxx_relaxed_constexpr", "cxx_return_type_deduction", "cxx_rtti", "cxx_rvalue_references",
 	"cxx_static_assert", "cxx_strong_enums", "cxx_trailing_return", "cxx_unicode_literals",
 	"cxx_unrestricted_unions", "cxx_user_literals", "cxx_variable_templates", "cxx_variadic_templates",
+	// A deprecated or unavailable attribute may carry its message, which
+	// Apple's headers test for before writing one (ATSDefines.h).
+	"attribute_deprecated_with_message", "attribute_unavailable_with_message",
 }
 
 // gnuBuiltins are the __has_builtin names vcx's analysis answers: the

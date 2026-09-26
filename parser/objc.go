@@ -371,6 +371,12 @@ func (p *parser) parseObjCMember(impl bool) ast.Decl {
 			return &ast.ObjCMarkerDecl{Span: ast.Span{Lo: start, Hi: p.pos()}, Keyword: at, Word: w}
 		}
 	}
+	// A C++ declaration among the members declares its names in the
+	// enclosing scope: `typedef NSString *CIImageOption` inside
+	// `@interface CIImage` names a type after its @end.
+	inner := p.names[len(p.names)-1]
+	p.names = p.names[:len(p.names)-1]
+	defer func() { p.names = append(p.names, inner) }()
 	return p.parseDecl()
 }
 

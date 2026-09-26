@@ -391,11 +391,23 @@ func (a *Analyzer) checkObjCMembers(members []ast.Decl, inst, class map[string]*
 			}
 		case *ast.ObjCPropertyImplDecl, *ast.EmptyDecl:
 		default:
-			// A C++ declaration inside an @interface is the enclosing
-			// scope's.
-			a.CheckDecl(m)
+			a.checkObjCFileDecl(m)
 		}
 	}
+}
+
+// checkObjCFileDecl checks a C++ declaration written among an
+// @interface's, @implementation's or @protocol's members. It is the
+// enclosing scope's, not the class's: AppKit declares `NSApp` inside
+// `@interface NSApplication`, and CoreImage `typedef NSString
+// *CIImageOption` inside `@interface CIImage`.
+func (a *Analyzer) checkObjCFileDecl(d ast.Decl) {
+	old := a.curScope
+	if a.curScope.Kind == BlockScope && a.curScope.Parent != nil {
+		a.curScope = a.curScope.Parent // the class's type parameters
+	}
+	defer func() { a.curScope = old }()
+	a.CheckDecl(d)
 }
 
 func (a *Analyzer) noteObjCMethod(m *types.ObjCMethod) {
@@ -632,7 +644,7 @@ func (a *Analyzer) checkObjCImpl(d *ast.ObjCImplDecl) {
 			}
 		case *ast.ObjCPropertyImplDecl, *ast.ObjCMarkerDecl, *ast.EmptyDecl:
 		default:
-			a.CheckDecl(m)
+			a.checkObjCFileDecl(m)
 		}
 	}
 	a.objcInfo().Impls = append(a.objcInfo().Impls, impl)

@@ -294,12 +294,13 @@ func (s *Scope) insert(sym Symbol) (Symbol, error) {
 		}
 	}
 
-	// [basic.scope.hiding]/2: outside a class, a class name and an object
-	// of the same name may be declared in either order, and the object
-	// hides the class, which only an elaborated-type-specifier then finds.
-	// Darwin's <sys/time.h> declares `struct timezone`, and <_time.h>
-	// `extern long timezone`.
-	if len(existing) > 0 && s.Kind != ClassScope {
+	// [basic.scope.hiding]/2: a class name and an object or data member
+	// of the same name may be declared in one scope in either order, and
+	// the object hides the class, which only an elaborated-type-specifier
+	// then finds. Darwin's <sys/time.h> declares `struct timezone`, and
+	// <_time.h> `extern long timezone`; <netinet/ip.h>'s ip_timestamp has a
+	// member `struct ipt_ta { ... } ipt_ta[1];`.
+	if len(existing) > 0 {
 		switch sym.(type) {
 		case *VarSymbol:
 			if allRecords(existing) {

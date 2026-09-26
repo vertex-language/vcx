@@ -467,6 +467,10 @@ var aliases = map[string]Kind{
 	"__asm":   ASM,
 	"__asm__": ASM,
 
+	// GNU attributes, as clang also spells them: AppKit's
+	// NSLAYOUTCONSTRAINT_EXTERN is `extern __attribute((visibility("default")))`.
+	"__attribute": ATTRIBUTE,
+
 	// nullptr alias
 	"__nullptr": NULLPTR,
 
