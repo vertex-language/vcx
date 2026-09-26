@@ -294,6 +294,26 @@ func (s *Scope) insert(sym Symbol) (Symbol, error) {
 		}
 	}
 
+	// [basic.scope.hiding]/2: outside a class, a class name and an object
+	// of the same name may be declared in either order, and the object
+	// hides the class, which only an elaborated-type-specifier then finds.
+	// Darwin's <sys/time.h> declares `struct timezone`, and <_time.h>
+	// `extern long timezone`.
+	if len(existing) > 0 && s.Kind != ClassScope {
+		switch sym.(type) {
+		case *VarSymbol:
+			if allRecords(existing) {
+				s.Symbols[name] = append([]Symbol{sym}, existing...)
+				return sym, nil
+			}
+		case *RecordSymbol:
+			if allVarsOrFuncs(existing) {
+				s.Symbols[name] = append(existing, sym)
+				return sym, nil
+			}
+		}
+	}
+
 	// Non-function symbols cannot be redefined in the same scope
 	if len(existing) > 0 {
 		if v, isVar := sym.(*VarSymbol); isVar {
@@ -642,6 +662,28 @@ func sameAutoConcepts(x, y *FuncSymbol) bool {
 	}
 	for i := range x.AutoConceptKeys {
 		if x.AutoConceptKeys[i] != y.AutoConceptKeys[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// allRecords reports whether every symbol is a class name.
+func allRecords(syms []Symbol) bool {
+	for _, s := range syms {
+		if _, ok := s.(*RecordSymbol); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// allVarsOrFuncs reports whether every symbol is an object or a function.
+func allVarsOrFuncs(syms []Symbol) bool {
+	for _, s := range syms {
+		switch s.(type) {
+		case *VarSymbol, *FuncSymbol:
+		default:
 			return false
 		}
 	}
