@@ -80,8 +80,8 @@ func (fl *fn) switchStmt(s *ast.SwitchStmt) {
 	fl.blk.Br(dflt.To())
 
 	// The bodies, in source order, each falling into the next.
-	oldBreak := fl.breakTo
-	fl.breakTo = exit
+	oldBreak, oldBreakDepth := fl.breakTo, fl.breakDepth
+	fl.breakTo, fl.breakDepth = exit, len(fl.scopes)
 	for i, g := range groups {
 		fl.blk = bodies[i]
 		for _, st := range g.stmts {
@@ -96,7 +96,7 @@ func (fl *fn) switchStmt(s *ast.SwitchStmt) {
 		}
 		fl.blk.Br(exit.To())
 	}
-	fl.breakTo = oldBreak
+	fl.breakTo, fl.breakDepth = oldBreak, oldBreakDepth
 
 	fl.blk = exit
 }

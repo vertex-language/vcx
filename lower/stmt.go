@@ -77,11 +77,11 @@ func (fl *fn) stmt(s ast.Stmt) {
 		fl.switchStmt(s)
 
 	case *ast.BreakStmt:
-		fl.destroyFrom(fl.loopDepth)
+		fl.destroyFrom(fl.breakDepth)
 		fl.jump(fl.breakTo, "break outside any loop")
 
 	case *ast.ContinueStmt:
-		fl.destroyFrom(fl.loopDepth)
+		fl.destroyFrom(fl.continueDepth)
 		fl.jump(fl.continueTo, "continue outside any loop")
 
 	case *ast.GotoStmt:
@@ -1043,8 +1043,8 @@ func (fl *fn) forStmt(s *ast.ForStmt) {
 // loop walks a loop body with break and continue pointing where they should,
 // and joins the body's fall-through to next.
 func (fl *fn) loop(body, continueTo, exit *ir.Block, stmt ast.Stmt, next *ir.Block) {
-	oldBreak, oldContinue, oldDepth := fl.breakTo, fl.continueTo, fl.loopDepth
-	fl.breakTo, fl.continueTo, fl.loopDepth = exit, continueTo, len(fl.scopes)
+	oldBreak, oldContinue, oldBreakDepth, oldContinueDepth := fl.breakTo, fl.continueTo, fl.breakDepth, fl.continueDepth
+	fl.breakTo, fl.continueTo, fl.breakDepth, fl.continueDepth = exit, continueTo, len(fl.scopes), len(fl.scopes)
 
 	fl.blk = body
 	fl.stmt(stmt)
@@ -1052,7 +1052,7 @@ func (fl *fn) loop(body, continueTo, exit *ir.Block, stmt ast.Stmt, next *ir.Blo
 		fl.blk.Br(next.To())
 	}
 
-	fl.breakTo, fl.continueTo, fl.loopDepth = oldBreak, oldContinue, oldDepth
+	fl.breakTo, fl.continueTo, fl.breakDepth, fl.continueDepth = oldBreak, oldContinue, oldBreakDepth, oldContinueDepth
 	fl.blk = exit
 }
 
@@ -1123,8 +1123,8 @@ func (fl *fn) rangeForStmt(s *ast.RangeForStmt) {
 	cond := fl.blk.I64.SLt(curI, fl.blk.I64.Const(arr.Len))
 	fl.blk.BrIf(cond, body.To(), exit.To())
 
-	oldBreak, oldContinue, oldDepth := fl.breakTo, fl.continueTo, fl.loopDepth
-	fl.breakTo, fl.continueTo, fl.loopDepth = exit, step, len(fl.scopes)
+	oldBreak, oldContinue, oldBreakDepth, oldContinueDepth := fl.breakTo, fl.continueTo, fl.breakDepth, fl.continueDepth
+	fl.breakTo, fl.continueTo, fl.breakDepth, fl.continueDepth = exit, step, len(fl.scopes), len(fl.scopes)
 
 	fl.blk = body
 	fl.pushScope()
@@ -1152,7 +1152,7 @@ func (fl *fn) rangeForStmt(s *ast.RangeForStmt) {
 		fl.blk.Br(step.To())
 	}
 
-	fl.breakTo, fl.continueTo, fl.loopDepth = oldBreak, oldContinue, oldDepth
+	fl.breakTo, fl.continueTo, fl.breakDepth, fl.continueDepth = oldBreak, oldContinue, oldBreakDepth, oldContinueDepth
 
 	fl.blk = step
 	stepI := fl.blk.I64.Load(idxSlot)

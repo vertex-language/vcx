@@ -164,8 +164,8 @@ func (fl *fn) rangeForClass(s *ast.RangeForStmt, proto *sema.RangeProtocol) {
 	fl.endFullExpr()
 	fl.blk.BrIf(cond, body.To(), exit.To())
 
-	oldBreak, oldContinue, oldDepth := fl.breakTo, fl.continueTo, fl.loopDepth
-	fl.breakTo, fl.continueTo, fl.loopDepth = exit, step, len(fl.scopes)
+	oldBreak, oldContinue, oldBreakDepth, oldContinueDepth := fl.breakTo, fl.continueTo, fl.breakDepth, fl.continueDepth
+	fl.breakTo, fl.continueTo, fl.breakDepth, fl.continueDepth = exit, step, len(fl.scopes), len(fl.scopes)
 
 	// `decl = *__begin;`
 	fl.blk = body
@@ -214,7 +214,7 @@ func (fl *fn) rangeForClass(s *ast.RangeForStmt, proto *sema.RangeProtocol) {
 	if fl.blk != nil {
 		fl.blk.Br(step.To())
 	}
-	fl.breakTo, fl.continueTo, fl.loopDepth = oldBreak, oldContinue, oldDepth
+	fl.breakTo, fl.continueTo, fl.breakDepth, fl.continueDepth = oldBreak, oldContinue, oldBreakDepth, oldContinueDepth
 
 	// `++__begin`
 	fl.blk = step

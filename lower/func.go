@@ -43,9 +43,13 @@ type fn struct {
 	breakTo    *ir.Block
 	continueTo *ir.Block
 
-	// scopes tracks scopes with pending destructors; loopDepth tracks unwind depth.
-	scopes    []*scope
-	loopDepth int
+	// scopes tracks scopes with pending destructors. breakDepth and
+	// continueDepth are how many of them are outside the statement break
+	// and continue leave, so a jump destroys only the scopes it exits: a
+	// switch moves breakDepth and leaves continueDepth at the loop's.
+	scopes        []*scope
+	breakDepth    int
+	continueDepth int
 
 	// temps are the current full-expression's temporaries (see temporary).
 	temps []localObj
