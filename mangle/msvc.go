@@ -167,7 +167,18 @@ func (m *msvc) vbtable(rec *types.Record, base []*types.Record) (string, error) 
 // itself first, with its template arguments if it is a specialization,
 // then the scopes enclosing it innermost first.
 func (m *msvc) className(rec *types.Record) {
-	m.scope(Scope{Name: rec.Name, Args: rec.TemplateArgs})
+	name := rec.Name
+	if name == "" {
+		// An unnamed class is named for linkage by cl after the first
+		// declarator that used it, `<unnamed-type-table>`, and
+		// `<unnamed-tag>` where there was none. See
+		// types.Record.DeclaratorName.
+		name = "<unnamed-tag>"
+		if rec.DeclaratorName != "" {
+			name = "<unnamed-type-" + rec.DeclaratorName + ">"
+		}
+	}
+	m.scope(Scope{Name: name, Args: rec.TemplateArgs})
 	m.scopes(Scopes(rec.Scopes...))
 	m.sb.WriteString("@")
 }

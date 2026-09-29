@@ -529,6 +529,12 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			continue
 		}
 
+		// The first declarator of an unnamed class is what Microsoft's
+		// mangling calls it by. See types.Record.DeclaratorName.
+		if rec := types.AsRecord(types.Unqualify(declInfo.Type)); rec != nil && rec.Name == "" && rec.DeclaratorName == "" && name != "" {
+			rec.DeclaratorName = name
+		}
+
 		if ft, ok := fullType.(*types.Func); ok && declInfo.Friend && a.curRecord != nil && a.curScope.Kind == ClassScope && name != "" {
 			// `friend T sum<>(const Pair<T>&);` names a specialization of
 			// a template that already exists ([temp.friend]/1), not a new

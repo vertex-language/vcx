@@ -445,6 +445,13 @@ type Record struct {
 	// Objective-C type encoding writes as ?.
 	LinkageName bool
 
+	// DeclaratorName is the first name declared with an unnamed class that
+	// no typedef named: `static const struct { ... } table[] = ...` makes
+	// it table. The class has no name for linkage, but Microsoft's
+	// mangling writes a variable's type into its symbol, and cl spells
+	// such a class <unnamed-type-table>. Empty for a named class.
+	DeclaratorName string
+
 	// InheritedCtors are direct bases whose constructors were inherited via using-declarations.
 	InheritedCtors []*Record
 }

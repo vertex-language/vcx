@@ -216,3 +216,18 @@ func TestItaniumTypeInfoNames(t *testing.T) {
 		}
 	}
 }
+
+// TestMicrosoftUnnamedClass: Microsoft's mangling writes a variable's type
+// into its symbol, so a variable of an unnamed class needs a name for the
+// class. cl names it after the first declarator that used it, measured:
+// `struct { int b; } gvar;` is ?gvar@@3U<unnamed-type-gvar>@@A.
+func TestMicrosoftUnnamedClass(t *testing.T) {
+	rec := &types.Record{Tag: types.TagStruct, DeclaratorName: "gvar", Complete: true}
+	got, err := VariableName(Microsoft, &Variable{Name: "gvar", Type: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "?gvar@@3U<unnamed-type-gvar>@@A"; got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
