@@ -1883,6 +1883,31 @@ func (fl *fn) builtinCall(name string, e *ast.CallExpr) (ir.Value, bool) {
 	switch name {
 	case "__assume", "__builtin_assume", "__builtin_unreachable", "__debugbreak", "__noop", "__fastfail":
 		return nil, true
+	case "__sync_synchronize":
+		fl.blk.Fence(ir.SeqCst)
+		return nil, true
+	case "__atomic_thread_fence", "__c11_atomic_thread_fence", "__atomic_signal_fence", "__c11_atomic_signal_fence":
+		order := ir.SeqCst
+		if len(e.Args) == 1 {
+			o, known := fl.memoryOrder(e.Args[0])
+			if !known {
+				fl.u.errorf(e.Pos(), "lowering: %s needs a constant memory order", name)
+				return nil, true
+			}
+			if o == 0 {
+				// Relaxed orders nothing: no fence at all, as clang emits none.
+				return nil, true
+			}
+			order = o
+		}
+		if name == "__atomic_signal_fence" || name == "__c11_atomic_signal_fence" {
+			// Against a signal handler on this thread: only the compiler
+			// may not move accesses across it.
+			fl.blk.Fence(order, ir.SingleThread)
+		} else {
+			fl.blk.Fence(order)
+		}
+		return nil, true
 	case "__builtin_va_start", "__builtin_c23_va_start":
 		// (ap, last): the list starts after the named parameters.
 		if len(e.Args) >= 1 {
@@ -2153,4 +2178,26 @@ func (fl *fn) stmtExpr(e *ast.StmtExpr) ir.Value {
 		return slot
 	}
 	return fl.load(slot, t)
+}
+
+// memoryOrder is a constant __ATOMIC_* order as VIR's: 0 for relaxed, and
+// consume is acquire, as every compiler implements it.
+func (fl *fn) memoryOrder(x ast.Expr) (ir.Ordering, bool) {
+	v, err := fl.u.evalInt(x)
+	if err != nil {
+		return 0, false
+	}
+	switch v {
+	case 0:
+		return 0, true
+	case 1, 2:
+		return ir.Acquire, true
+	case 3:
+		return ir.Release, true
+	case 4:
+		return ir.AcqRel, true
+	case 5:
+		return ir.SeqCst, true
+	}
+	return 0, false
 }

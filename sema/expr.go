@@ -2423,6 +2423,20 @@ func (a *Analyzer) builtinCall(name string, c *ast.CallExpr) (ExprInfo, bool) {
 		return info, true
 	}
 	switch name {
+	case "__atomic_thread_fence", "__atomic_signal_fence", "__c11_atomic_thread_fence", "__c11_atomic_signal_fence":
+		// GCC's and C11's fences: (memory order), and nothing comes back.
+		if len(c.Args) != 1 {
+			a.errorAt(c.Pos(), name+" takes a memory order")
+		}
+		for _, arg := range c.Args {
+			a.CheckExpr(arg)
+		}
+		return ExprInfo{Type: types.Typ(types.Void), ValCat: PrValue}, true
+	case "__sync_synchronize":
+		if len(c.Args) != 0 {
+			a.errorAt(c.Pos(), name+" takes no arguments")
+		}
+		return ExprInfo{Type: types.Typ(types.Void), ValCat: PrValue}, true
 	case "__assume", "__builtin_assume", "__builtin_unreachable", "__debugbreak", "__noop", "__fastfail",
 		"__builtin_va_start", "__builtin_va_end", "__builtin_va_copy", "__builtin_c23_va_start":
 		for _, arg := range c.Args {

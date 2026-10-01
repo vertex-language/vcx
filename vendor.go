@@ -32,6 +32,8 @@ var gnuFeatures = []string{
 var gnuBuiltins = []string{
 	"__builtin_addressof", "__builtin_assume", "__builtin_expect", "__builtin_is_constant_evaluated",
 	"__builtin_offsetof", "__builtin_unreachable", "__make_integer_seq",
+	"__atomic_thread_fence", "__atomic_signal_fence", "__c11_atomic_thread_fence",
+	"__c11_atomic_signal_fence", "__sync_synchronize",
 	"__has_nothrow_assign", "__has_nothrow_constructor", "__has_nothrow_copy", "__has_trivial_assign",
 	"__has_trivial_constructor", "__has_trivial_copy", "__has_trivial_destructor",
 	"__has_unique_object_representations", "__has_virtual_destructor",

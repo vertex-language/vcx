@@ -42,6 +42,7 @@ skips without it.
 | 221–230 | templates, further: dependent names, `auto` and class-type non-type parameters, `index_sequence` and `apply`, type erasure, tag dispatch, explicit instantiation and friend templates, concept subsumption, constrained members, metaprogramming, `inline` and `static constexpr` members |
 | 231–240 | the rest of the language: `using enum` and bitmask enums, attributes, `if consteval`, leaving scopes by `break`, `continue`, `goto` and `return`, `thread_local`, static destruction order and `atexit`, function-try-blocks, `exception_ptr` and nested exceptions, `uncaught_exceptions`, `__int128`, `long double` and `<bit>` |
 | 241–250 | more of the library: `std::expected`, ranges and views, `span`, the sequence containers and adaptors, `bitset`, a custom iterator under the algorithms, `std::format`, a coroutine generator, and a closing program over the later rungs |
+| 256 | GCC's fences: `__atomic_thread_fence` and `__atomic_signal_fence` at every `__ATOMIC_*` order, and `__sync_synchronize` |
 
 ## CUDA and HIP: `001`–`050`
 

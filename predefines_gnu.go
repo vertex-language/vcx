@@ -178,6 +178,13 @@ func (t Target) gnuDataModel(m types.Model, def func(name, value string)) {
 		}
 	}
 
+	// The memory orders GCC's __atomic builtins take.
+	def("__ATOMIC_RELAXED", "0")
+	def("__ATOMIC_CONSUME", "1")
+	def("__ATOMIC_ACQUIRE", "2")
+	def("__ATOMIC_RELEASE", "3")
+	def("__ATOMIC_ACQ_REL", "4")
+	def("__ATOMIC_SEQ_CST", "5")
 	def("__CHAR_BIT__", "8")
 	def("__BOOL_WIDTH__", "1")
 	def("__SCHAR_MAX__", max(types.SChar))
