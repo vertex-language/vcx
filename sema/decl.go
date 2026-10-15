@@ -587,22 +587,24 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			}
 
 			fnSym := &FuncSymbol{
-				SymName:   name,
-				FuncType:  ft,
-				SymPos:    init.Pos(),
-				SymScope:  a.curScope,
-				Inline:    declInfo.Inline || declInfo.Constexpr || declInfo.Consteval,
-				Constexpr: declInfo.Constexpr,
-				Consteval: declInfo.Consteval,
-				Virtual:   virtual,
-				Static:    declInfo.Storage == StorageStatic && a.curRecord != nil,
-				Internal:  declInfo.Storage == StorageStatic && a.curRecord == nil,
-				Explicit:  declInfo.Explicit,
-				Friend:    declInfo.Friend,
-				InClass:   a.curRecord,
-				Access:    a.curAccess,
-				ExternC:   a.externC,
-				Defaults:  extractDefaults(init.Decl),
+				DeclSpecs:  d.Specs,
+				Declarator: init.Decl,
+				SymName:    name,
+				FuncType:   ft,
+				SymPos:     init.Pos(),
+				SymScope:   a.curScope,
+				Inline:     declInfo.Inline || declInfo.Constexpr || declInfo.Consteval,
+				Constexpr:  declInfo.Constexpr,
+				Consteval:  declInfo.Consteval,
+				Virtual:    virtual,
+				Static:     declInfo.Storage == StorageStatic && a.curRecord != nil,
+				Internal:   declInfo.Storage == StorageStatic && a.curRecord == nil,
+				Explicit:   declInfo.Explicit,
+				Friend:     declInfo.Friend,
+				InClass:    a.curRecord,
+				Access:     a.curAccess,
+				ExternC:    a.externC,
+				Defaults:   extractDefaults(init.Decl),
 			}
 			a.checkParamDefaults(funcDeclaratorOf(init.Decl), nil)
 			fnSym.Constraints = a.constraintsOf(d, init.Decl)
@@ -1399,11 +1401,13 @@ func (a *Analyzer) checkFuncDecl(d *ast.FuncDecl) {
 	}
 
 	fnSym := &FuncSymbol{
-		Decl:     d,
-		SymName:  name,
-		FuncType: ft,
-		SymPos:   d.Pos(),
-		SymScope: a.curScope,
+		Decl:       d,
+		DeclSpecs:  d.Specs,
+		Declarator: d.Decl,
+		SymName:    name,
+		FuncType:   ft,
+		SymPos:     d.Pos(),
+		SymScope:   a.curScope,
 		// In-class definitions and constexpr functions are inline.
 		Inline:    declInfo.Inline || declInfo.Constexpr || declInfo.Consteval || (a.curRecord != nil && d.Body != nil) || (a.definingFriend && d.Body != nil),
 		Constexpr: declInfo.Constexpr,

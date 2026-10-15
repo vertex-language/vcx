@@ -749,8 +749,10 @@ func (u *unit) globalSymbol(v *sema.VarSymbol) string {
 func (u *unit) declareGlobal(v *sema.VarSymbol) *ir.Global {
 	_, align := u.sizeAlign(v.SymType)
 	g := u.mod.Global(u.globalSymbol(v), u.domainOf(v), u.storageType(v.SymType))
-	if v.Inline {
-		// Inline variables use COMDAT linkage.
+	if v.Inline && sema.HasExternalLinkage(v) {
+		// Inline variables use COMDAT linkage. One with internal linkage
+		// is its unit's alone, and has nothing to be one copy of: in a
+		// group, it would be elected away by another unit's of its name.
 		g.Comdat()
 	}
 	if sema.HasExternalLinkage(v) {

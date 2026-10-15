@@ -113,6 +113,13 @@ type FuncSymbol struct {
 	// lowering has to run that list before the body.
 	Decl *ast.FuncDecl
 
+	// DeclSpecs and Declarator are how the declaration this symbol was
+	// made from was written, a definition or not: what a binding reads a
+	// parameter's spelling from -- int64_t, which the type it names does
+	// not say.
+	DeclSpecs  *ast.DeclSpecs
+	Declarator ast.Declarator
+
 	SymName  string
 	FuncType *types.Func
 	SymPos   ast.Tok

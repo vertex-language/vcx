@@ -458,6 +458,11 @@ var aliases = map[string]Kind{
 	"__volatile":   VOLATILE,
 	"__volatile__": VOLATILE,
 
+	// GNU's spelling of signed, which Linux's <asm-generic/int-ll64.h>
+	// uses for __s8 and the rest.
+	"__signed":   SIGNED,
+	"__signed__": SIGNED,
+
 	// Inlining
 	"__inline":      INLINE,
 	"__inline__":    INLINE,

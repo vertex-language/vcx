@@ -331,6 +331,11 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 
 		case *ast.DecltypeSpec:
 			switch {
+			case s.Type != nil:
+				argInfo := BuildDeclSpecs(s.Type.Specs, scope, u)
+				customType = BuildDeclarator(s.Type.Decl, argInfo.Type, scope, u)
+			case s.Typeof && scope != nil && scope.decltype() != nil:
+				customType = types.RemoveReference(scope.decltype()(s.X, scope))
 			case s.Auto.IsValid():
 				customType = types.Typ(types.DecltypeAutoKind)
 			case scope != nil && scope.decltype() != nil:

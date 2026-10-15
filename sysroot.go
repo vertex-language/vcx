@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/vertex-language/vcx/sysroot"
 )
@@ -42,6 +44,11 @@ func (c *Compiler) SystemIncludes() []SystemInclude {
 					out = append(out, SystemInclude{Name: dir, FS: os.DirFS(dir)})
 				}
 			}
+			if tgt.OS == "linux" {
+				if dir, ok := linuxLibcxxDir(); ok {
+					out = append(out, SystemInclude{Name: dir, FS: os.DirFS(dir)})
+				}
+			}
 			out = append(out, own...)
 			continue
 		}
@@ -72,6 +79,39 @@ func compilerHeaders() SystemInclude {
 		panic("vcx: embedded compiler headers missing: " + err.Error())
 	}
 	return SystemInclude{Name: "<vcx>", FS: sub}
+}
+
+// linuxLibcxxDir returns a Linux distribution's libc++ header directory
+// if one is installed (Debian's and Ubuntu's libc++-dev): libc++, not
+// libstdc++, is the library vcx's C++ is written against, as on macOS.
+func linuxLibcxxDir() (string, bool) {
+	// The newest LLVM's first: apt.llvm.org installs beside the
+	// distribution's, which /usr/include/c++/v1 is.
+	dirs, _ := filepath.Glob("/usr/lib/llvm-*/include/c++/v1")
+	sort.Slice(dirs, func(i, j int) bool { return llvmVersion(dirs[i]) > llvmVersion(dirs[j]) })
+	dirs = append(dirs, "/usr/include/c++/v1")
+	for _, dir := range dirs {
+		if st, err := os.Stat(filepath.Join(dir, "__config")); err == nil && !st.IsDir() {
+			return dir, true
+		}
+	}
+	return "", false
+}
+
+// llvmVersion is the major version in a /usr/lib/llvm-N/... path.
+func llvmVersion(path string) int {
+	_, rest, ok := strings.Cut(path, "/llvm-")
+	if !ok {
+		return 0
+	}
+	n := 0
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
 
 // libcxxDir returns the macOS SDK libc++ header directory if found.

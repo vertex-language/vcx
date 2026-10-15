@@ -334,7 +334,7 @@ func typeIdToken(k token.Kind) bool {
 		token.LBRACK, token.RBRACK, token.LSS, token.GTR, token.SHR,
 		token.INT_LIT,
 		token.CONST, token.VOLATILE, token.RESTRICT, token.NULLABILITY,
-		token.TYPENAME, token.DECLTYPE, token.AUTO,
+		token.TYPENAME, token.DECLTYPE, token.TYPEOF, token.AUTO,
 		token.CLASS, token.STRUCT, token.UNION, token.ENUM,
 		token.VOID, token.BOOL, token.CHAR, token.CHAR8_T, token.CHAR16_T,
 		token.CHAR32_T, token.WCHAR_T, token.INT, token.SHORT, token.LONG,

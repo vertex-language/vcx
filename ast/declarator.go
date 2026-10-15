@@ -90,6 +90,12 @@ type DecltypeSpec struct {
 	Auto    Tok // the `auto` of decltype(auto), or NoTok
 	X       Expr
 	Rparen  Tok
+
+	// Typeof marks GNU's __typeof__(x), which is x's type with no
+	// reference -- glibc's <math.h> casts with it -- and Type the form
+	// that names a type, __typeof__(int*), where X is nil.
+	Typeof bool
+	Type   *TypeId
 }
 
 // TypeTransformSpec is a compiler's type-transformation builtin written as a

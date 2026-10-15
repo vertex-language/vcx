@@ -159,7 +159,9 @@ func (p *Preprocessor) expandInto(s *stream, out []Token) []Token {
 		if !ok {
 			return out
 		}
-		if t.Kind == token.IDENT && p.expandOne(s) {
+		// A keyword names a macro as an identifier does: glibc defines
+		// __nonnull(params), which clang's headers spell as a keyword.
+		if t.IsName() && p.expandOne(s) {
 			continue
 		}
 		s.next()

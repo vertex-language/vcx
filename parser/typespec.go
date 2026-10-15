@@ -31,7 +31,7 @@ func (p *parser) isTypeStart(k token.Kind) bool {
 	case token.CLASS, token.STRUCT, token.UNION, token.ENUM:
 		return true
 
-	case token.TYPENAME, token.DECLTYPE:
+	case token.TYPENAME, token.DECLTYPE, token.TYPEOF:
 		return true
 
 	case token.IDENT, token.SCOPE:
@@ -119,7 +119,7 @@ func (p *parser) parseDeclSpecs() *ast.DeclSpecs {
 			})
 			continue
 
-		case token.DECLTYPE:
+		case token.DECLTYPE, token.TYPEOF:
 			dt := p.parseDecltypeSpec()
 			specs.List = append(specs.List, dt)
 			continue
@@ -275,10 +275,17 @@ func (p *parser) hasTypeSpec(specs *ast.DeclSpecs) bool {
 	return false
 }
 
-// parseDecltypeSpec parses decltype(expr) or decltype(auto).
+// parseDecltypeSpec parses decltype(expr) or decltype(auto), and GNU's
+// __typeof__(expr) and __typeof__(type-id).
 func (p *parser) parseDecltypeSpec() *ast.DecltypeSpec {
 	start := p.pos()
-	kw := p.expect(token.DECLTYPE)
+	typeof := p.peek() == token.TYPEOF
+	var kw ast.Tok
+	if typeof {
+		kw = p.next()
+	} else {
+		kw = p.expect(token.DECLTYPE)
+	}
 	lp := p.expect(token.LPAREN)
 
 	dt := &ast.DecltypeSpec{
@@ -286,6 +293,13 @@ func (p *parser) parseDecltypeSpec() *ast.DecltypeSpec {
 		Keyword: kw,
 		Lparen:  lp,
 		Auto:    ast.NoTok,
+		Typeof:  typeof,
+	}
+	if typeof && p.startsTypeId() {
+		dt.Type = p.parseTypeId()
+		dt.Rparen = p.expect(token.RPAREN)
+		dt.Span.Hi = dt.Rparen + 1
+		return dt
 	}
 
 	// [temp.names]/3: a `>` ends a template-argument-list only where it is

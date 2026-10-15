@@ -16,6 +16,12 @@ func HasExternalLinkage(v *VarSymbol) bool {
 	if v.Storage == StorageStatic {
 		return false
 	}
+	// [basic.link]/3.2: a const variable has internal linkage unless it
+	// is declared extern or inline -- libc++'s `inline constexpr` objects,
+	// std::ranges' customization points, are one per program.
+	if v.Inline {
+		return true
+	}
 	// An array inherits the cv-qualifiers of its element type.
 	t := v.SymType
 	for {
