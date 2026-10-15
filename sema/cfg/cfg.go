@@ -1,6 +1,8 @@
 package cfg
 
 import (
+	"strings"
+
 	"github.com/vertex-language/vcx/ast"
 	"github.com/vertex-language/vcx/token"
 )
@@ -234,7 +236,12 @@ func (b *Builder) addStmt(stmt ast.Stmt) {
 
 		b.addEdge(b.curBlock, header, EdgeFallthrough)
 		b.addEdge(header, bodyBlock, EdgeBranchTrue)
-		b.addEdge(header, exitBlock, EdgeBranchFalse)
+		// `while (true)` never leaves by its condition: only a break,
+		// return or throw ends it, so the code after it is reached only
+		// through those.
+		if !b.alwaysTrue(s.Cond) {
+			b.addEdge(header, exitBlock, EdgeBranchFalse)
+		}
 
 		oldBreak := b.breakDst
 		oldCont := b.contDst
@@ -262,8 +269,9 @@ func (b *Builder) addStmt(stmt ast.Stmt) {
 
 		b.addEdge(b.curBlock, header, EdgeFallthrough)
 		b.addEdge(header, bodyBlock, EdgeBranchTrue)
-		// An omitted condition is implicitly true, so the header has no false edge.
-		if s.Cond != nil {
+		// An omitted condition is implicitly true, and so is a constant
+		// one, so the header has no false edge.
+		if s.Cond != nil && !b.alwaysTrue(s.Cond) {
 			b.addEdge(header, exitBlock, EdgeBranchFalse)
 		}
 
@@ -304,7 +312,9 @@ func (b *Builder) addStmt(stmt ast.Stmt) {
 			b.addEdge(b.curBlock, condBlock, EdgeFallthrough)
 		}
 		b.addEdge(condBlock, bodyBlock, EdgeBranchTrue)
-		b.addEdge(condBlock, exitBlock, EdgeBranchFalse)
+		if !b.alwaysTrue(s.Cond) {
+			b.addEdge(condBlock, exitBlock, EdgeBranchFalse)
+		}
 
 		b.breakDst = oldBreak
 		b.contDst = oldCont
@@ -528,4 +538,34 @@ func unparenStmtExpr(e ast.Expr) ast.Expr {
 		}
 		e = p.X
 	}
+}
+
+// alwaysTrue reports a loop condition that is a constant true -- `true`, a
+// nonzero integer literal, either in parentheses -- the spellings of an
+// infinite loop. Anything else may be false, so the loop may end by it.
+func (b *Builder) alwaysTrue(e ast.Node) bool {
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return b.alwaysTrue(x.X)
+	case *ast.BasicLit:
+		switch x.Kind {
+		case token.TRUE:
+			return true
+		case token.INT_LIT:
+			if b.unit == nil {
+				return false
+			}
+			text := b.unit.Text(x.Lo)
+			if x.Text != "" {
+				text = x.Text
+			}
+			for _, c := range strings.TrimRight(strings.ToLower(text), "ul") {
+				if c != '0' && c != 'x' && c != 'b' && c != '\'' {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
 }

@@ -43,6 +43,7 @@ skips without it.
 | 231–240 | the rest of the language: `using enum` and bitmask enums, attributes, `if consteval`, leaving scopes by `break`, `continue`, `goto` and `return`, `thread_local`, static destruction order and `atexit`, function-try-blocks, `exception_ptr` and nested exceptions, `uncaught_exceptions`, `__int128`, `long double` and `<bit>` |
 | 241–250 | more of the library: `std::expected`, ranges and views, `span`, the sequence containers and adaptors, `bitset`, a custom iterator under the algorithms, `std::format`, a coroutine generator, and a closing program over the later rungs |
 | 256 | GCC's fences: `__atomic_thread_fence` and `__atomic_signal_fence` at every `__ATOMIC_*` order, and `__sync_synchronize` |
+| 257 | non-void functions whose only returns are inside `while (true)`, `while (1)`, `for (;;)` and `do … while (true)`, and a `while (0)` that still needs the return after it |
 
 ## CUDA and HIP: `001`–`050`
 
