@@ -307,3 +307,23 @@ func TestUserPathIsNotSystem(t *testing.T) {
 		t.Error("VCX_INCLUDE_PATH entry marked System; user dirs must warn every time")
 	}
 }
+
+// A Linux target on a Mac mounts none of the Mac's headers: Darwin's
+// <sys/types.h> beside glibc's is a wall of redefinitions. The builtins
+// and VCX_INCLUDE_PATH are what it gets, and a note says why.
+func TestCrossOSMountsNoHostHeaders(t *testing.T) {
+	h := fake{
+		env:   map[string]string{"SDKROOT": "/SDKs/MacOSX.sdk", "VCX_INCLUDE_PATH": "/linux/include"},
+		dirs:  map[string]bool{"/SDKs/MacOSX.sdk/usr/include": true, "/linux/include": true},
+		xcrun: "/SDKs/MacOSX.sdk",
+	}
+	es, notes := resolve(h, "darwin", "x86_64-linux", true)
+	if !equal(names(es), []string{"/linux/include", "<builtin>"}) || len(notes) != 1 {
+		t.Fatalf("x86_64-linux on darwin = %v (%v)", names(es), notes)
+	}
+	// A target that names no OS is still the host's.
+	es, _ = resolve(h, "darwin", "x86_64-elf", true)
+	if !equal(names(es), []string{"/linux/include", "<builtin>", "/SDKs/MacOSX.sdk/usr/include"}) {
+		t.Fatalf("x86_64-elf on darwin = %v", names(es))
+	}
+}

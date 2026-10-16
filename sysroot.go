@@ -5,8 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
+	"runtime"
 
 	"github.com/vertex-language/vcx/sysroot"
 )
@@ -45,14 +44,19 @@ func (c *Compiler) SystemIncludes() []SystemInclude {
 				}
 			}
 			if tgt.OS == "linux" {
-				if dir, ok := linuxLibcxxDir(); ok {
-					out = append(out, SystemInclude{Name: dir, FS: os.DirFS(dir)})
-				}
+				out = append(out, linuxHeaders("c++/v1"))
 			}
 			out = append(out, own...)
 			continue
 		}
 		out = append(out, SystemInclude{Name: e.Name, FS: e.FS})
+	}
+	// A Linux target built anywhere but Linux has no system headers on
+	// the host to find (sysroot.Resolve mounts none of another OS's), so
+	// it gets the ones vcx carries: glibc's, after the multiarch
+	// directory, as a Debian-family system searches them.
+	if tgt.OS == "linux" && runtime.GOOS != "linux" {
+		out = append(out, linuxHeaders("usr/include/x86_64-linux-gnu"), linuxHeaders("usr/include"))
 	}
 	// An Apple SDK's frameworks, after its headers, as clang searches
 	// them: <CoreFoundation/CoreFoundation.h> is a framework's header.
@@ -81,37 +85,21 @@ func compilerHeaders() SystemInclude {
 	return SystemInclude{Name: "<vcx>", FS: sub}
 }
 
-// linuxLibcxxDir returns a Linux distribution's libc++ header directory
-// if one is installed (Debian's and Ubuntu's libc++-dev): libc++, not
-// libstdc++, is the library vcx's C++ is written against, as on macOS.
-func linuxLibcxxDir() (string, bool) {
-	// The newest LLVM's first: apt.llvm.org installs beside the
-	// distribution's, which /usr/include/c++/v1 is.
-	dirs, _ := filepath.Glob("/usr/lib/llvm-*/include/c++/v1")
-	sort.Slice(dirs, func(i, j int) bool { return llvmVersion(dirs[i]) > llvmVersion(dirs[j]) })
-	dirs = append(dirs, "/usr/include/c++/v1")
-	for _, dir := range dirs {
-		if st, err := os.Stat(filepath.Join(dir, "__config")); err == nil && !st.IsDir() {
-			return dir, true
-		}
-	}
-	return "", false
-}
+//go:embed all:include/linux
+var linuxHeaderFS embed.FS
 
-// llvmVersion is the major version in a /usr/lib/llvm-N/... path.
-func llvmVersion(path string) int {
-	_, rest, ok := strings.Cut(path, "/llvm-")
-	if !ok {
-		return 0
+// linuxHeaders mounts one directory of the Linux headers vcx carries (see
+// include/linux/README.md): libc++ 20, which is the libc++ vcx's C++ is
+// checked against on Linux -- a distribution's own may be one vcx cannot
+// parse, and the header set should not change with the machine -- and
+// glibc's and the kernel's headers for x86_64, for a build on a host
+// that has none.
+func linuxHeaders(dir string) SystemInclude {
+	sub, err := fs.Sub(linuxHeaderFS, "include/linux/"+dir)
+	if err != nil {
+		panic("vcx: embedded Linux headers missing: " + err.Error())
 	}
-	n := 0
-	for _, c := range rest {
-		if c < '0' || c > '9' {
-			break
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
+	return SystemInclude{Name: "<vcx-linux>/" + dir, FS: sub}
 }
 
 // libcxxDir returns the macOS SDK libc++ header directory if found.

@@ -145,6 +145,16 @@ func resolve(h Host, goos, target string, hosted bool) (entries []Entry, notes [
 
 	entries = append(entries, builtinEntry())
 
+	// The host's system headers are the target's only when they are the
+	// same OS: a Mac's <sys/types.h> declares Darwin's types, and mixed
+	// with glibc's they are redefinitions, or worse, a quietly wrong
+	// layout. A cross build gets the builtins and what VCX_INCLUDE_PATH
+	// names -- the target's sysroot.
+	if os := osOf(target); os != "" && os != goos {
+		return entries, append(notes, "cross-compiling for "+target+" on "+goos+
+			": the host's system headers are not the target's; name the target's (libc++, then libc) with VCX_INCLUDE_PATH")
+	}
+
 	var plat []Entry
 	var pnotes []string
 	switch goos {
@@ -192,6 +202,20 @@ func splitList(s, goos string) []string {
 		}
 	}
 	return out
+}
+
+// osOf is the GOOS spelling of the OS a target names, or "" for a target
+// that names none (x86_64-elf) and is resolved against the host.
+func osOf(target string) string {
+	switch {
+	case strings.HasSuffix(target, "-linux"), strings.Contains(target, "-linux-"):
+		return "linux"
+	case strings.HasSuffix(target, "-macos"), strings.HasSuffix(target, "-darwin"):
+		return "darwin"
+	case strings.HasSuffix(target, "-windows"), strings.Contains(target, "-windows-"):
+		return "windows"
+	}
+	return ""
 }
 
 // archOf extracts the architecture from a target string. The target
