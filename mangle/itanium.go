@@ -81,6 +81,13 @@ func (m *itanium) variable(v *Variable) (string, error) {
 		m.sourceName(v.Name)
 		return m.sb.String(), m.err
 	}
+	if len(v.Scopes) == 1 && v.Scopes[0].Name == "std" && v.Scopes[0].Args == nil && v.Module == "" {
+		// `St` is not a nested name: std::nothrow is `_ZSt7nothrow`, the
+		// name libc++ defines it under.
+		m.sb.WriteString("_ZSt")
+		m.sourceName(v.Name)
+		return m.sb.String(), m.err
+	}
 	m.sb.WriteString("_ZN")
 	m.prefix(v.Scopes)
 	m.moduleName(v.Module)

@@ -100,17 +100,18 @@ func (a *Analyzer) checkListInit(list *ast.InitList, target types.Type) {
 		if isDependentExpr(info) && a.dependentContext() {
 			return
 		}
-		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
+		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue, NullConst: isNullConstant(item, info)})
 	}
 	// [over.match.list]/1: a class with an initializer-list constructor
 	// gives it the whole list as one argument, and that is considered
 	// before any other constructor -- `Stats s{4, 8, 15}` is one call
 	// taking three elements, not a call of three arguments.
-	if ctor, elem := a.initListConstructor(rec, args); ctor != nil {
+	if ctor, elem := a.initListConstructor(rec, args, list.Items); ctor != nil {
 		for _, item := range list.Items {
 			a.checkListItem(item, elem)
 		}
 		a.ensureInstantiated(ctor)
+		a.checkDefaultsAfter(ctor, 1)
 		if a.info != nil {
 			a.info.ListCtors[list] = ctor
 			a.info.InitLists[list] = elem
@@ -395,9 +396,20 @@ func (a *Analyzer) listConversion(list *ast.InitList, target types.Type) Convers
 // whole: one taking std::initializer_list<E>, with E the element type it
 // reports beside it. It is nil where the class has none, or where some
 // element does not convert to E.
-func (a *Analyzer) initListConstructor(rec *types.Record, args []Argument) (*FuncSymbol, types.Type) {
+func (a *Analyzer) initListConstructor(rec *types.Record, args []Argument, items []ast.Expr) (*FuncSymbol, types.Type) {
 	for _, fn := range a.memberFuncs(rec, rec.Name) {
-		if fn.FuncType == nil || len(fn.FuncType.Params) != 1 || fn.Deleted {
+		if fn.FuncType == nil || len(fn.FuncType.Params) == 0 || fn.Deleted {
+			continue
+		}
+		// [dcl.init.list]/3: the list is the first parameter, and any
+		// others have defaults -- set's `const value_compare& = ...`.
+		rest := true
+		for _, p := range fn.FuncType.Params[1:] {
+			if !p.HasDefault {
+				rest = false
+			}
+		}
+		if !rest {
 			continue
 		}
 		elem, isList := initListElem(fn.FuncType.Params[0].Type)
@@ -405,7 +417,18 @@ func (a *Analyzer) initListConstructor(rec *types.Record, args []Argument) (*Fun
 			continue
 		}
 		fits := true
-		for _, arg := range args {
+		for i, arg := range args {
+			if i < len(items) {
+				// `{{"ann", 30}, {"bob", 50}}` for initializer_list<Player>:
+				// each inner list initializes an element by its own rules.
+				if sub, isList := items[i].(*ast.InitList); isList {
+					if !a.listConversion(sub, elem).Valid {
+						fits = false
+						break
+					}
+					continue
+				}
+			}
 			if !ClassifyConversion(arg.Type, elem, arg.IsLValue).Valid {
 				fits = false
 				break

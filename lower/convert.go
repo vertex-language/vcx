@@ -19,6 +19,11 @@ func (fl *fn) convert(v ir.Value, from, to types.Type) ir.Value {
 	}
 
 	b := fl.blk
+	if isBool(to) && from != nil {
+		if c := fl.memberPointerTruth(v, from); c != nil {
+			return b.I32.ZExtI1(*c)
+		}
+	}
 	// [conv.bool]: a scalar converts to bool as whether it is nonzero, not
 	// by keeping its low bits -- 42 and 256 are both true.
 	if isBool(to) && !isBool(from) {
@@ -264,4 +269,26 @@ func (fl *fn) narrow(v ir.I32, to types.Type) ir.Value {
 	}
 	mask := int64(1)<<uint(bits) - 1
 	return b.I32.And(v, b.I32.Const(mask))
+}
+
+// memberPointerTruth is a member pointer's conversion to bool, nil for any
+// other type: a pointer to a data member is null as -1, the offset no
+// member has; a pointer to a member function as the null address.
+func (fl *fn) memberPointerTruth(v ir.Value, t types.Type) *ir.I1 {
+	mp, isMP := types.Unqualify(types.RemoveReference(t)).(*types.MemberPointer)
+	if !isMP {
+		return nil
+	}
+	if types.IsFunc(mp.Elem) {
+		return fl.truthOf(v, ast.Tok(0))
+	}
+	switch val := v.(type) {
+	case ir.I64:
+		c := fl.blk.I64.Ne(val, fl.blk.I64.Const(-1))
+		return &c
+	case ir.I32:
+		c := fl.blk.I32.Ne(val, fl.blk.I32.Const(-1))
+		return &c
+	}
+	return nil
 }

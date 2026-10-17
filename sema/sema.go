@@ -59,6 +59,11 @@ type Info struct {
 	// Temporaries maps functional cast CallExprs to resolved constructors.
 	Temporaries map[*ast.CallExpr]*FuncSymbol
 
+	// RefCasts are the call-syntax conversions to a reference type --
+	// `_Comp_ref(__comp)` with _Comp_ref a typedef of `_Comp&` -- by the
+	// type: (T)x, designating the operand's object.
+	RefCasts map[*ast.CallExpr]types.Type
+
 	// News maps NewExprs to constructors; Deletes maps DeleteExprs to destructors.
 	News    map[*ast.NewExpr]*FuncSymbol
 	Deletes map[*ast.DeleteExpr]*FuncSymbol
@@ -94,6 +99,10 @@ type Info struct {
 
 	// MemInits maps member initializers to resolved constructors.
 	MemInits map[*ast.MemInit]*FuncSymbol
+
+	// MemInitBases is the base class a mem-initializer initializes, as its
+	// name resolved: `: _Tp(std::move(__t))` names whatever _Tp is.
+	MemInitBases map[*ast.MemInit]*types.Record
 
 	// Ranges maps range-based for loops over classes to resolved range protocols.
 	Ranges map[*ast.RangeForStmt]*RangeProtocol
@@ -151,11 +160,13 @@ func newInfo() *Info {
 		BindingInits:   map[*ast.StructuredBinding]*ast.InitDeclarator{},
 		Deletes:        map[*ast.DeleteExpr]*FuncSymbol{},
 		Casts:          map[*ast.FunctionalCastExpr]*FuncSymbol{},
+		RefCasts:       map[*ast.CallExpr]types.Type{},
 		Conversions:    map[ast.Expr]*FuncSymbol{},
 		Braced:         map[*ast.InitList]*ast.InitList{},
 		ListCtors:      map[*ast.InitList]*FuncSymbol{},
 		InitLists:      map[*ast.InitList]types.Type{},
 		MemInits:       map[*ast.MemInit]*FuncSymbol{},
+		MemInitBases:   map[*ast.MemInit]*types.Record{},
 		Rewrites:       map[ast.Expr]ast.Expr{},
 		Arrows:         map[*ast.MemberExpr][]*FuncSymbol{},
 		Lambdas:        map[*ast.LambdaExpr]*LambdaInfo{},
@@ -252,10 +263,20 @@ type Analyzer struct {
 	// template had a definition (see defineAwaiting).
 	awaiting []*awaitingInstance
 
+	// externTemplates names the function templates an explicit
+	// instantiation declaration (`extern template`) was written for: a
+	// specialization of one may be used where the template has no
+	// definition, which is the library's.
+	externTemplates map[string]bool
+
 	// inRequires counts the requires-expressions being evaluated. A concept's
 	// definition is one tree for every binding it is checked under, so a
 	// concept-id decided inside one is not recorded in ConceptValues.
 	inRequires int
+
+	// userConversions counts the converting constructors being chosen
+	// for an argument (see withClassConversions).
+	userConversions int
 
 	// curTemplateParams holds active template parameters for concepts and nested declarations.
 	curTemplateParams []*TemplateParamSymbol
@@ -311,6 +332,16 @@ type Analyzer struct {
 
 	// instantiationDepth tracks recursive template instantiation depth to prevent stack overflow.
 	instantiationDepth int
+
+	// satisfying are the constraint checks under way, by candidate and
+	// arguments (see satisfied).
+	satisfying map[string]bool
+
+	// nestedClassDefs are the out-of-line definitions of classes nested in
+	// a class template, by the template's pattern; defineNested is the
+	// declared class the definition being checked completes.
+	nestedClassDefs map[*ast.ClassSpec][]nestedClassDef
+	defineNested    *RecordSymbol
 
 	// templateOwner is the declaration enclosed by the template-declaration.
 	templateOwner ast.Decl
@@ -375,6 +406,7 @@ func NewAnalyzer(u ast.Unit, model types.Model) *Analyzer {
 		}
 		return inst.Record
 	}
+	global.AliasExpand = a.expandDependentAlias
 	global.AliasInstantiate = func(alias *TypeSymbol, args []types.TemplateArg, at ast.Tok) types.Type {
 		// The arguments decide, not where the spelling sits: the caller
 		// asks only for concrete ones. A base written with an alias --
@@ -397,8 +429,19 @@ func NewAnalyzer(u ast.Unit, model types.Model) *Analyzer {
 			a.curScope = scope
 		}
 		defer func() { a.curScope = saved }()
-		if a.dependentContext() && isDependentExpr(a.CheckExpr(e)) {
-			return 0, false
+		if a.dependentContext() {
+			if isDependentExpr(a.CheckExpr(e)) {
+				return 0, false
+			}
+		} else if _, isCall := unparenExpr(e).(*ast.CallExpr); isCall {
+			// `_CheckOptionalArgsCtor<_Up>::template __enable_implicit<_Up>()`:
+			// the call is resolved by checking it, and evaluated as the
+			// function that resolution chose. What checking it says is
+			// said again where the argument is used; here it only finds
+			// the function.
+			ndiags := len(a.diags)
+			a.CheckExpr(e)
+			a.diags = a.diags[:ndiags]
 		}
 		n, err := a.NewConstContext().EvalInt(e)
 		return n, err == nil
@@ -629,6 +672,18 @@ func (a *Analyzer) NewConstContext() *constexpr.Context {
 			RetType:        fs.FuncType.Ret,
 			TemplateNames:  names,
 			TemplateValues: values,
+			Enter: func() func() {
+				// `is_same_v<T, int>` in toK<int>'s body reads T as int,
+				// whoever called it; the scope a call is evaluated in
+				// is the callee's.
+				scope := a.evalScopeOf(fs)
+				if scope == nil {
+					return func() {}
+				}
+				saved := a.curScope
+				a.curScope = scope
+				return func() { a.curScope = saved }
+			},
 		}
 	}
 	ctx.ResolveCall = func(c *ast.CallExpr) (*constexpr.FuncInfo, bool) {
@@ -644,10 +699,22 @@ func (a *Analyzer) NewConstContext() *constexpr.Context {
 			// `square(12)` where square holds a closure.
 			fs = a.info.Operators[c]
 		}
+		if fs != nil && fs.Body == nil && (fs.Constexpr || fs.Consteval) {
+			if _, waiting := a.pendingInstances[fs]; waiting {
+				// A specialization first named in an unevaluated operand --
+				// `__type_to_enum<_Ts>()...` checked while sizing an array
+				// -- is defined once constant evaluation needs it
+				// ([temp.inst]/8), whatever operand asks.
+				wasUnevaluated := a.unevaluated
+				a.unevaluated = 0
+				a.ensureInstantiated(fs)
+				a.unevaluated = wasUnevaluated
+			}
+		}
 		if fs == nil || !(fs.Constexpr || fs.Consteval) || fs.Body == nil {
 			return nil, false
 		}
-		if fs.InClass != nil && !a.capturelessClosure(fs.InClass) {
+		if fs.InClass != nil && !fs.Static && !a.capturelessClosure(fs.InClass) {
 			// A member needs its object, which this evaluator has no
 			// way to be given. A captureless closure's operator() has
 			// one in name only: its body cannot read through it.
@@ -658,7 +725,10 @@ func (a *Analyzer) NewConstContext() *constexpr.Context {
 	ctx.ResolveFunc = func(name string) (*constexpr.FuncInfo, error) {
 		syms := LookupUnqualified(a.curScope, name)
 		for _, s := range syms {
-			if fs, ok := s.(*FuncSymbol); ok && (fs.Constexpr || fs.Consteval) && fs.Body != nil {
+			// A template's own body is no function to run: its parameters
+			// have no values. The specialization a call names is found
+			// through ResolveCall.
+			if fs, ok := s.(*FuncSymbol); ok && (fs.Constexpr || fs.Consteval) && fs.Body != nil && fs.Template == nil {
 				return funcInfo(fs), nil
 			}
 		}
@@ -815,6 +885,19 @@ func (a *Analyzer) noteDeclared(fn *FuncSymbol) {
 	}
 	a.seenDecl[fn] = true
 	a.declared = append(a.declared, fn)
+}
+
+// evalScopeOf is the scope a function's body is evaluated in: the one it
+// was declared in, with a specialization's template parameters bound to its
+// arguments. Nil when there is none to give.
+func (a *Analyzer) evalScopeOf(fs *FuncSymbol) *Scope {
+	if tmpl := fs.TemplateOf; tmpl != nil && tmpl.Template != nil && fs.TemplateArgs != nil {
+		params := tmpl.Template.declParams()
+		if len(params) == len(fs.TemplateArgs) {
+			return a.bindTemplateArgs(tmpl.Template.Scope, params, fs.TemplateArgs)
+		}
+	}
+	return fs.SymScope
 }
 
 // evalInScope evaluates an initializer with the analysis's scope set to

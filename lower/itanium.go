@@ -598,6 +598,17 @@ func (u *unit) typeInfoSymbol(t types.Type) ir.Symbol {
 	if ptr, isPtr := bare.(*types.Pointer); isPtr && !runtimeHasTypeInfo(bare) && u.model.SizePtr == 8 {
 		return u.pointerTypeInfo(bare, ptr)
 	}
+	if u.model.SizePtr == 8 && u.model.ABI.IsItanium() {
+		// std::function's target_type is typeid(_Rp(_ArgTypes...)).
+		switch bare.(type) {
+		case *types.Func:
+			return u.plainTypeInfo(bare, "__function_type_info")
+		case *types.Enum:
+			return u.plainTypeInfo(bare, "__enum_type_info")
+		case *types.Array:
+			return u.plainTypeInfo(bare, "__array_type_info")
+		}
+	}
 	name, err := mangle.TypeInfoOf(u.opt.ABI, bare)
 	if err != nil {
 		return nil
@@ -667,6 +678,34 @@ func (u *unit) pointerTypeInfo(bare types.Type, ptr *types.Pointer) ir.Symbol {
 		ir.RelocInit(str),
 		ir.Lit(ir.Int(flags)),
 		ir.RelocInit(pointee),
+	))
+	return g
+}
+
+// plainTypeInfo emits the type_info of a function, enum or array type:
+// the runtime class's table and the name string, and nothing more, which
+// is all __function_type_info, __enum_type_info and __array_type_info add
+// to std::type_info.
+func (u *unit) plainTypeInfo(bare types.Type, class string) ir.Symbol {
+	name, err := mangle.TypeInfoOf(u.opt.ABI, bare)
+	if err != nil {
+		return nil
+	}
+	if s, done := u.typeInfoRefs[name]; done {
+		return s
+	}
+	enc := strings.TrimPrefix(name, "_ZTI")
+	str := u.mod.Global(u.symbolName("_ZTS"+enc), ir.RO, ir.Array(uint64(len(enc)+1), ir.StoreI8.FType())).Export().Comdat()
+	str.Init(ir.Str(enc + "\x00"))
+	g := u.mod.Global(u.symbolName(name), ir.RO, ir.Array(2, ir.StorePtr.FType())).Export().Comdat()
+	g.Align(8)
+	if u.typeInfoRefs == nil {
+		u.typeInfoRefs = map[string]ir.Symbol{}
+	}
+	u.typeInfoRefs[name] = g
+	g.Init(ir.List(
+		ir.RelocInit(u.cxxabiTable(class)).Plus(ir.Int(16)),
+		ir.RelocInit(str),
 	))
 	return g
 }

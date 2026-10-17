@@ -103,6 +103,16 @@ func classifyConversion(from, to types.Type, fromIsLValue, allowUser bool) Conve
 			}
 		}
 
+		// [dcl.init.ref]/5.4: an initializer of the reference's own type,
+		// or a class derived from it, binds directly or not at all -- no
+		// temporary is made to take the cv the argument lacks. Copying a
+		// const lvalue into a temporary for an rvalue reference chose
+		// basic_string(basic_string&&, pos, n) from substr() const&, and
+		// gutted the string it was a substring of.
+		if sameBare || types.IsBaseOf(toBare, fromBare) {
+			return ConversionSequence{Rank: RankNone, Valid: false}
+		}
+
 		// Const lvalue ref or rvalue ref can bind to a converted temporary
 		if (types.IsLValueReference(to) && types.IsConst(toElem)) || types.IsRValueReference(to) {
 			subCS := classifyConversion(from, toElem, fromIsLValue, allowUser)
@@ -224,7 +234,7 @@ func isStandardConversion(from, to types.Type) bool {
 	}
 
 	// Boolean conversions (from arithmetic or pointer)
-	if types.IsBool(to) && (types.IsArithmetic(from) || types.IsPointer(from) || types.IsEnum(from)) {
+	if types.IsBool(to) && (types.IsArithmetic(from) || types.IsPointer(from) || types.IsEnum(from) || from.Kind() == types.MemberPointerKind) {
 		return true
 	}
 

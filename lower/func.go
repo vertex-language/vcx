@@ -283,10 +283,29 @@ func (fl *fn) delegateCtor(sym *sema.FuncSymbol) bool {
 			// left to the ordinary path, which does the same work.
 			return false
 		}
-		fl.constructWith(fl.this, ctor, mi.Args, mi.Pos())
+		fl.constructWith(fl.this, ctor, memInitArgs(mi, ctor), mi.Pos())
 		return true
 	}
 	return false
+}
+
+// memInitArgs are the arguments a mem-initializer gives the constructor
+// chosen for it: its parenthesized ones, or a braced list's items --
+// `__output_buffer<_CharT>{__small_buffer_, __buffer_size_, ...}` calls the
+// four-parameter constructor with four arguments, not one.
+func memInitArgs(mi *ast.MemInit, chosen *sema.FuncSymbol) []ast.Expr {
+	if mi.Braced == nil || len(mi.Args) > 0 || chosen == nil {
+		return mi.Args
+	}
+	var out []ast.Expr
+	for _, item := range mi.Braced.Items {
+		x, isExpr := item.(ast.Expr)
+		if !isExpr {
+			return mi.Args
+		}
+		out = append(out, x)
+	}
+	return out
 }
 
 // constructBases runs base subobject constructors in declaration order.
@@ -306,6 +325,11 @@ func (fl *fn) constructBases(sym *sema.FuncSymbol) {
 		if ctor := fl.u.res.Info.MemInits[mi]; ctor != nil && ctor.InClass != nil {
 			if _, taken := byRecord[ctor.InClass]; !taken {
 				byRecord[ctor.InClass] = mi
+			}
+		}
+		if base := fl.u.res.Info.MemInitBases[mi]; base != nil {
+			if _, taken := byRecord[base]; !taken {
+				byRecord[base] = mi
 			}
 		}
 		name := sema.NameString(mi.Name, fl.u.unit)
@@ -334,8 +358,8 @@ func (fl *fn) constructBases(sym *sema.FuncSymbol) {
 		var args []ast.Expr
 		var chosen *sema.FuncSymbol
 		if ok {
-			args = mi.Args
 			chosen = fl.u.res.Info.MemInits[mi]
+			args = memInitArgs(mi, chosen)
 		}
 		fl.constructBase(br, baseOffs[i], args, chosen)
 	}
@@ -402,6 +426,10 @@ func (fl *fn) memInits(sym *sema.FuncSymbol) {
 			}
 			continue
 		}
+		if v, from, converted := fl.convertedScalar(initExpr); converted {
+			fl.store(dst, fl.convert(v, from, t), t)
+			continue
+		}
 		v := fl.expr(initExpr)
 		if v == nil {
 			return
@@ -429,7 +457,22 @@ func (fl *fn) constructBase(base *types.Record, off int64, argExprs []ast.Expr, 
 		fl.trackPartial(obj, base)
 		return
 	}
+	if len(argExprs) == 0 {
+		// No mem-initializer: the base is default-initialized, by a
+		// constructor taking nothing or only defaults, whose arguments
+		// defaultConstruct supplies.
+		fl.defaultConstructIn(obj, base, fl.sym.SymPos, false)
+		fl.trackPartial(obj, base)
+		return
+	}
 	target := fl.baseConstructor(base, argExprs)
+	if target == nil && len(argExprs) == 1 {
+		// `: _Tp(std::move(__t))` by the copy or move constructor the
+		// base did not declare: the base subobject is a copy.
+		fl.exprInto(obj, argExprs[0], base)
+		fl.trackPartial(obj, base)
+		return
+	}
 	if target == nil {
 		if len(argExprs) == 0 {
 			// No constructor of its own: use the implicit one.

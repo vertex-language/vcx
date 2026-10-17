@@ -39,6 +39,11 @@ type FuncInfo struct {
 	// N, and N is not a parameter it was called with.
 	TemplateNames  []string
 	TemplateValues []Value
+
+	// Enter, when set, makes the names the body reads resolve where the
+	// function was defined -- with a specialization's template parameters
+	// bound -- rather than where it was called, and returns what undoes it.
+	Enter func() (leave func())
 }
 
 // Scope represents a local lexical scope holding objects.
@@ -1098,6 +1103,10 @@ func (ctx *Context) callFunction(fn *FuncInfo, args []ast.Expr) (Value, error) {
 	// Execute body
 	if fn.Body == nil {
 		return VoidValue{}, nil
+	}
+	if fn.Enter != nil {
+		leave := fn.Enter()
+		defer leave()
 	}
 
 	sig, retVal, err := ctx.EvalCompoundStmt(fn.Body)

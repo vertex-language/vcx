@@ -152,6 +152,13 @@ func newParser(u *Unit, mode Mode) *parser {
 		maxDepth:  defaultMaxDepth,
 		names:     []map[string]nameKind{{}},
 	}
+	// The type names the compiler predeclares (sema's declareBuiltinTypes).
+	// They are reserved, so knowing them everywhere costs nothing, and not
+	// knowing them misreads `__log2_imp<__uint128_t, _Xp, _Rp>`'s first
+	// argument as an expression.
+	for _, name := range []string{"__builtin_va_list", "_Float16", "__int128_t", "__uint128_t"} {
+		p.noteType(name)
+	}
 	if mode&ObjC != 0 {
 		// instancetype is a type everywhere in Objective-C; id, Class and
 		// SEL are the runtime header's typedefs.

@@ -238,6 +238,16 @@ func (fl *fn) declareLocal(init *ast.InitDeclarator) {
 		fl.initList(slot, sym.SymType, init.Braced)
 		return
 	}
+	if init.Value == nil && len(init.Args) == 1 {
+		if rec := classOf(sym.SymType); rec != nil {
+			// `S w(*this)` by the copy constructor the class did not
+			// declare: the analysis chose the trivial one and recorded
+			// no call, and the object is a copy of the argument.
+			fl.installVPtr(slot, rec)
+			fl.exprInto(slot, init.Args[0], rec)
+			return
+		}
+	}
 	if init.Value == nil {
 		// Default-initialize class objects or class element arrays.
 		if rec := classOf(sym.SymType); rec != nil {
@@ -357,7 +367,9 @@ func (fl *fn) declareStaticLocal(init *ast.InitDeclarator, sym *sema.VarSymbol) 
 // already reserved: the frame slot of a local, or the object of a static.
 func (fl *fn) initializeObject(slot ir.Ptr, sym *sema.VarSymbol, init *ast.InitDeclarator) {
 	initVal := init.Value
-	if initVal == nil && len(init.Args) == 1 && classOf(sym.SymType) == nil {
+	if initVal == nil && len(init.Args) == 1 && (classOf(sym.SymType) == nil || fl.u.res.Info.Ctors[init] == nil) {
+		// A class's one argument with no constructor recorded is a copy
+		// by the trivial copy constructor (see declareLocal).
 		initVal = init.Args[0]
 	}
 	if isReference(sym.SymType) {
@@ -457,6 +469,12 @@ func (fl *fn) constructObject(obj ir.Ptr, rec *types.Record, ctor *sema.FuncSymb
 			fl.constructWith(sub, ctor, argExprs, at)
 			continue
 		}
+		if ctor.InClass != nil && types.IsBaseOf(ctor.InClass, br) {
+			// Inherited through more than one class: std::optional's
+			// `using __base::__base;` at every level of its bases.
+			fl.constructObject(sub, br, ctor, argExprs, at)
+			continue
+		}
 		fl.defaultConstruct(sub, br, at)
 	}
 	fl.installVPtr(obj, rec)
@@ -483,6 +501,16 @@ func (fl *fn) constructWith(obj ir.Ptr, ctor *sema.FuncSymbol, argExprs []ast.Ex
 		return
 	}
 	args := []ir.Value{obj}
+	if n := len(ctor.FuncType.Params); len(argExprs) < n && len(ctor.Defaults) >= n {
+		// The parameters the call leaves off take their defaults:
+		// `__shared_weak_count(long __refs = 0)` built as a base with no
+		// mem-initializer, or by default-initialization, has none written.
+		full := append([]ast.Expr(nil), argExprs...)
+		for i := len(argExprs); i < n && ctor.Defaults[i] != nil; i++ {
+			full = append(full, ctor.Defaults[i])
+		}
+		argExprs = full
+	}
 	for i, a := range argExprs {
 		var want types.Type
 		if i < len(ctor.FuncType.Params) {
@@ -684,7 +712,36 @@ func (fl *fn) constructFromInitList(dst ir.Ptr, rec *types.Record, ctor *sema.Fu
 		fl.u.errorf(list.Pos(), "lowering has no symbol for the constructor of %s", rec.Name)
 		return
 	}
-	fl.emitCall(target, dst, obj)
+	args := []ir.Value{dst, obj}
+	// The parameters after the list take their defaults: set's comparator.
+	for i := 1; i < len(ctor.FuncType.Params); i++ {
+		if i >= len(ctor.Defaults) || ctor.Defaults[i] == nil {
+			fl.u.errorf(list.Pos(), "lowering: the initializer-list constructor of %s has a parameter with no default", rec.Name)
+			return
+		}
+		def, want := ctor.Defaults[i], ctor.FuncType.Params[i].Type
+		switch {
+		case isReference(want):
+			addr, ok := fl.bind(def, want)
+			if !ok {
+				return
+			}
+			args = append(args, addr)
+		case classOf(want) != nil:
+			addr, ok := fl.objectOf(def)
+			if !ok {
+				return
+			}
+			args = append(args, addr)
+		default:
+			v := fl.expr(def)
+			if v == nil {
+				return
+			}
+			args = append(args, fl.convert(v, fl.typeOf(def), want))
+		}
+	}
+	fl.emitCall(target, args...)
 }
 
 // initListArray lays the elements of a braced list out on the frame and

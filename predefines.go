@@ -63,6 +63,9 @@ func (t Target) Predefines() []preprocessor.Predefine {
 		for _, d := range cppFeatures {
 			def(d[0], d[1])
 		}
+		// GCC's spelling of the same, which glibc's and libstdc++'s
+		// headers test.
+		def("__EXCEPTIONS", "1")
 	}
 	return out
 }
@@ -119,6 +122,10 @@ var cppFeatures = [][2]string{
 	{"__cpp_delegating_constructors", "200604L"},
 	{"__cpp_designated_initializers", "201707L"},
 	{"__cpp_enumerator_attributes", "201411L"},
+	// Exceptions are on, as they are by default for Clang's C++. Without
+	// it libc++ builds its no-exceptions configuration: throw_with_nested
+	// throws nothing and vector::at aborts.
+	{"__cpp_exceptions", "199711L"},
 	{"__cpp_fold_expressions", "201603L"},
 	{"__cpp_generic_lambdas", "201707L"},
 	{"__cpp_guaranteed_copy_elision", "201606L"},

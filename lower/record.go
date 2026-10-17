@@ -322,6 +322,10 @@ func (fl *fn) exprInto(dst ir.Ptr, e ast.Expr, rec *types.Record) bool {
 	case *ast.InitList:
 		fl.initList(dst, rec, x)
 		return true
+	case *ast.LambdaExpr:
+		if info := fl.u.res.Info.Lambdas[x]; info != nil && info.Closure == rec {
+			return fl.lambdaInto(dst, x)
+		}
 	case *ast.CastExpr:
 		// A compound literal, `(T){...}`, which C++ compilers take from C.
 		if list, isList := x.X.(*ast.InitList); isList {

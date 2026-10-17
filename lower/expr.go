@@ -142,6 +142,9 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 		return fl.stringLit(e)
 
 	case *ast.FunctionalCastExpr:
+		if _, _, isRef := fl.castRef(e); isRef {
+			return fl.rvalue(e)
+		}
 		return fl.functionalCast(e)
 
 	case *ast.NoexceptExpr:
@@ -150,6 +153,19 @@ func (fl *fn) expr(e ast.Expr) ir.Value {
 			return fl.blk.I32.Const(n)
 		}
 		fl.u.errorf(e.Pos(), "lowering has no value for noexcept")
+		return nil
+
+	case *ast.FoldExpr:
+		// A fold over a pack of values the analysis folded to a constant:
+		// `(0 + ... + I)` in an instance. A fold that is not one was
+		// rewritten as the expression it stands for.
+		if n, known := fl.u.res.Info.Consts[e]; known {
+			if fl.u.regType(fl.typeOf(e)) == ir.TypeI64 {
+				return fl.blk.I64.Const(n)
+			}
+			return fl.blk.I32.Const(n)
+		}
+		fl.u.errorf(e.Pos(), "lowering has no value for this fold expression")
 		return nil
 
 	case *ast.SizeofExpr, *ast.AlignofExpr:
@@ -350,6 +366,10 @@ func (fl *fn) lvalue(e ast.Expr) (ir.Ptr, types.Type, bool) {
 		return fl.scaled(base, idx, fl.typeOf(e.Args[0]), elem), elem, true
 
 	case *ast.CallExpr:
+		if ref, x, isRef := fl.castRef(e); isRef {
+			addr, ok := fl.bind(x, ref)
+			return addr, types.RemoveReference(ref), ok
+		}
 		// A function returning a reference yields an lvalue address.
 		callee := fl.u.res.Info.Calls[e]
 		if callee != nil {
@@ -430,6 +450,18 @@ func (fl *fn) castRef(e ast.Expr) (types.Type, ast.Expr, bool) {
 		id, x = c.Type, c.X
 	case *ast.NamedCastExpr:
 		id, x = c.Type, c.X
+	case *ast.FunctionalCastExpr:
+		// `_Comp_ref(__comp)` with _Comp_ref a reference: (T)x spelled T(x).
+		if c.Args != nil || len(c.ArgList) != 1 {
+			return nil, nil, false
+		}
+		id, x = c.Type, c.ArgList[0]
+	case *ast.CallExpr:
+		// The same cast, read as a call on a type name.
+		if t := fl.u.res.Info.RefCasts[c]; t != nil && len(c.Args) == 1 {
+			return t, c.Args[0], true
+		}
+		return nil, nil, false
 	default:
 		return nil, nil, false
 	}
@@ -540,9 +572,17 @@ func (fl *fn) truth(e ast.Expr) *ir.I1 {
 		}
 	}
 
+	// A class converts by the conversion function the analysis chose:
+	// `if (__p)` on a unique_ptr is its operator bool.
+	if v, from, ok := fl.convertedScalar(e); ok {
+		return fl.truthOf(fl.convert(v, from, types.Typ(types.Bool)), e.Pos())
+	}
 	v := fl.expr(e)
 	if v == nil {
 		return nil
+	}
+	if c := fl.memberPointerTruth(v, fl.typeOf(e)); c != nil {
+		return c
 	}
 	return fl.truthOf(v, e.Pos())
 }
@@ -644,6 +684,15 @@ func (fl *fn) assign(e *ast.AssignExpr) ir.Value {
 			return nil
 		}
 		return slot
+	}
+	if e.Op == token.ASSIGN {
+		// A class assigned to a scalar converts by the function sema chose:
+		// `fn = [](const void* p) { ... };` stores the closure's invoker.
+		if v, from, converted := fl.convertedScalar(e.Rhs); converted {
+			v = fl.convert(v, from, t)
+			fl.store(slot, v, t)
+			return v
+		}
 	}
 	v := fl.expr(e.Rhs)
 	if v == nil {
@@ -849,6 +898,9 @@ func (fl *fn) conditional(e *ast.CondExpr) ir.Value {
 
 // call lowers a resolved function call. Calls returning references yield loaded values.
 func (fl *fn) call(e *ast.CallExpr) ir.Value {
+	if _, _, isRef := fl.castRef(e); isRef {
+		return fl.rvalue(e)
+	}
 	// Functional cast T(args) creates a temporary via selected constructor.
 	if ctor := fl.u.res.Info.Temporaries[e]; ctor != nil {
 		rec := classOf(fl.typeOf(e))
@@ -960,7 +1012,19 @@ func (fl *fn) callRaw(e *ast.CallExpr, callee *sema.FuncSymbol) ir.Value {
 		return fl.deviceMathCall(callee, e)
 	}
 	var target ir.Callee
-	if !isVirtualCall(e, callee) {
+	if rec := callee.InClass; rec != nil && callee.SymName == "~"+rec.Name && !isVirtualCall(e, callee) {
+		// `__loc->~_Tp()`: the destructor the class has, which for one
+		// declared by nobody is the implicit one, or nothing at all when
+		// that is trivial -- there is no symbol for it to call.
+		if !fl.u.needsDestructor(rec) {
+			if m, isMember := unparen(e.Fun).(*ast.MemberExpr); isMember {
+				fl.expr(m.X)
+			}
+			return nil
+		}
+		target = fl.u.destructor(rec)
+	}
+	if target == nil && !isVirtualCall(e, callee) {
 		target = fl.u.callee(callee)
 		if target == nil {
 			fl.u.errorf(e.Pos(), "lowering has no symbol for %q", callee.SymName)
@@ -1130,13 +1194,19 @@ func (fl *fn) finishCall(e *ast.CallExpr, callee *sema.FuncSymbol, target ir.Cal
 	// The postfix increment's int, which no expression supplies.
 	args = append(args, extra...)
 
-	// Virtual function calls through an object dispatch through the vtable.
-	if e != nil && isVirtualCall(e, callee) && len(args) > 0 {
+	// Virtual function calls through an object dispatch through the vtable,
+	// an operator's as a named call's.
+	virtual := e != nil && isVirtualCall(e, callee) || e == nil && target == nil && callee.InClass != nil && !callee.Static && isVirtualMember(callee)
+	if virtual && len(args) > 0 {
 		objIdx := 0
 		if retRec != nil && !hiddenAfterThis {
 			objIdx = 1
 		}
-		v := fl.virtualCall(e, callee, args[objIdx], args, objIdx)
+		var at ast.Node = e
+		if e == nil {
+			at = argExprsPos(argExprs)
+		}
+		v := fl.virtualCall(at, callee, args[objIdx], args, objIdx)
 		if retRec != nil {
 			return result
 		}
@@ -1549,7 +1619,11 @@ func (fl *fn) castOperand(x ast.Expr, to types.Type) ir.Value {
 // convertedObject creates a temporary via a converting constructor if selected.
 func (fl *fn) convertedObject(e ast.Expr, rec *types.Record) (ir.Ptr, bool) {
 	ctor := fl.u.res.Info.Conversions[e]
-	if ctor == nil {
+	if ctor == nil || ctor.InClass != nil && ctor.InClass != rec {
+		// The conversion is to the class its constructor builds. Its own
+		// parameter -- `const __wrap_iter<int*>&` of the converting
+		// constructor making a const_iterator -- binds e as it is; asking
+		// again would construct the const_iterator again, for ever.
 		return ir.Ptr{}, false
 	}
 	tmp := fl.alloc(rec, "")
@@ -1568,12 +1642,19 @@ func (fl *fn) isLValueShape(e ast.Expr) bool {
 	case *ast.UnaryExpr:
 		return e.Op == token.MUL
 	case *ast.CallExpr:
+		if _, _, isRef := fl.castRef(e); isRef {
+			return true
+		}
 		callee := fl.u.res.Info.Calls[e]
+		if callee == nil {
+			// `__f(__a)` on an object is its operator(), recorded as one.
+			callee = fl.u.res.Info.Operators[e]
+		}
 		return callee != nil && isReference(callee.FuncType.Ret)
 	case *ast.BinaryExpr, *ast.IncDecExpr:
 		op := fl.u.res.Info.Operators[e]
 		return op != nil && isReference(op.FuncType.Ret)
-	case *ast.CastExpr, *ast.NamedCastExpr:
+	case *ast.CastExpr, *ast.NamedCastExpr, *ast.FunctionalCastExpr:
 		_, _, isRef := fl.castRef(e)
 		return isRef
 	}
@@ -1591,7 +1672,13 @@ func (fl *fn) lvalueQuiet(e ast.Expr) (ir.Ptr, types.Type, bool) {
 			return fl.lvalue(e)
 		}
 	case *ast.CallExpr:
+		if _, _, isRef := fl.castRef(e); isRef {
+			return fl.lvalue(e)
+		}
 		if callee := fl.u.res.Info.Calls[e]; callee != nil && isReference(callee.FuncType.Ret) {
+			return fl.lvalue(e)
+		}
+		if op := fl.u.res.Info.Operators[e]; op != nil && isReference(op.FuncType.Ret) {
 			return fl.lvalue(e)
 		}
 	case *ast.BinaryExpr, *ast.IncDecExpr:
@@ -1606,7 +1693,7 @@ func (fl *fn) lvalueQuiet(e ast.Expr) (ir.Ptr, types.Type, bool) {
 			return ir.Ptr{}, nil, false
 		}
 		return fl.lvalue(e.Lhs)
-	case *ast.CastExpr, *ast.NamedCastExpr:
+	case *ast.CastExpr, *ast.NamedCastExpr, *ast.FunctionalCastExpr:
 		if _, _, isRef := fl.castRef(e); isRef {
 			return fl.lvalue(e)
 		}
@@ -1990,8 +2077,14 @@ func (fl *fn) operatorValue(e ast.Expr, op *sema.FuncSymbol, lhs ast.Expr, rest 
 }
 
 func (fl *fn) operatorRaw(e ast.Expr, op *sema.FuncSymbol, lhs ast.Expr, rest []ast.Expr, extra ...ir.Value) ir.Value {
-	target := fl.u.callee(op)
-	if target == nil {
+	var target ir.Callee
+	if !(op.InClass != nil && !op.Static && isVirtualMember(op)) {
+		// A virtual operator is called through the table (see
+		// finishCall), and has no symbol to name: `(*__f_)(__args...)`
+		// on std::function's __base calls a pure virtual operator().
+		target = fl.u.callee(op)
+	}
+	if target == nil && !(op.InClass != nil && !op.Static && isVirtualMember(op)) {
 		fl.u.errorf(e.Pos(), "lowering has no symbol for %q", op.SymName)
 		return nil
 	}
@@ -2200,4 +2293,13 @@ func (fl *fn) memoryOrder(x ast.Expr) (ir.Ordering, bool) {
 		return ir.SeqCst, true
 	}
 	return 0, false
+}
+
+// argExprsPos is a node to report an operator call at: its first
+// argument, or nothing when it has none.
+func argExprsPos(args []ast.Expr) ast.Node {
+	if len(args) > 0 {
+		return args[0]
+	}
+	return &ast.Ident{}
 }

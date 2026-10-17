@@ -221,7 +221,7 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 					// being checked as written -- it stays the dependent
 					// spelling.
 					instantiated := false
-					if concrete(args) {
+					if concrete(args) && !namesTemplateAsWritten(args, scope) {
 						switch ts := sym.(type) {
 						case *RecordSymbol:
 							if ts.TemplateOf != nil {
@@ -245,6 +245,19 @@ func BuildDeclSpecs(specs *ast.DeclSpecs, scope *Scope, u ast.Unit) DeclSpecInfo
 											info.UnresolvedPos = tmplName.Pos()
 										}
 									}
+								}
+							}
+						}
+					}
+					if !instantiated {
+						// `index_sequence<_Ip...>` in a template as written is
+						// `integer_sequence<size_t, _Ip...>`: an alias is no
+						// type of its own, and a parameter spelled with it
+						// deduces as its target does.
+						if ts, isAlias := sym.(*TypeSymbol); isAlias && ts.Alias != nil {
+							if expand := scope.root().AliasExpand; expand != nil {
+								if t := expand(ts, args); t != nil {
+									customType, instantiated = t, true
 								}
 							}
 						}
@@ -1031,6 +1044,26 @@ func concrete(args []types.TemplateArg) bool {
 	return true
 }
 
+// namesTemplateAsWritten reports whether an argument is a class template's
+// own injected-class-name used inside it -- `__bitset` in __bitset's body,
+// which stands for the specialization of its parameters and so waits for
+// them. Elsewhere the template's name is the template:
+// `__make_integer_seq<integer_sequence, size_t, 4>`.
+func namesTemplateAsWritten(args []types.TemplateArg, scope *Scope) bool {
+	for _, a := range args {
+		rec, isRec := types.Unqualify(a.Type).(*types.Record)
+		if !a.IsType || !isRec || !rec.IsTemplate {
+			continue
+		}
+		for s := scope; s != nil; s = s.Parent {
+			if s.Kind == ClassScope && s.Entity == rec {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // lookupName resolves a name node the way a type-specifier's is resolved.
 func lookupName(n ast.Node, scope *Scope, u ast.Unit) []Symbol {
 	switch n := n.(type) {
@@ -1121,6 +1154,12 @@ func expandTypePattern(arg *ast.TypeId, scope *Scope, u ast.Unit) ([]types.Templ
 	var packs []boundPack
 	seen := map[string]bool{}
 	ast.Inspect(specs, func(n ast.Node) bool {
+		switch n.(type) {
+		case *ast.PackName, *ast.PackExpansion:
+			// `typename at<I, Ts...>::type...`: Ts is expanded where it
+			// is written, and only I belongs to this expansion.
+			return false
+		}
 		id, isIdent := n.(*ast.Ident)
 		if !isIdent {
 			return true
@@ -1155,7 +1194,12 @@ func expandTypePattern(arg *ast.TypeId, scope *Scope, u ast.Unit) ([]types.Templ
 		for _, p := range packs {
 			elem := p.pack.Elems[i]
 			if !elem.IsType {
-				return nil, false
+				// An element of a non-type pack -- `at<I>` for
+				// `size_t... I` -- is the constant it was bound to,
+				// as bindTemplateArgs binds a single one.
+				child.Insert(&VarSymbol{SymName: p.name, SymType: elem.ValType, SymScope: child,
+					Constexpr: true, KnownValue: elem.Val, HasKnownValue: true})
+				continue
 			}
 			child.Insert(&TypeSymbol{SymName: p.name, SymType: elem.Type, SymScope: child})
 		}

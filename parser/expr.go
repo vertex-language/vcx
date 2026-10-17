@@ -376,6 +376,18 @@ func (p *parser) isStmtTerminator(k token.Kind) bool {
 }
 
 // parseSizeofExpr parses sizeof(T), sizeof expr, or sizeof...(pack).
+// tryTypeIdInParens speculatively parses a type-id and reports whether it
+// parses cleanly and is followed by ')'. `sizeof(T)` is a type, and
+// `sizeof(__diagnose_unordered_container_requirements<_Key, _Hash,
+// _Pred>(0))` -- a name that could start one -- is a call.
+func (p *parser) tryTypeIdInParens() bool {
+	cur, half, ndiags, errTok, resyncs := p.cur, p.halfGtr, len(p.diags), p.errTok, p.resyncs
+	p.parseTypeId()
+	ok := len(p.diags) == ndiags && p.peek() == token.RPAREN
+	p.cur, p.halfGtr, p.diags, p.errTok, p.resyncs = cur, half, p.diags[:ndiags], errTok, resyncs
+	return ok
+}
+
 func (p *parser) parseSizeofExpr() *ast.SizeofExpr {
 	start := p.next()
 	ell := ast.NoTok
@@ -397,7 +409,7 @@ func (p *parser) parseSizeofExpr() *ast.SizeofExpr {
 
 	if p.peek() == token.LPAREN {
 		lp := p.next()
-		if p.startsTypeId() {
+		if p.startsTypeId() && p.tryTypeIdInParens() {
 			typeId := p.parseTypeId()
 			rp := p.expect(token.RPAREN)
 			return &ast.SizeofExpr{

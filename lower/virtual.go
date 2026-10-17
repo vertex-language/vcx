@@ -267,7 +267,7 @@ func (fl *fn) installVPtr(obj ir.Ptr, r *types.Record) {
 // way a direct member call would pass it. The signature named on the
 // indirect call is the callee's, which is what keeps the call well-typed
 // without the callee being known.
-func (fl *fn) virtualCall(e *ast.CallExpr, callee *sema.FuncSymbol, obj ir.Value, args []ir.Value, objIdx int) ir.Value {
+func (fl *fn) virtualCall(e ast.Node, callee *sema.FuncSymbol, obj ir.Value, args []ir.Value, objIdx int) ir.Value {
 	objPtr, ok := obj.(ir.Ptr)
 	if !ok {
 		fl.u.errorf(e.Pos(), "lowering: a virtual call on something that is not an address")

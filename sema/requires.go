@@ -70,12 +70,48 @@ func (a *Analyzer) decideConcept(ctx *constexpr.Context, concept *ConceptSymbol,
 			bound.Insert(&TypeSymbol{SymName: param.SymName, SymType: pack, SymPos: param.SymPos})
 			break
 		}
-		if param == nil || param.SymName == "" || i >= len(args) || args[i] == nil {
+		if param == nil || param.SymName == "" {
+			continue
+		}
+		if i >= len(args) || args[i] == nil {
+			// `template <class _Tp, class _Cat = partial_ordering> concept
+			// three_way_comparable`: a parameter left out takes its
+			// default, read with the parameters before it bound.
+			if id, isTypeId := param.Default.(*ast.TypeId); isTypeId && param.IsType && i >= len(args) {
+				id = ast.Clone(id)
+				specs := BuildDeclSpecs(id.Specs, bound, a.unit)
+				var t types.Type
+				if specs.Type != nil && specs.Unresolved == "" {
+					t = BuildDeclarator(id.Decl, specs.Type, bound, a.unit)
+				}
+				if t == nil || specs.Unresolved != "" {
+					// `typename _Context::template formatter_type<...>` for a
+					// context with no formatter_type: the substitution fails,
+					// and a concept-id whose arguments do not form is not
+					// satisfied ([temp.constr.atomic]/3).
+					if !argsDependentTypes(args) {
+						return constexpr.BoolValue{Val: false}, nil
+					}
+					continue
+				}
+				bound.Insert(&TypeSymbol{SymName: param.SymName, SymType: t, SymPos: param.SymPos})
+			}
 			continue
 		}
 		bound.Insert(&TypeSymbol{SymName: param.SymName, SymType: args[i], SymPos: param.SymPos})
 	}
 	return a.evalInScope(ctx, concept.Constraint, bound)
+}
+
+// argsDependentTypes reports whether any of a concept-id's arguments still
+// depends on a template parameter.
+func argsDependentTypes(args []types.Type) bool {
+	for _, t := range args {
+		if t == nil || isDependentType(t) {
+			return true
+		}
+	}
+	return false
 }
 
 // conceptArgTypes resolves concept-id arguments as types within the current scope.

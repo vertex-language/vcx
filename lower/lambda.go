@@ -28,7 +28,27 @@ func (fl *fn) lambda(e *ast.LambdaExpr) ir.Value {
 	rec := info.Closure
 	obj := fl.alloc(rec, "")
 	fl.temporary(obj, rec)
+	if !fl.buildClosure(obj, e, info) {
+		return nil
+	}
+	return obj
+}
 
+// lambdaInto builds a lambda-expression's closure in place: `auto h =
+// [r = std::make_unique<int>(5)] { ... };` is h, and not a temporary
+// copied into h and then destroyed with the unique_ptr it holds.
+func (fl *fn) lambdaInto(dst ir.Ptr, e *ast.LambdaExpr) bool {
+	info := fl.u.res.Info.Lambdas[e]
+	if info == nil {
+		fl.u.errorf(e.Pos(), "lowering has no closure for this lambda")
+		return false
+	}
+	return fl.buildClosure(dst, e, info)
+}
+
+// buildClosure initializes a closure object's captures at obj.
+func (fl *fn) buildClosure(obj ir.Ptr, e *ast.LambdaExpr, info *sema.LambdaInfo) bool {
+	rec := info.Closure
 	fieldOffs := make([]int64, len(rec.Fields))
 	fl.u.model.LayoutWithBases(rec, fieldOffs, make([]int64, len(rec.Bases)))
 	for _, c := range info.Captures {
@@ -43,7 +63,7 @@ func (fl *fn) lambda(e *ast.LambdaExpr) ir.Value {
 			// copies the object itself.
 			if !fl.hasThis {
 				fl.u.errorf(e.Pos(), "lowering has no object for this capture")
-				return nil
+				return false
 			}
 			if c.ByRef {
 				fl.blk.Ptr.Store(fl.this, at)
@@ -51,7 +71,7 @@ func (fl *fn) lambda(e *ast.LambdaExpr) ir.Value {
 			}
 			if cr := classOf(field.Type); cr != nil {
 				if !fl.copyObject(at, fl.this, cr, nil) {
-					return nil
+					return false
 				}
 				continue
 			}
@@ -65,6 +85,10 @@ func (fl *fn) lambda(e *ast.LambdaExpr) ir.Value {
 				continue
 			}
 			if cr := classOf(field.Type); cr != nil {
+				if c.Ctor != nil {
+					fl.constructWith(at, c.Ctor, []ast.Expr{c.Init}, c.Init.Pos())
+					continue
+				}
 				fl.exprInto(at, c.Init, cr)
 				continue
 			}
@@ -75,25 +99,25 @@ func (fl *fn) lambda(e *ast.LambdaExpr) ir.Value {
 			// Reference capture binds directly to the entity.
 			addr, ok := fl.captured(e, c)
 			if !ok {
-				return nil
+				return false
 			}
 			fl.blk.Ptr.Store(addr, at)
 		default:
 			// By-value capture: copy according to type.
 			src, ok := fl.captured(e, c)
 			if !ok {
-				return nil
+				return false
 			}
 			if cr := classOf(field.Type); cr != nil {
 				if !fl.copyObject(at, src, cr, nil) {
-					return nil
+					return false
 				}
 				continue
 			}
 			fl.store(at, fl.load(src, field.Type), field.Type)
 		}
 	}
-	return obj
+	return true
 }
 
 // captured is the address of the entity a capture names, where the

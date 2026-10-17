@@ -138,6 +138,7 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 			a.implicitCapture(e, v)
 			a.objcBlockCapture(v)
 		}
+		a.useSoleFunction(syms)
 		return a.foldConstant(e, a.symToExprInfo(syms[0]), syms[0])
 
 	case *ast.QualifiedName:
@@ -151,6 +152,7 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 			return ExprInfo{Type: types.Typ(types.Int), ValCat: LValue}
 		}
 		a.record(e, syms[0])
+		a.useSoleFunction(syms)
 		return a.foldConstant(e, a.symToExprInfo(syms[0]), syms[0])
 
 	case *ast.FoldExpr:
@@ -185,6 +187,15 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 			}
 			a.noteConst(e, n)
 			info.IsConst, info.ConstVal = true, n
+		default:
+			// A constant lowering has no register for -- a floating
+			// sum -- is lowered as the expression written out.
+			if tree, ok := a.expandFoldExpr(e); ok {
+				info = a.CheckExpr(tree)
+				if a.info != nil {
+					a.info.Rewrites[e] = tree
+				}
+			}
 		}
 		return info
 
@@ -258,6 +269,7 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		if !isDependentExpr(cond) && !contextuallyConvertibleToBool(cond.Type) {
 			a.errorAt(e.Cond.Pos(), "condition expression must be convertible to bool")
 		}
+		a.noteCondition(e.Cond, cond)
 		thenInfo := cond
 		if e.Then != nil {
 			thenInfo = a.CheckExpr(e.Then)
@@ -397,7 +409,15 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 		}
 		for _, arg := range items {
 			info := a.CheckExpr(arg)
-			args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
+			args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue, NullConst: isNullConstant(arg, info)})
+		}
+		if types.IsReference(targetT) && e.Args == nil && len(items) == 1 {
+			// `_Comp_ref(__comp)` with _Comp_ref a reference type: (T)x,
+			// which designates the operand's object.
+			if a.info != nil {
+				a.info.TypeIds[e.Type] = targetT
+			}
+			return castResult(targetT)
 		}
 		if rec == nil && len(items) == 1 {
 			// T(x) onto a scalar is a static_cast, and reaches a
@@ -483,6 +503,9 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 				a.errorAt(count.Pos(), fmt.Sprintf("the array bound of a new-expression must be an integer, not %q", info.Type))
 			}
 		}
+		// `::new (__p) _Tp(std::declval<_Args>()...)`: the packs in the
+		// arguments expand where they are written.
+		e.Placement = a.expandPackArgs(e.Placement)
 		placement := []Argument{{Type: a.sizeT()}}
 		for _, arg := range e.Placement {
 			info := a.CheckExpr(arg)
@@ -535,7 +558,7 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 			if isDependentExpr(info) {
 				anyDependent = true
 			}
-			args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
+			args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue, NullConst: isNullConstant(item, info)})
 		}
 		if rec := types.AsRecord(types.Unqualify(allocT)); rec != nil && hasUserConstructor(rec) && !isDependentType(allocT) && !(anyDependent && a.dependentContext()) {
 			chosen, err := a.chooseConstructor(rec, args)
@@ -611,6 +634,72 @@ func (a *Analyzer) checkExpr(expr ast.Expr) ExprInfo {
 	}
 
 	return ExprInfo{Type: types.Typ(types.Int), ValCat: PrValue}
+}
+
+// overloadSetOf is the functions an expression names when it names more than
+// one -- `__prepare_write`, a member and a static function of that name --
+// or nil.
+func (a *Analyzer) overloadSetOf(e ast.Expr) []*FuncSymbol {
+	var syms []Symbol
+	switch n := unparenExpr(e).(type) {
+	case *ast.Ident:
+		syms = LookupUnqualified(a.curScope, n.Text(a.unit))
+	case *ast.QualifiedName:
+		syms = ResolveQualifiedName(n, a.curScope, a.globalScope, a.unit)
+	default:
+		return nil
+	}
+	var set []*FuncSymbol
+	for _, sym := range syms {
+		fn, isFunc := sym.(*FuncSymbol)
+		if !isFunc {
+			return nil
+		}
+		set = append(set, fn)
+	}
+	if len(set) < 2 {
+		return nil
+	}
+	return set
+}
+
+// settleOverloadArgs records, for each argument that names an overload set,
+// the one function of it the parameter it is passed to takes.
+func (a *Analyzer) settleOverloadArgs(exprs []ast.Expr, ft *types.Func) {
+	if ft == nil {
+		return
+	}
+	for i, e := range exprs {
+		if i >= len(ft.Params) {
+			break
+		}
+		set := a.overloadSetOf(e)
+		if set == nil {
+			continue
+		}
+		if fn := overloadFor(set, ft.Params[i].Type); fn != nil {
+			a.record(unparenExpr(e), fn)
+			if a.info != nil {
+				a.info.Types[unparenExpr(e)] = fn.FuncType
+				a.info.Types[e] = fn.FuncType
+			}
+			a.ensureInstantiated(fn)
+		}
+	}
+}
+
+// useSoleFunction instantiates the function a name denotes when it denotes
+// one and only one: its address may be all that is taken of it -- a static
+// member of a class template's specialization given as a callback,
+// `__output_buffer<_CharT>{..., __prepare_write, ...}` -- and that is a use
+// as much as a call is.
+func (a *Analyzer) useSoleFunction(syms []Symbol) {
+	if len(syms) != 1 || a.dependentContext() {
+		return
+	}
+	if fn, isFunc := syms[0].(*FuncSymbol); isFunc && fn.Template == nil {
+		a.ensureInstantiated(fn)
+	}
 }
 
 // noteConst records the value of an expression the analysis evaluated.
@@ -790,8 +879,21 @@ func comparable(t types.Type) bool {
 	return isMemPtr
 }
 
+// noteCondition records the conversion function a class operand is
+// contextually converted to bool by ([conv]/4): `if (__p)`, `!__p` and
+// `__p && q` on a unique_ptr call its explicit operator bool.
+func (a *Analyzer) noteCondition(e ast.Expr, info ExprInfo) {
+	if e == nil || isDependentExpr(info) || types.AsRecord(types.Unqualify(types.RemoveReference(info.Type))) == nil {
+		return
+	}
+	a.noteConversionFunction(e, info.Type, types.Typ(types.Bool))
+}
+
 func contextuallyConvertibleToBool(t types.Type) bool {
 	if types.IsConvertible(t, types.Typ(types.Bool)) {
+		return true
+	}
+	if types.Unqualify(types.RemoveReference(t)).Kind() == types.MemberPointerKind {
 		return true
 	}
 	rec := types.AsRecord(types.Unqualify(types.RemoveReference(t)))
@@ -858,6 +960,7 @@ func (a *Analyzer) checkUnaryExpr(u *ast.UnaryExpr) ExprInfo {
 		if !contextuallyConvertibleToBool(sub.Type) {
 			a.errorAt(u.Pos(), "operand of ! must be convertible to bool")
 		}
+		a.noteCondition(u.X, sub)
 		return ExprInfo{Type: types.Typ(types.Bool), ValCat: PrValue}
 
 	case token.TILDE, token.ADD, token.SUB:
@@ -970,6 +1073,8 @@ func (a *Analyzer) checkBinaryExpr(b *ast.BinaryExpr) ExprInfo {
 		if !contextuallyConvertibleToBool(right.Type) {
 			a.errorAt(b.Y.Pos(), "right operand must be convertible to bool")
 		}
+		a.noteCondition(b.X, left)
+		a.noteCondition(b.Y, right)
 		return ExprInfo{Type: types.Typ(types.Bool), ValCat: PrValue}
 
 	case token.COMMA:
@@ -1073,6 +1178,11 @@ func (a *Analyzer) checkAssignExpr(as *ast.AssignExpr) ExprInfo {
 	}
 
 	cs := ClassifyConversion(right.Type, target, right.ValCat == LValue)
+	if as.Op == token.ASSIGN && cs.UserDefined {
+		// `fn = [](const void* p) { ... };`: the value assigned is what the
+		// conversion function returns -- the invoker, not the closure.
+		a.noteConversionFunction(as.Rhs, right.Type, target)
+	}
 	// A null pointer constant converts to any pointer: `d->h = NULL`,
 	// where NULL is __null, 0L.
 	nullToPointer := isNullConstant(as.Rhs, right) && isPointerLike(target)
@@ -1095,7 +1205,14 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 		args := make([]Argument, 0, len(c.Args))
 		for _, arg := range c.Args {
 			info := a.CheckExpr(arg)
-			args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
+			args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue, NullConst: isNullConstant(arg, info)})
+		}
+		if types.IsReference(t) && len(c.Args) == 1 {
+			// `_Comp_ref(__comp)`, _Comp_ref being `_Comp&`: (T)x.
+			if a.info != nil {
+				a.info.RefCasts[c] = t
+			}
+			return castResult(t)
 		}
 		// Class type conversion constructs a temporary.
 		if rec := types.AsRecord(types.Unqualify(t)); rec != nil && hasUserConstructor(rec) && !isDependentType(t) && !dependentArguments(args) {
@@ -1242,6 +1359,10 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 		rec := types.AsRecord(objT)
 		if rec != nil {
 			memberName := NameString(mem.Sel, a.unit)
+			if _, isDtor := mem.Sel.(*ast.DestructorName); isDtor {
+				// `__loc->~_Tp()`: the class's destructor (see checkMemberExpr).
+				memberName = "~" + rec.Name
+			}
 			// Qualified member access c.A::f() starts lookup in base A.
 			sel := mem.Sel
 			if qn, qualified := sel.(*ast.QualifiedName); qualified && len(qn.Qual) > 0 {
@@ -1362,7 +1483,7 @@ func (a *Analyzer) checkCallExpr(c *ast.CallExpr) ExprInfo {
 		// template-heads and requires-clauses -- resolved the way a member
 		// call is: ranges::iter_move's three constrained operator()s are
 		// told apart by their constraints, which a bare signature has lost.
-		if callable := a.memberFuncs(rec, "operator()"); len(callable) > 0 {
+		if callable := a.inheritedMemberFuncs(rec, "operator()", 0); len(callable) > 0 {
 			object := &Argument{Type: types.RemoveReference(calleeInfo.Type), IsLValue: calleeInfo.ValCat != PrValue}
 			resolved, err := a.resolveAmongOn(callable, object, nil, args, c.Pos())
 			if err != nil {
@@ -1567,11 +1688,22 @@ func (a *Analyzer) checkMemberExpr(m *ast.MemberExpr) ExprInfo {
 	}
 
 	memberName := NameString(m.Sel, a.unit)
+	_, isDtor := m.Sel.(*ast.DestructorName)
+	if isDtor {
+		// `__loc->~_Tp()` with _Tp a class: the name is the type's, and
+		// what it names is the class's destructor, spelled as its own.
+		memberName = "~" + rec.Name
+	}
 	syms := lookupRecordMember(rec, memberName, make(map[*types.Record]bool), a.curScope)
 	if len(syms) == 0 {
 		if rs := a.curScope.recordSymbol(rec); rs != nil {
 			syms = LookupQualified(rs, memberName)
 		}
+	}
+	if len(syms) == 0 && isDtor && !a.dependentContext() {
+		// A class with no destructor declared has a trivial one, and
+		// calling it does nothing, as for a scalar.
+		return ExprInfo{Type: &types.Func{Ret: types.Typ(types.Void)}, ValCat: PrValue}
 	}
 	if len(syms) == 0 {
 		// Dependent base classes may provide the member.
@@ -1701,6 +1833,10 @@ type Capture struct {
 	ByRef bool
 	Init  ast.Expr // an init-capture's initializer
 	Field int      // index in Closure.Fields
+
+	// Ctor is the constructor an init-capture of class type is built
+	// with from Init: `[q = std::move(p)]` moves the unique_ptr.
+	Ctor *FuncSymbol
 
 	// This marks the capture of the enclosing object: `[this]` holds a
 	// pointer to it (ByRef), `[*this]` a copy of it. The field is named
@@ -1847,7 +1983,18 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 				t = types.AddLValueReference(t)
 			}
 			a.curScope.Insert(&VarSymbol{SymName: name, SymType: t, SymPos: cap.Pos(), Init: cap.Init})
-			a.addCapture(info, Capture{Name: name, ByRef: cap.Amp.IsValid(), Init: cap.Init}, t)
+			c := Capture{Name: name, ByRef: cap.Amp.IsValid(), Init: cap.Init}
+			if rec := types.AsRecord(t); rec != nil && !c.ByRef && !isDependentExpr(ci) && hasUserConstructor(rec) &&
+				!(ci.ValCat == PrValue && types.AsRecord(types.Unqualify(ci.Type)) == rec) {
+				// Initialized as `auto q = init;` would be: a prvalue of
+				// the class is the object itself, anything else is
+				// copied or moved by the constructor it selects.
+				if chosen, err := a.chooseConstructor(rec, []Argument{{Type: ci.Type, IsLValue: ci.ValCat == LValue}}); err == nil && chosen != nil && !chosen.Defaulted {
+					a.ensureInstantiated(chosen)
+					c.Ctor = chosen
+				}
+			}
+			a.addCapture(info, c, t)
 			continue
 		}
 		var v *VarSymbol
@@ -1887,8 +2034,14 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 
 	a.curScope, a.curFunc = oldScope, oldFunc
 
+	// In a template as written, a return whose operand depends on the
+	// parameters leaves the type to the instantiation, and with it what
+	// the closure converts to: `int (*fn)(const void*) = [](const void*
+	// p) { return (int)*(const T*)p; };` is checked there.
+	undeduced := call.Ret != nil && l.Body != nil && a.dependentContext() &&
+		(call.Ret.Kind() == types.AutoKind && returnsSomething(l.Body) || isDependentType(call.Ret))
 	// A body with no return statement returns void.
-	if call.Ret != nil && call.Ret.Kind() == types.AutoKind {
+	if call.Ret != nil && call.Ret.Kind() == types.AutoKind && !undeduced {
 		call.Ret = types.Typ(types.Void)
 	}
 	if l.Body != nil && !generic {
@@ -1918,8 +2071,29 @@ func (a *Analyzer) checkLambdaExpr(l *ast.LambdaExpr) ExprInfo {
 	if a.info != nil {
 		a.info.Lambdas[l] = info
 	}
+	if undeduced {
+		return dependentExpr()
+	}
 
 	return ExprInfo{Type: closure, ValCat: PrValue}
+}
+
+// returnsSomething reports whether a body has a return statement with an
+// operand, outside any lambda nested in it.
+func returnsSomething(body ast.Stmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.LambdaExpr:
+			return false
+		case *ast.ReturnStmt:
+			if x.X != nil {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // addCapture gives a closure a field for a captured entity.
@@ -2580,6 +2754,36 @@ func (a *Analyzer) mentionsPack(e ast.Expr) bool {
 	return len(a.packsIn(e)) > 0 || len(a.valuePacksIn(e)) > 0
 }
 
+// packExplicit gathers the explicit template arguments a parameter pack
+// takes -- every one from its position on -- into the one pack it is
+// bound to: `f<int, char, long>()` binds `class... T` to all three, not
+// to the first.
+func packExplicit(params []*TemplateParamSymbol, explicit []types.Type) []types.Type {
+	for i, p := range params {
+		if !p.IsPack {
+			continue
+		}
+		if i >= len(explicit) {
+			return explicit
+		}
+		var elems []types.TemplateArg
+		for _, t := range explicit[i:] {
+			switch x := t.(type) {
+			case nil:
+				return explicit
+			case *types.Pack:
+				elems = append(elems, x.Elems...)
+			case *valueBound:
+				elems = append(elems, types.TemplateArg{Val: x.Val, ValType: x.Type})
+			default:
+				elems = append(elems, types.TemplateArg{IsType: true, Type: t})
+			}
+		}
+		return append(explicit[:i:i], &types.Pack{Elems: elems})
+	}
+	return explicit
+}
+
 // canonicalFunc is the declaration a candidate stands for. Lookup clones a
 // symbol to record which class a using-declaration brought it into; that
 // clone ranks, but the function called and defined is the original.
@@ -2617,7 +2821,11 @@ func (a *Analyzer) resolveAmongOn(candidates []*FuncSymbol, object *Argument, ex
 				paramNames = append(paramNames, p.SymName)
 			}
 		}
-		sig, b, ok := specializeNamed(cand.FuncType, paramNames, explicit, args)
+		candExplicit := explicit
+		if cand.Template != nil {
+			candExplicit = packExplicit(cand.Template.Params, explicit)
+		}
+		sig, b, ok := specializeNamed(cand.FuncType, paramNames, candExplicit, args)
 		if !ok {
 			continue
 		}
@@ -2690,6 +2898,7 @@ func (a *Analyzer) resolveAmongOn(candidates []*FuncSymbol, object *Argument, ex
 	if len(viable) == 0 {
 		return nil, fmt.Errorf("no candidate matches: every one's constraints are unsatisfied")
 	}
+	args = a.withClassConversions(args, at)
 	resolved, err := ResolveOverloadOn(viable, object, args)
 	if err != nil && len(viable) > 1 {
 		if best := a.moreConstrained(viable, object, args); best != nil {
@@ -2762,6 +2971,23 @@ func (a *Analyzer) memberFuncs(rec *types.Record, name string) []*FuncSymbol {
 			Explicit: m.Explicit, Defaulted: m.Defaulted, Deleted: m.Deleted,
 			Static: m.Static, Virtual: m.Virtual, Access: m.Access,
 		})
+	}
+	return out
+}
+
+// inheritedMemberFuncs is memberFuncs for a name the class may have from a
+// base: its own declarations hide its bases', and a class that declares
+// none has every base's ([class.member.lookup]). __tree_node_destructor's
+// operator() is __generic_container_node_destructor's.
+func (a *Analyzer) inheritedMemberFuncs(rec *types.Record, name string, depth int) []*FuncSymbol {
+	if own := a.memberFuncs(rec, name); len(own) > 0 || depth > 32 {
+		return own
+	}
+	var out []*FuncSymbol
+	for _, b := range rec.Bases {
+		if br := types.AsRecord(types.Unqualify(b.Type)); br != nil {
+			out = append(out, a.inheritedMemberFuncs(br, name, depth+1)...)
+		}
 	}
 	return out
 }
@@ -2872,12 +3098,45 @@ func (a *Analyzer) satisfied(c *FuncSymbol, targs []types.TemplateArg, tmpl *Fun
 	if len(c.Constraints) == 0 {
 		return true
 	}
+	// [temp.constr.atomic]/3: satisfaction that depends on itself is not
+	// satisfaction. reverse_iterator's `operator==` requires `__x.base() ==
+	// __y.base()`, and for an iterator with a hidden friend == that lookup
+	// meets the same operator==<It, It> again; asking it once more would
+	// never end. The inner question is answered no, and the friend serves.
+	base := tmpl
+	if base == nil {
+		base = c.TemplateOf
+	}
+	if base == nil {
+		base = canonicalFunc(c)
+	}
+	key := fmt.Sprintf("%p|%s|%v", base, argsKey(targs), c.FuncType)
+	if a.satisfying[key] {
+		return false
+	}
+	if a.satisfying == nil {
+		a.satisfying = map[string]bool{}
+	}
+	a.satisfying[key] = true
+	defer delete(a.satisfying, key)
 	scope := c.ConstraintScope
 	if tmpl != nil && tmpl.Template != nil && targs != nil {
 		scope = a.bindTemplateArgs(tmpl.Template.Scope, tmpl.Template.Params, targs)
 	}
 	if scope == nil {
 		return true
+	}
+	if c.FuncType != nil && !isDependent(c.FuncType) {
+		// A trailing requires-clause sees the function's parameters:
+		// reverse_iterator's `operator!=(const reverse_iterator<_Iter1>& __x,
+		// ...) requires requires { { __x.base() != __y.base() } -> ... }`.
+		params := NewScope(scope, BlockScope, nil)
+		for _, p := range c.FuncType.Params {
+			if p.Name != "" {
+				params.Insert(&VarSymbol{SymName: p.Name, SymType: p.Type, SymScope: params})
+			}
+		}
+		scope = params
 	}
 	for _, e := range c.Constraints {
 		ndiags := len(a.diags)
@@ -3463,6 +3722,48 @@ func (a *Analyzer) noteArgConversions(fn *FuncSymbol, exprs []ast.Expr, args []A
 	}
 }
 
+// withClassConversions gives each class-typed argument the converting
+// constructors of the class a parameter wants: `vector::erase(v.begin())`
+// makes a const_iterator from an iterator by __wrap_iter's constructor
+// template, which the conversion rules alone cannot instantiate. One
+// user-defined conversion at most ([over.best.ics]/4), so the constructor's
+// own argument is not converted this way again.
+func (a *Analyzer) withClassConversions(args []Argument, at ast.Tok) []Argument {
+	if a.userConversions > 0 || a.dependentContext() {
+		return args
+	}
+	var out []Argument
+	for i, arg := range args {
+		if arg.List != nil || types.AsRecord(types.Unqualify(types.RemoveReference(arg.Type))) == nil || isDependentType(arg.Type) {
+			continue
+		}
+		if out == nil {
+			out = append([]Argument(nil), args...)
+		}
+		from := arg
+		out[i].ClassConv = func(target types.Type) ConversionSequence {
+			if lref, isLRef := target.(*types.LValueReference); isLRef && !types.IsConst(lref.Elem) {
+				return ConversionSequence{}
+			}
+			rec := types.AsRecord(types.Unqualify(types.RemoveReference(target)))
+			if rec == nil || !rec.Complete || isDependentType(target) {
+				return ConversionSequence{}
+			}
+			a.userConversions++
+			ctor := a.convertingConstructor(rec, Argument{Type: from.Type, IsLValue: from.IsLValue}, at)
+			a.userConversions--
+			if ctor == nil {
+				return ConversionSequence{}
+			}
+			return ConversionSequence{From: from.Type, To: target, Rank: RankUserDefined, Valid: true, UserDefined: true, UserConv: ctor}
+		}
+	}
+	if out == nil {
+		return args
+	}
+	return out
+}
+
 // noteConversionFunction records user-defined conversion functions to non-class targets.
 func (a *Analyzer) noteConversionFunction(e ast.Expr, from types.Type, to types.Type) {
 	if a.info == nil || e == nil || to == nil {
@@ -3705,7 +4006,7 @@ func argumentsConvert(sig *types.Func, args []Argument) bool {
 			return true
 		}
 		cs := ClassifyConversion(arg.Type, sig.Params[i].Type, arg.IsLValue)
-		if !cs.Valid && !(arg.NullConst && isPointerLike(sig.Params[i].Type)) {
+		if !cs.Valid && !(arg.NullConst && takesNullConstant(sig.Params[i].Type)) {
 			return false
 		}
 	}

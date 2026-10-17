@@ -454,6 +454,16 @@ type Record struct {
 
 	// InheritedCtors are direct bases whose constructors were inherited via using-declarations.
 	InheritedCtors []*Record
+
+	// IsTemplate is a class template's primary as written: named inside
+	// itself by its injected-class-name, it is not a class to instantiate
+	// others with.
+	IsTemplate bool
+
+	// Pattern is a class template partial specialization as written,
+	// before its parameters are known: inside `vector<bool, _Allocator>`,
+	// `__bit_reference<vector>` names a class that depends on them.
+	Pattern bool
 }
 
 func (r *Record) Kind() Kind { return RecordKind }

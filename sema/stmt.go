@@ -221,6 +221,7 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 				if !isDependentExpr(c) && !contextuallyConvertibleToBool(c.Type) {
 					a.errorAt(condExpr.Pos(), "condition must be convertible to bool")
 				}
+				a.noteCondition(condExpr, c)
 			}
 		}
 		a.CheckStmt(s.Then)
@@ -268,6 +269,7 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 				if !isDependentExpr(c) && !contextuallyConvertibleToBool(c.Type) {
 					a.errorAt(condExpr.Pos(), "while condition must be convertible to bool")
 				}
+				a.noteCondition(condExpr, c)
 			}
 		}
 		a.CheckStmt(s.Body)
@@ -281,6 +283,7 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 			if !isDependentExpr(c) && !contextuallyConvertibleToBool(c.Type) {
 				a.errorAt(s.Cond.Pos(), "do-while condition must be convertible to bool")
 			}
+			a.noteCondition(s.Cond, c)
 		}
 		a.loopDepth--
 
@@ -297,6 +300,7 @@ func (a *Analyzer) CheckStmt(stmt ast.Stmt) {
 				if !isDependentExpr(c) && !contextuallyConvertibleToBool(c.Type) {
 					a.errorAt(condExpr.Pos(), "for condition must be convertible to bool")
 				}
+				a.noteCondition(condExpr, c)
 			}
 		}
 		if s.Post != nil {
@@ -418,6 +422,13 @@ func (a *Analyzer) checkReturnStmt(r *ast.ReturnStmt) {
 
 	// Function returns non-void
 	if r.X == nil {
+		if retT != nil && retT.Kind() == types.AutoKind {
+			// `return;` with the type still to deduce deduces void
+			// ([dcl.spec.auto.general]/9): format's `__validate_type`
+			// lambda returns so, and otherwise throws.
+			a.curFunc.FuncType.Ret = types.Typ(types.Void)
+			return
+		}
 		a.errorAt(r.Pos(), fmt.Sprintf("non-void function %q must return a value", a.curFunc.Name()))
 		return
 	}

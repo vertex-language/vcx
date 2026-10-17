@@ -67,11 +67,64 @@ func (a *Analyzer) qualifierRecord(qn *ast.QualifiedName) *RecordSymbol {
 	} else {
 		syms = ResolveQualifiedName(class, a.curScope, a.globalScope, a.unit)
 	}
+	if rs := a.pickQualifierRecord(syms, class.Name); rs != nil {
+		return rs
+	}
+	// `__tree<_Tp, _Compare, _Allocator>::_DetachedTreeCache::__detach_from_tree`:
+	// a class nested in a class template, named through the template's own
+	// parameters. That specialization is the template as written, and the
+	// nested class is the one in its scope.
+	if len(class.Qual) > 0 && !class.Global.IsValid() {
+		var cur *Scope
+		for i, q := range append(append([]ast.Name(nil), class.Qual...), class.Name) {
+			name := q
+			if tn, isTemplate := q.(*ast.TemplateName); isTemplate {
+				name = tn.Name
+			}
+			var found []Symbol
+			if i == 0 {
+				found = LookupUnqualified(a.curScope, NameString(name, a.unit))
+			} else if cur != nil {
+				found = cur.LookupLocal(NameString(name, a.unit))
+			}
+			cur = nil
+			if ns, isNS := firstOf[*NamespaceSymbol](found); isNS {
+				cur = ns.InnerScope
+				continue
+			}
+			rs := a.pickQualifierRecord(found, q)
+			if rs == nil {
+				return nil
+			}
+			if i == len(class.Qual) {
+				return rs
+			}
+			cur = rs.ClassScope
+		}
+	}
+	return nil
+}
+
+// firstOf is the first of syms that is a T.
+func firstOf[T Symbol](syms []Symbol) (T, bool) {
+	for _, s := range syms {
+		if t, ok := s.(T); ok {
+			return t, true
+		}
+	}
+	var zero T
+	return zero, false
+}
+
+// pickQualifierRecord is the class among syms a qualifier names: for a
+// template-id, the explicit or partial specialization its arguments spell
+// if there is one, else the class itself.
+func (a *Analyzer) pickQualifierRecord(syms []Symbol, written ast.Name) *RecordSymbol {
 	// `V<bool, A>::clear` is a member of the partial specialization whose
 	// pattern is written `V<bool, A>`, not of the primary template: the
 	// qualifier's arguments, read under the definition's template-head,
 	// spell the pattern the specialization was declared with.
-	if tn, isTemplate := class.Name.(*ast.TemplateName); isTemplate {
+	if tn, isTemplate := written.(*ast.TemplateName); isTemplate {
 		for _, s := range syms {
 			rs, isRec := s.(*RecordSymbol)
 			if !isRec || rs.ClassTemplate == nil {
@@ -182,6 +235,12 @@ func (a *Analyzer) checkOutOfLineMember(d *ast.FuncDecl, rs *RecordSymbol, name 
 		for _, made := range a.instances {
 			if made.pattern == rs.Spec {
 				a.completeInstanceMember(made.inst, def, made.scope)
+				continue
+			}
+			for _, nested := range nestedRecords(made.inst) {
+				if nested.Spec != nil && nested.Spec != rs.Spec && nested.Spec.Pos() == rs.Spec.Pos() {
+					a.completeInstanceMember(nested, def, made.scope)
+				}
 			}
 		}
 	}

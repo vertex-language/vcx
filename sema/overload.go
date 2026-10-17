@@ -21,6 +21,53 @@ type Argument struct {
 	// expression's: ListConv classifies it against a parameter type.
 	List     *ast.InitList
 	ListConv func(target types.Type) ConversionSequence
+
+	// ClassConv is the user-defined conversion of the argument to a class
+	// parameter by a converting constructor, asked when no other
+	// conversion fits: the constructor may be a template, which only the
+	// analysis can instantiate.
+	ClassConv func(target types.Type) ConversionSequence
+
+	// Overloads is the set of functions an argument names when it names
+	// more than one: which of them it is, is the parameter's to say
+	// ([over.over]).
+	Overloads []*FuncSymbol
+}
+
+// overloadFor is the function among an overload set whose type a parameter
+// of function pointer or reference type names, or nil.
+func overloadFor(set []*FuncSymbol, param types.Type) *FuncSymbol {
+	t := types.Unqualify(types.RemoveReference(param))
+	if p, isPtr := t.(*types.Pointer); isPtr {
+		t = types.Unqualify(p.Elem)
+	}
+	want, isFunc := t.(*types.Func)
+	if !isFunc {
+		return nil
+	}
+	for _, fn := range set {
+		if fn.FuncType == nil || fn.Template != nil || fn.InClass != nil && !fn.Static && !fn.Friend {
+			continue
+		}
+		if sameSignature(fn.FuncType, want) {
+			return fn
+		}
+	}
+	return nil
+}
+
+// sameSignature reports whether two function types have the same return and
+// parameter types.
+func sameSignature(x, y *types.Func) bool {
+	if len(x.Params) != len(y.Params) || x.Variadic != y.Variadic || x.Ret == nil || y.Ret == nil || !x.Ret.Equal(y.Ret) {
+		return false
+	}
+	for i := range x.Params {
+		if !x.Params[i].Type.Equal(y.Params[i].Type) {
+			return false
+		}
+	}
+	return true
 }
 
 // ViableCandidate records a viable candidate function and its argument conversion sequences.
@@ -111,10 +158,16 @@ func ResolveOverloadOn(candidates []*FuncSymbol, object *Argument, args []Argume
 					// against the types the instantiation supplies.
 					dependent = true
 				}
-				if !cs.Valid && arg.NullConst && isPointerLike(paramType) {
+				if !cs.Valid && arg.ClassConv != nil {
+					cs = arg.ClassConv(paramType)
+				}
+				if !cs.Valid && len(arg.Overloads) > 0 && overloadFor(arg.Overloads, paramType) != nil {
+					cs = ConversionSequence{From: paramType, To: paramType, Rank: RankExactMatch, Valid: true}
+				}
+				if !cs.Valid && arg.NullConst && takesNullConstant(paramType) {
 					cs = ConversionSequence{From: arg.Type, To: paramType, Rank: RankConversion, Valid: true}
 				}
-				if !cs.Valid && (isDependentType(paramType) || isDependentType(arg.Type)) {
+				if !cs.Valid && (isDependentType(paramType) || isDependentType(arg.Type) || ofDependentBases(arg.Type)) {
 					// Inside a template, a parameter typed `size_type` --
 					// `typename __alloc_traits::size_type` -- is whatever
 					// the instantiation makes it; the call is checked again
@@ -355,6 +408,34 @@ func OperatorSpelling(tok token.Kind) string {
 		return "operator--"
 	}
 	return ""
+}
+
+// ofDependentBases reports whether t is -- or refers or points to -- a
+// class of a template as written whose bases depend on its parameters:
+// `pf(*this)` in basic_ostream, with pf taking an ios_base&, converts to a
+// base that only the instantiation has.
+func ofDependentBases(t types.Type) bool {
+	t = types.Unqualify(types.RemoveReference(t))
+	if p, isPtr := t.(*types.Pointer); isPtr {
+		t = types.Unqualify(p.Elem)
+	}
+	rec, isRec := t.(*types.Record)
+	return isRec && hasDependentBase(rec)
+}
+
+// takesNullConstant reports whether a parameter of type t takes a null
+// pointer constant: a pointer-like type, or a reference to one that binds
+// to a temporary -- `const T*&` and `T*&&` ([dcl.init.ref]/5.4), which is
+// how `pair<T*, ptrdiff_t> __buf(0, 0)` reaches pair's `(const T1&, const T2&)`.
+func takesNullConstant(t types.Type) bool {
+	switch r := t.(type) {
+	case *types.LValueReference:
+		q, isQual := r.Elem.(*types.Qualified)
+		return isQual && q.Q&types.QConst != 0 && q.Q&types.QVolatile == 0 && isPointerLike(q.T)
+	case *types.RValueReference:
+		return isPointerLike(r.Elem)
+	}
+	return isPointerLike(t)
 }
 
 // isPointerLike reports whether a type takes a null pointer constant: a

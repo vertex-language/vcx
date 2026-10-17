@@ -579,6 +579,12 @@ func (fl *fn) commonType(e *ast.BinaryExpr, lt, rt types.Type) types.Type {
 		if _, isMP := types.Unqualify(lt).(*types.MemberPointer); isMP {
 			return lt
 		}
+		// A pointer against a pointer, nullptr or 0 compares as addresses:
+		// CommonType is arithmetic's, and would promote both to int,
+		// keeping only the low 32 bits (0x300000000 == nullptr).
+		if pt := pointerCompareType(lt, rt); pt != nil {
+			return pt
+		}
 		if c := types.CommonType(lt, rt); c != nil {
 			return c
 		}
@@ -597,16 +603,9 @@ func (fl *fn) compare(e *ast.BinaryExpr) (*ir.I1, bool) {
 		// A class operand is an operator function's, never a built-in's.
 		return nil, false
 	}
-	common := types.CommonType(lt, rt)
-	if common == nil {
-		common = lt
-	}
-	// A null pointer constant compared with a member pointer becomes a null member pointer.
-	if _, isMP := types.Unqualify(rt).(*types.MemberPointer); isMP {
-		common = rt
-	} else if _, isMP := types.Unqualify(lt).(*types.MemberPointer); isMP {
-		common = lt
-	}
+	// A null pointer constant compared with a member pointer becomes a
+	// null member pointer; with a pointer, a null address.
+	common := fl.commonType(e, lt, rt)
 
 	l := fl.expr(e.X)
 	if l == nil {
@@ -655,6 +654,29 @@ func (fl *fn) compare(e *ast.BinaryExpr) (*ir.I1, bool) {
 		return cmpPtr(fl.blk.Ptr, e.Op, li, ri)
 	}
 	return nil, false
+}
+
+// pointerCompareType is the type a comparison with a pointer operand is
+// made in: the pointer's (an array's decayed), or void*'s when nullptr_t
+// is the only pointer there. Nil when neither operand is one.
+func pointerCompareType(lt, rt types.Type) types.Type {
+	var null types.Type
+	for _, t := range []types.Type{lt, rt} {
+		if t == nil {
+			continue
+		}
+		switch u := types.Unqualify(types.RemoveReference(t)).(type) {
+		case *types.Pointer:
+			return u
+		case *types.Array:
+			return &types.Pointer{Elem: u.Elem}
+		default:
+			if u.Kind() == types.NullptrKind {
+				null = &types.Pointer{Elem: types.Typ(types.Void)}
+			}
+		}
+	}
+	return null
 }
 
 // cmpPtr compares two addresses, which are ordered as unsigned integers.

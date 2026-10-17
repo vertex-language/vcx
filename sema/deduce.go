@@ -24,6 +24,10 @@ func isDependent(t types.Type) bool {
 		return true
 	case *types.Transform:
 		return true
+	case *types.Record:
+		return x.Pattern
+	case *types.MemberPointer:
+		return isDependent(x.Class) || isDependent(x.Elem)
 	case *types.Qualified:
 		return isDependent(x.T)
 	case *types.Pointer:
@@ -91,6 +95,14 @@ func deduce(param, arg types.Type, out Binding) bool {
 	case *types.RValueReference:
 		return deduceReferenced(p.Elem, types.RemoveReference(arg), out)
 
+	case *types.MemberPointer:
+		// `_Rp _Cp::*` against `int S::*`: the class and the member's type.
+		a, ok := types.Unqualify(types.RemoveReference(arg)).(*types.MemberPointer)
+		if !ok {
+			return false
+		}
+		return deduce(p.Class, a.Class, out) && deduce(p.Elem, a.Elem, out)
+
 	case *types.Pointer:
 		bare := types.Unqualify(types.RemoveReference(arg))
 		if a, ok := bare.(*types.Pointer); ok {
@@ -149,7 +161,33 @@ func deduce(param, arg types.Type, out Binding) bool {
 
 	case *types.Func:
 		a, ok := types.Unqualify(types.RemoveReference(arg)).(*types.Func)
-		if !ok || len(a.Params) != len(p.Params) {
+		if !ok {
+			return false
+		}
+		if n := len(p.Params); n > 0 && p.Params[n-1].Pack && len(a.Params) >= n-1 && p.Variadic == a.Variadic {
+			// `_Rp(_ArgTypes...)` against `int(int, char)`: the parameters
+			// before the pack pairwise, and the pack takes the rest.
+			tp, isParam := p.Params[n-1].Type.(*types.TemplateParam)
+			if !isParam || !tp.IsPack || !deduce(p.Ret, a.Ret, out) {
+				return false
+			}
+			for i := 0; i < n-1; i++ {
+				if !deduce(p.Params[i].Type, a.Params[i].Type, out) {
+					return false
+				}
+			}
+			elems := make([]types.TemplateArg, 0, len(a.Params)-(n-1))
+			for _, ap := range a.Params[n-1:] {
+				elems = append(elems, types.TemplateArg{IsType: true, Type: ap.Type})
+			}
+			pack := &types.Pack{Elems: elems}
+			if prev, seen := out[tp.Name]; seen {
+				return prev != nil && prev.Equal(pack)
+			}
+			out[tp.Name] = pack
+			return true
+		}
+		if len(a.Params) != len(p.Params) {
 			return false
 		}
 		if !deduce(p.Ret, a.Ret, out) {
@@ -285,6 +323,9 @@ func substitute(t types.Type, b Binding) types.Type {
 	case *types.Pointer:
 		return &types.Pointer{Elem: substitute(x.Elem, b)}
 
+	case *types.MemberPointer:
+		return &types.MemberPointer{Class: substitute(x.Class, b), Elem: substitute(x.Elem, b)}
+
 	case *types.LValueReference:
 		return types.AddLValueReference(substitute(x.Elem, b))
 
@@ -385,12 +426,24 @@ func specializeNamed(fn *types.Func, paramNames []string, explicit []types.Type,
 			return fn, nil, false
 		}
 		pat := fn.Params[n].Type
+		// [temp.arg.explicit]/9: a pack given explicitly -- `f<int, long>(1, 2)`
+		// -- is the start of the pack; the arguments past it extend it by
+		// deduction, and the ones it covers are converted to it.
 		var elems []types.TemplateArg
-		for _, arg := range args[n:] {
+		rest := args[n:]
+		if given, isPack := b[packParamName(pat)].(*types.Pack); isPack && packParamName(pat) != "" {
+			if len(given.Elems) > len(rest) {
+				return fn, nil, false
+			}
+			elems = append(elems, given.Elems...)
+			rest = rest[len(given.Elems):]
+		}
+		for _, arg := range rest {
 			each := Binding{}
 			for k, v := range b {
 				each[k] = v
 			}
+			delete(each, packParamName(pat))
 			if !deduceArg(pat, arg, each) {
 				return fn, nil, false
 			}
@@ -613,7 +666,33 @@ func matchType(pat, arg types.Type, out Binding) bool {
 
 	case *types.Func:
 		a, isFunc := types.Unqualify(arg).(*types.Func)
-		if !isFunc || len(a.Params) != len(p.Params) || a.Variadic != p.Variadic {
+		if !isFunc || a.Variadic != p.Variadic {
+			return false
+		}
+		if n := len(p.Params); n > 0 && p.Params[n-1].Pack && len(a.Params) >= n-1 {
+			// `function<_Rp(_ArgTypes...)>` against function<int(int)>:
+			// the pack is the parameters the others leave.
+			tp, isParam := p.Params[n-1].Type.(*types.TemplateParam)
+			if !isParam || !tp.IsPack || !matchType(p.Ret, a.Ret, out) {
+				return false
+			}
+			for i := 0; i < n-1; i++ {
+				if !matchType(p.Params[i].Type, a.Params[i].Type, out) {
+					return false
+				}
+			}
+			elems := make([]types.TemplateArg, 0, len(a.Params)-(n-1))
+			for _, ap := range a.Params[n-1:] {
+				elems = append(elems, types.TemplateArg{IsType: true, Type: ap.Type})
+			}
+			pack := &types.Pack{Elems: elems}
+			if prev, seen := out[tp.Name]; seen {
+				return prev != nil && prev.Equal(pack)
+			}
+			out[tp.Name] = pack
+			return true
+		}
+		if len(a.Params) != len(p.Params) {
 			return false
 		}
 		if !matchType(p.Ret, a.Ret, out) {
@@ -640,12 +719,16 @@ func matchType(pat, arg types.Type, out Binding) bool {
 			primary, _ = a.Type.(*types.Record)
 		case *types.Record:
 			if a.TemplateArgs == nil {
-				return false
+				return onlyNonDeduced(p) && types.AsRecord(p) == nil
 			}
 			name, args = a.Name, a.TemplateArgs
 			primary = a
 		default:
-			return false
+			// `basic_format_string<char, type_identity_t<_Args>...>` against
+			// a string literal: the parameters appear only where nothing is
+			// deduced ([temp.deduct.type]/5), so this pair deduces nothing,
+			// and the literal converts to the parameter after substitution.
+			return onlyNonDeduced(p)
 		}
 		args = flattenPacks(args)
 		if tp, isParam := p.Type.(*types.TemplateParam); isParam {
@@ -704,6 +787,36 @@ func matchType(pat, arg types.Type, out Binding) bool {
 		return true
 	}
 	return false
+}
+
+// onlyNonDeduced reports whether every argument of a specialization that
+// mentions a template parameter does so only in a non-deduced context: an
+// alias template's spelling, a type a dependent name or expression decides,
+// or a pack of those.
+func onlyNonDeduced(p *types.TemplateSpecialization) bool {
+	if _, isParam := p.Type.(*types.TemplateParam); isParam {
+		return false
+	}
+	nonDeduced := func(t types.Type) bool {
+		return !isDependent(t) || isAliasSpelling(t) || needsSubstitution(t)
+	}
+	for _, a := range p.Args {
+		if !a.IsType {
+			continue
+		}
+		if pk, isPack := a.Type.(*types.Pack); isPack {
+			for _, e := range pk.Elems {
+				if e.IsType && !nonDeduced(e.Type) {
+					return false
+				}
+			}
+			continue
+		}
+		if !nonDeduced(a.Type) {
+			return false
+		}
+	}
+	return true
 }
 
 // deduceReferenced is deduce for what a reference parameter refers to:

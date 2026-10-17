@@ -96,6 +96,14 @@ func (fl *fn) newExpr(e *ast.NewExpr) ir.Value {
 			fl.initList(obj, elem, list)
 			return obj
 		}
+		if len(e.Args) == 1 {
+			// `::new (__p) _Tp(__x)` by the copy or move constructor the
+			// class did not declare: the trivial one, which the analysis
+			// records no call for. The object is a copy of the argument.
+			fl.installVPtr(obj, rec)
+			fl.exprInto(obj, e.Args[0], rec)
+			return obj
+		}
 		if e.Init != nil || len(e.Args) > 0 {
 			// `new T()` -- value-initialized: zeroed, then constructed.
 			size, _ := fl.u.sizeAlign(rec)
@@ -548,7 +556,7 @@ func (u *unit) allocationFunction(name string, aligned bool) ir.Callee {
 		u.errorf(ast.NoTok, "%v", err)
 		return nil
 	}
-	return u.mod.ImportFunc(u.symbolName(mangled), sig)
+	return u.importRuntime(u.symbolName(mangled), sig)
 }
 
 func (u *unit) operatorNewAligned() ir.Callee {
@@ -592,7 +600,7 @@ func (u *unit) operatorNewArray() ir.Callee {
 		u.errorf(ast.NoTok, "%v", err)
 		return nil
 	}
-	u.opNewArray = u.mod.ImportFunc(u.symbolName(name), ir.NewSig().Param(u.regType(u.sizeT())).Ret(ir.TypePtr))
+	u.opNewArray = u.importRuntime(u.symbolName(name), ir.NewSig().Param(u.regType(u.sizeT())).Ret(ir.TypePtr))
 	return u.opNewArray
 }
 
@@ -609,7 +617,7 @@ func (u *unit) operatorDeleteArray() ir.Callee {
 		u.errorf(ast.NoTok, "%v", err)
 		return nil
 	}
-	u.opDeleteArray = u.mod.ImportFunc(u.symbolName(name), ir.NewSig().Param(ir.TypePtr))
+	u.opDeleteArray = u.importRuntime(u.symbolName(name), ir.NewSig().Param(ir.TypePtr))
 	return u.opDeleteArray
 }
 
@@ -635,7 +643,7 @@ func (u *unit) operatorNew() ir.Callee {
 		u.errorf(ast.NoTok, "%v", err)
 		return nil
 	}
-	u.opNew = u.mod.ImportFunc(u.symbolName(name), ir.NewSig().Param(u.regType(u.sizeT())).Ret(ir.TypePtr))
+	u.opNew = u.importRuntime(u.symbolName(name), ir.NewSig().Param(u.regType(u.sizeT())).Ret(ir.TypePtr))
 	return u.opNew
 }
 
@@ -652,7 +660,7 @@ func (u *unit) operatorDelete() ir.Callee {
 		u.errorf(ast.NoTok, "%v", err)
 		return nil
 	}
-	u.opDelete = u.mod.ImportFunc(u.symbolName(name), ir.NewSig().Param(ir.TypePtr))
+	u.opDelete = u.importRuntime(u.symbolName(name), ir.NewSig().Param(ir.TypePtr))
 	return u.opDelete
 }
 
@@ -664,4 +672,20 @@ func (u *unit) sizeT() types.Type {
 		return types.Typ(types.ULongLong)
 	}
 	return types.Typ(types.ULong)
+}
+
+// importRuntime is the unit's import of a function the language calls on
+// the program's behalf -- operator new and delete -- by its symbol. A
+// program that also names the function itself, as libc++'s
+// __libcpp_operator_delete calls ::operator delete, has it imported once.
+func (u *unit) importRuntime(name string, sig *ir.Sig) ir.Callee {
+	if def, ok := u.defsByName[name]; ok {
+		return def
+	}
+	if imp, ok := u.importsByName[name]; ok {
+		return imp
+	}
+	imp := u.mod.ImportFunc(name, sig)
+	u.importsByName[name] = imp
+	return imp
 }

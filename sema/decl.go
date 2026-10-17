@@ -84,6 +84,30 @@ func (a *Analyzer) CheckDecl(decl ast.Decl) {
 	case *ast.TemplateDecl:
 		a.checkTemplateDecl(d)
 
+	case *ast.ExplicitInstDecl:
+		// `extern template void __sort<__less<int>&, int*>(...)`: the
+		// specialization is defined in a library -- libc++'s dylib --
+		// and a use here declares it and calls it there.
+		if d.Extern.IsValid() {
+			if sd, isSimple := d.Decl.(*ast.SimpleDecl); isSimple {
+				for _, init := range sd.Inits {
+					if init.Decl == nil || !namesTemplateId(init.Decl) {
+						continue
+					}
+					name := init.Decl.DeclName()
+					if qn, isQual := name.(*ast.QualifiedName); isQual {
+						name = qn.Name
+					}
+					if tn, isTemplate := name.(*ast.TemplateName); isTemplate {
+						if a.externTemplates == nil {
+							a.externTemplates = map[string]bool{}
+						}
+						a.externTemplates[NameString(tn.Name, a.unit)] = true
+					}
+				}
+			}
+		}
+
 	case *ast.ExplicitSpecDecl:
 		// Explicit specialization of class or variable template.
 		if sd, isSimple := d.Decl.(*ast.SimpleDecl); isSimple {
@@ -266,7 +290,7 @@ func (a *Analyzer) resolveConstructor(init *ast.InitDeclarator, rec *types.Recor
 			// Dependent argument in template context.
 			return
 		}
-		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
+		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue, NullConst: isNullConstant(e, info)})
 	}
 
 	ctors := a.memberFuncs(rec, rec.Name)
@@ -277,13 +301,14 @@ func (a *Analyzer) resolveConstructor(init *ast.InitDeclarator, rec *types.Recor
 	// [over.match.list]/1: a braced initializer goes to the class's
 	// initializer-list constructor whole, ahead of any other.
 	if init.Braced != nil {
-		if ctor, elem := a.initListConstructor(rec, args); ctor != nil {
+		if ctor, elem := a.initListConstructor(rec, args, argExprs); ctor != nil {
 			for _, item := range init.Braced.Items {
 				if e, isExpr := item.(ast.Expr); isExpr {
 					a.checkListItem(e, elem)
 				}
 			}
 			a.ensureInstantiated(ctor)
+			a.checkDefaultsAfter(ctor, 1)
 			if a.info != nil {
 				a.info.Ctors[init] = ctor
 				a.info.InitLists[init.Braced] = elem
@@ -315,6 +340,17 @@ func (a *Analyzer) resolveConstructor(init *ast.InitDeclarator, rec *types.Recor
 		}
 	}
 	a.info.Ctors[init] = chosen
+}
+
+// checkDefaultsAfter checks the default arguments a call supplies for the
+// parameters from the nth on: an initializer-list constructor's comparator
+// or allocator, which no item of the list gives.
+func (a *Analyzer) checkDefaultsAfter(fn *FuncSymbol, n int) {
+	for i := n; i < len(fn.Defaults); i++ {
+		if def := fn.Defaults[i]; def != nil {
+			a.CheckExpr(def)
+		}
+	}
 }
 
 // hasUserConstructor reports whether a class declares any user constructors.
@@ -423,6 +459,11 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 			case *ast.ElaboratedSpec:
 				if len(d.Inits) == 0 && a.curTemplateParams != nil && a.curRecord == nil && !a.instantiating {
 					a.declareClassTemplate(s)
+				} else if len(d.Inits) == 0 && a.curTemplateParams != nil && a.curRecord != nil && a.templateOwner == d && !hasFriend(d.Specs) {
+					// A member class template declared, and defined only by
+					// the partial specializations after it: std::function's
+					// `template <class _Fp, bool = ...> struct __callable;`.
+					a.declareClassTemplate(s)
 				} else if len(d.Inits) == 0 && a.curTemplateParams != nil && a.curRecord != nil && hasFriend(d.Specs) {
 					// `template <class _CharT, class _Traits> friend class
 					// basic_string_view;` in __wrap_iter names a class
@@ -430,6 +471,12 @@ func (a *Analyzer) checkSimpleDecl(d *ast.SimpleDecl) {
 					a.declareFriendClassTemplate(s)
 				} else if len(d.Inits) == 0 && a.curTemplateParams == nil {
 					// Forward declaration of an incomplete class.
+					a.declareClass(s)
+				} else if len(d.Inits) == 0 && a.curRecord != nil && a.templateOwner != d && !hasFriend(d.Specs) {
+					// A member class of a class template, declared and
+					// defined after the template: basic_ostream's `class
+					// sentry;`. It is the class's member, not a class of
+					// the namespace (see defineNestedOfTemplate).
 					a.declareClass(s)
 				} else {
 					a.predeclareElaborated(s)
@@ -1006,6 +1053,155 @@ func (a *Analyzer) defineStaticMember(qn *ast.QualifiedName, init *ast.InitDecla
 	return nil
 }
 
+// defineQualifiedClass defines a class declared earlier inside another,
+// written outside it: `class ios_base::failure : public system_error {
+// ... };`. The definition is read where the declaration was -- in
+// ios_base's scope, the class's name its own and not "ios_base::failure"
+// -- so that its constructors are constructors and its members are its
+// own. False when the name is not such a declaration.
+func (a *Analyzer) defineQualifiedClass(s *ast.ClassSpec, qn *ast.QualifiedName) bool {
+	if a.curTemplateParams != nil || a.instantiating {
+		return false
+	}
+	if _, isTemplate := qn.Name.(*ast.TemplateName); isTemplate {
+		return false
+	}
+	var target *RecordSymbol
+	for _, sym := range ResolveQualifiedName(qn, a.curScope, a.globalScope, a.unit) {
+		if rs, isRec := sym.(*RecordSymbol); isRec && rs.Record != nil && !rs.Record.Complete && rs.ClassScope == nil && rs.ClassTemplate == nil && rs.SymScope != nil {
+			target = rs
+			break
+		}
+	}
+	if target == nil {
+		return false
+	}
+	savedScope, savedRecord, savedAccess := a.curScope, a.curRecord, a.curAccess
+	a.curScope = target.SymScope
+	a.curRecord = nil
+	if outer, isRec := target.SymScope.Entity.(*types.Record); isRec && target.SymScope.Kind == ClassScope {
+		a.curRecord = outer
+	}
+	inner := *s
+	inner.Name = qn.Name
+	a.checkClassSpec(&inner)
+	a.curScope, a.curRecord, a.curAccess = savedScope, savedRecord, savedAccess
+	if savedRecord == nil {
+		// The enclosing class was complete long before: the member bodies
+		// that waited for it, as a nested class's do, are checked now.
+		for len(a.nestedBodies) > 0 {
+			pending := a.nestedBodies
+			a.nestedBodies = nil
+			for _, body := range pending {
+				body()
+			}
+		}
+	}
+	return true
+}
+
+// A nestedClassDef is a class nested in a class template, defined after it:
+// `template <class _CharT, class _Traits> class basic_ostream<_CharT,
+// _Traits>::sentry { ... };`.
+type nestedClassDef struct {
+	spec   *ast.ClassSpec // the definition, named by its own name
+	params []*TemplateParamSymbol
+}
+
+// defineNestedOfTemplate takes the definition of a class nested in a class
+// template: it completes the class in the template as written, and in each
+// specialization -- made already, or made later (see defineNestedIn) --
+// with the definition's parameters bound to the specialization's arguments.
+func (a *Analyzer) defineNestedOfTemplate(s *ast.ClassSpec, qn *ast.QualifiedName) bool {
+	if a.curTemplateParams == nil || a.instantiating {
+		return false
+	}
+	if _, isTemplate := qn.Name.(*ast.TemplateName); isTemplate {
+		return false
+	}
+	owner := a.qualifierRecord(qn)
+	if owner == nil || owner.ClassTemplate == nil || owner.ClassScope == nil || owner.Spec == nil {
+		return false
+	}
+	name := NameString(qn.Name, a.unit)
+	target := incompleteNested(owner, name)
+	if target == nil {
+		return false
+	}
+	inner := *s
+	inner.Name = qn.Name
+	def := nestedClassDef{spec: &inner, params: a.curTemplateParams}
+	if a.nestedClassDefs == nil {
+		a.nestedClassDefs = map[*ast.ClassSpec][]nestedClassDef{}
+	}
+	a.nestedClassDefs[owner.Spec] = append(a.nestedClassDefs[owner.Spec], def)
+
+	// The template as written: its members are declared, and members
+	// defined out of line after this find them.
+	scope := NewScope(owner.ClassScope, TemplateParamScope, nil)
+	for _, p := range a.curTemplateParams {
+		if p.SymName != "" {
+			scope.Insert(p)
+		}
+	}
+	saved := a.enterInstantiation(scope)
+	a.curRecord, a.curTemplateParams = owner.Record, def.params
+	a.defineNested = target
+	a.checkClassSpec(ast.Clone(def.spec))
+	a.defineNested = nil
+	a.runNestedBodies()
+	a.leaveInstantiation(saved)
+
+	for _, made := range a.instances {
+		if made.pattern == owner.Spec {
+			a.defineNestedIn(made.inst, def)
+		}
+	}
+	return true
+}
+
+// defineNestedIn completes a specialization's nested class from the
+// definition its template's was given.
+func (a *Analyzer) defineNestedIn(inst *RecordSymbol, def nestedClassDef) {
+	name := NameString(def.spec.Name, a.unit)
+	target := incompleteNested(inst, name)
+	if target == nil || inst.Record == nil {
+		return
+	}
+	scope := a.bindTemplateArgs(inst.ClassScope, def.params, inst.Record.TemplateArgs)
+	saved := a.enterInstantiation(scope)
+	wasInstantiating := a.instantiating
+	a.instantiating, a.curRecord = true, inst.Record
+	a.defineNested = target
+	a.checkClassSpec(ast.Clone(def.spec))
+	a.defineNested = nil
+	a.runNestedBodies()
+	a.instantiating = wasInstantiating
+	a.leaveInstantiation(saved)
+}
+
+// incompleteNested is the class named name declared in rs and not yet defined.
+func incompleteNested(rs *RecordSymbol, name string) *RecordSymbol {
+	for _, sym := range rs.ClassScope.LookupLocal(name) {
+		if n, isRec := sym.(*RecordSymbol); isRec && n.Record != nil && !n.Record.Complete && n.ClassScope == nil {
+			return n
+		}
+	}
+	return nil
+}
+
+// runNestedBodies checks the member bodies nested classes left waiting for
+// their enclosing class, which is complete.
+func (a *Analyzer) runNestedBodies() {
+	for len(a.nestedBodies) > 0 {
+		pending := a.nestedBodies
+		a.nestedBodies = nil
+		for _, body := range pending {
+			body()
+		}
+	}
+}
+
 func (a *Analyzer) checkClassSpec(s *ast.ClassSpec) {
 	tag := types.TagStruct
 	defaultAccess := types.AccessPublic
@@ -1017,13 +1213,22 @@ func (a *Analyzer) checkClassSpec(s *ast.ClassSpec) {
 		defaultAccess = types.AccessPublic
 	}
 
+	if qn, isQualified := s.Name.(*ast.QualifiedName); isQualified && s.Lbrace.IsValid() && (a.defineQualifiedClass(s, qn) || a.defineNestedOfTemplate(s, qn)) {
+		return
+	}
+
 	name := ""
 	if s.Name != nil {
 		name = NameString(s.Name, a.unit)
 	}
 
 	// Class template partial or explicit specialization.
-	if _, isSpecialization := s.Name.(*ast.TemplateName); isSpecialization && s.Lbrace.IsValid() && !a.instantiating {
+	// A member template's partial specialization, met while the enclosing
+	// class is instantiated -- `template <class _Fp> struct __callable<_Fp,
+	// true>` in function<_Rp(_ArgTypes...)> -- is a specialization being
+	// declared, with a template-head of its own, not one being made.
+	memberPartial := a.instantiating && a.curRecord != nil && a.curTemplateParams != nil && a.templateOwner != nil
+	if _, isSpecialization := s.Name.(*ast.TemplateName); isSpecialization && s.Lbrace.IsValid() && (!a.instantiating || memberPartial) {
 		ps := a.noteSpecialization(s, a.curTemplateParams)
 		a.checkSpecializationBody(s, ps)
 		return
@@ -1058,6 +1263,18 @@ func (a *Analyzer) checkClassSpec(s *ast.ClassSpec) {
 		SymPos:   s.Pos(),
 		SymScope: a.curScope,
 		Spec:     s,
+	}
+
+	// The nested class an out-of-line definition is for (see
+	// defineNestedOfTemplate): the record its class already declared.
+	if target := a.defineNested; target != nil && target.SymName == name {
+		a.defineNested = nil
+		target.Record.Tag, target.Record.Pack, target.Record.Final = tag, rec.Pack, rec.Final
+		if target.Record.Outer == nil {
+			target.Record.Outer = rec.Outer
+		}
+		target.Spec = s
+		rec, recSym = target.Record, target
 	}
 
 	// Complete a forward-declared class.
@@ -1115,6 +1332,14 @@ func (a *Analyzer) checkClassSpec(s *ast.ClassSpec) {
 			Scope:     a.declScope(),
 			Instances: map[string]*RecordSymbol{},
 		}
+	}
+	if recSym.ClassTemplate != nil && len(recSym.ClassTemplate.Params) > 0 && !a.instantiating {
+		// The template as written, which its own name inside it means:
+		// `friend class __bit_reference<__bitset>;` in __bitset names
+		// __bit_reference<__bitset<_N_words, _Size>>, a class that waits
+		// for the instantiation, and its default argument
+		// `__has_storage_type<__bitset>::value` with it.
+		rec.IsTemplate = true
 	}
 
 	if name != "" && !a.declaredAlready(recSym) {
@@ -1220,6 +1445,14 @@ func (a *Analyzer) checkClassSpec(s *ast.ClassSpec) {
 			a.checkFriendBody(fn)
 		}
 		for _, td := range memberTemplates {
+			if a.instantiating {
+				// A specialization's member template is instantiated
+				// when it is used, body and all ([temp.inst]/4):
+				// tuple<int&>'s __tuple_leaf has allocator constructors
+				// that static_assert their element is not a reference,
+				// and no use of them is ever made.
+				continue
+			}
 			// The body is checked under the template-head again, as written:
 			// its own parameters are open in it whatever the class's are.
 			tScope := NewScope(a.curScope, TemplateParamScope, nil)
@@ -1257,6 +1490,12 @@ func (a *Analyzer) checkClassSpec(s *ast.ClassSpec) {
 	a.curScope = oldScope
 	a.curRecord = oldRecord
 	a.curAccess = oldAccess
+	if name == "" {
+		// An anonymous class inside this one -- the struct in `union {
+		// struct { ... }; T* p; }` -- was the last met while the body was
+		// read; this is the one its declaration adopts.
+		a.lastAnonymousRecord = rec
+	}
 }
 
 // memberTemplateBody is the function a member template declares with a
@@ -1745,9 +1984,23 @@ func (a *Analyzer) inheritedCtorBase(qn *ast.QualifiedName) *types.Record {
 	if len(qn.Qual) == 0 {
 		return nil
 	}
-	last := NameString(qn.Qual[len(qn.Qual)-1], a.unit)
+	lastName := qn.Qual[len(qn.Qual)-1]
+	if tn, isTemplate := lastName.(*ast.TemplateName); isTemplate {
+		lastName = tn.Name
+	}
+	last := NameString(lastName, a.unit)
 	if NameString(qn.Name, a.unit) != last {
 		return nil
+	}
+	// `using __base::__base;` with __base an alias of the base: the
+	// nested-name-specifier is resolved, and the class it names is the
+	// base whose constructors are inherited ([class.qual]/2).
+	var spelling ast.Name = qn.Qual[len(qn.Qual)-1]
+	if len(qn.Qual) > 1 {
+		spelling = &ast.QualifiedName{Span: qn.Span, Global: qn.Global, Qual: qn.Qual[:len(qn.Qual)-1], Name: qn.Qual[len(qn.Qual)-1]}
+	}
+	if br := a.baseNamed(last, spelling); br != nil {
+		return br
 	}
 	for _, b := range a.curRecord.Bases {
 		if br := types.AsRecord(types.Unqualify(b.Type)); br != nil && br.Name == last {
@@ -1884,11 +2137,58 @@ func (a *Analyzer) constraintsOf(d ast.Decl, declarator ast.Declarator) []ast.Ex
 	return out
 }
 
+// typeNamedAsConstraint is the non-type parameter a constrained type
+// parameter really is, when its "concept" names a type: `std::size_t... I`
+// and `q::sz N` have the shape of `std::integral... Ts`, and the parser,
+// knowing only the names of its own scopes, cannot tell a qualified type
+// from a qualified concept. Nil when the name is not a type's.
+func (a *Analyzer) typeNamedAsConstraint(p *ast.TypeParam, scope *Scope) *ast.ParamDecl {
+	if p.Constraint == nil || p.Kind == token.CLASS || p.Kind == token.TYPENAME {
+		return nil
+	}
+	name := p.Constraint
+	if pn, isPack := name.(*ast.PackName); isPack {
+		name = pn.Name
+	}
+	syms := lookupName(name, scope, a.unit)
+	if len(syms) == 0 {
+		return nil
+	}
+	switch syms[0].(type) {
+	case *TypeSymbol, *RecordSymbol, *EnumSymbol:
+	default:
+		return nil
+	}
+	spec := &ast.NamedTypeSpec{Span: ast.Span{Lo: p.Constraint.Pos(), Hi: p.Constraint.End()}, Name: p.Constraint}
+	var decl ast.Declarator = &ast.NameDeclarator{Span: p.Span, Name: p.Name}
+	if p.Ellipsis.IsValid() {
+		decl = &ast.PackDeclarator{Span: p.Span, Ellipsis: p.Ellipsis, Inner: decl}
+	}
+	pd := &ast.ParamDecl{
+		Span:  p.Span,
+		Specs: &ast.DeclSpecs{Span: spec.Span, List: []ast.DeclSpec{spec}},
+		Decl:  decl,
+	}
+	if p.Default != nil {
+		// `q::sz N = Max`: the default was read as a type-id; a name is
+		// the same expression either way.
+		if n, isExpr := bareTypeName(p.Default).(ast.Expr); isExpr {
+			pd.Assign, pd.Default = p.Assign, n
+		}
+	}
+	return pd
+}
+
 // templateParams declares a template-head's parameters in tScope and returns their symbols.
 func (a *Analyzer) templateParams(d *ast.TemplateDecl, tScope *Scope) []*TemplateParamSymbol {
 	var params []*TemplateParamSymbol
 	if d.Params != nil {
 		for i, decl := range d.Params.Params {
+			if tp, isTypeParam := decl.(*ast.TypeParam); isTypeParam {
+				if pd := a.typeNamedAsConstraint(tp, tScope); pd != nil {
+					d.Params.Params[i], decl = pd, pd
+				}
+			}
 			pName := ""
 			isType := true
 			isPack := false
@@ -2129,7 +2429,7 @@ func (a *Analyzer) checkOneMemInit(mi *ast.MemInit) {
 	}
 	for _, arg := range items {
 		info := a.CheckExpr(arg)
-		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
+		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue, NullConst: isNullConstant(arg, info), Overloads: a.overloadSetOf(arg)})
 	}
 	if mi.Name == nil || a.curRecord == nil || a.dependentContext() {
 		return
@@ -2150,6 +2450,9 @@ func (a *Analyzer) checkOneMemInit(mi *ast.MemInit) {
 		// and lowering needs to be told which one, or it would have
 		// nothing but the argument count to go on.
 		if base := a.baseNamed(name, mi.Name); base != nil && !dependentArguments(args) {
+			if a.info != nil {
+				a.info.MemInitBases[mi] = base
+			}
 			a.checkBaseInit(mi, base, args)
 		}
 		return // a base, or a name the class does not have
@@ -2159,7 +2462,19 @@ func (a *Analyzer) checkOneMemInit(mi *ast.MemInit) {
 		a.checkListInit(mi.Braced, target)
 		return
 	}
+	if types.IsReference(target) {
+		// A reference member is bound, not constructed: format's
+		// `handle(__handle& __h) : __handle_(__h)` chooses no constructor
+		// of __handle, and its `explicit __handle(_Tp&)` template is not
+		// instantiated with _Tp = __handle.
+		return
+	}
 	rec := types.AsRecord(types.Unqualify(target))
+	if rec == nil && len(items) == 1 && !dependentArguments(args) {
+		// A scalar member from a class: `__format_([](...) { ... })` stores
+		// what the closure converts to.
+		a.noteConversionFunction(items[0], args[0].Type, target)
+	}
 	if rec == nil || !hasUserConstructor(rec) || dependentArguments(args) {
 		return
 	}
@@ -2244,6 +2559,23 @@ func (a *Analyzer) checkBaseInit(mi *ast.MemInit, base *types.Record, args []Arg
 	if chosen == nil {
 		return
 	}
+	given := mi.Args
+	if mi.Braced != nil && len(mi.Args) == 0 {
+		for _, item := range mi.Braced.Items {
+			if x, isExpr := item.(ast.Expr); isExpr {
+				given = append(given, x)
+			}
+		}
+	}
+	a.settleOverloadArgs(given, chosen.FuncType)
+	if len(given) > len(mi.Args) {
+		// A braced list's items are the arguments; there are no defaults
+		// to add after them that the list does not already reach.
+		if !chosen.Defaulted && a.info != nil {
+			a.info.MemInits[mi] = chosen
+		}
+		return
+	}
 	for i := len(mi.Args); i < len(chosen.Defaults); i++ {
 		if def := chosen.Defaults[i]; def != nil {
 			mi.Args = append(mi.Args, def)
@@ -2294,7 +2626,7 @@ func (a *Analyzer) deduceDeclaredClass(primary *types.Record, init *ast.InitDecl
 		if isDependentExpr(info) {
 			return nil
 		}
-		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue})
+		args = append(args, Argument{Type: info.Type, IsLValue: info.ValCat == LValue, NullConst: isNullConstant(e, info)})
 	}
 	return a.deduceClassTemplateArgs(a.curScope.recordSymbol(primary), args, init.Pos())
 }
@@ -2336,7 +2668,11 @@ func (a *Analyzer) packAt(pos ast.Tok) int64 {
 // as written, in a scope of its own, and keeps nothing: see checkClassSpec.
 func (a *Analyzer) checkSpecializationBody(s *ast.ClassSpec, ps *PartialSpec) {
 	tn := s.Name.(*ast.TemplateName)
-	rec := &types.Record{Tag: types.TagStruct, Name: NameString(tn.Name, a.unit), Scopes: a.curScope.Path()}
+	// The record is a stand-in, kept by nothing, and a class named with it
+	// waits for the specialization itself: an explicit one -- __bitset<0,
+	// 0> -- too, whose `friend class __bit_reference<__bitset>` would
+	// otherwise make __bit_reference of a class with no arguments at all.
+	rec := &types.Record{Tag: types.TagStruct, Name: NameString(tn.Name, a.unit), Scopes: a.curScope.Path(), Pattern: true}
 	defaultAccess := types.AccessPublic
 	if s.Kind == token.CLASS {
 		defaultAccess = types.AccessPrivate
@@ -2574,11 +2910,22 @@ func (a *Analyzer) adoptAnonymousUnion(s *ast.ClassSpec) {
 		return
 	}
 	a.curRecord.Fields = append(a.curRecord.Fields, types.Field{Name: "", Type: rec, Access: a.curAccess})
+	a.adoptMembersOf(rec, s.Pos())
+}
+
+// adoptMembersOf declares an anonymous union's or struct's members in the
+// enclosing class, and those of the anonymous ones inside it: libc++'s
+// basic_format_args has `union { struct { ... __values_; uint64_t __types_;
+// }; ... __args_; };`, and all three are its members.
+func (a *Analyzer) adoptMembersOf(rec *types.Record, pos ast.Tok) {
 	for _, f := range rec.Fields {
 		if f.Name == "" {
+			if inner, isRec := types.Unqualify(f.Type).(*types.Record); isRec && inner.Name == "" {
+				a.adoptMembersOf(inner, pos)
+			}
 			continue
 		}
-		a.curScope.Insert(&VarSymbol{SymName: f.Name, SymType: f.Type, SymPos: s.Pos(), SymScope: a.curScope})
+		a.curScope.Insert(&VarSymbol{SymName: f.Name, SymType: f.Type, SymPos: pos, SymScope: a.curScope})
 	}
 }
 
@@ -2652,7 +2999,7 @@ func (a *Analyzer) declareClass(s *ast.ElaboratedSpec) {
 	} else if s.Kind == token.UNION {
 		tag = types.TagUnion
 	}
-	rec := &types.Record{Tag: tag, Name: name, Scopes: a.curScope.Path()}
+	rec := &types.Record{Tag: tag, Name: name, Scopes: a.curScope.Path(), Outer: a.curRecord}
 	rs := &RecordSymbol{SymName: name, Record: rec, SymPos: s.Pos(), SymScope: a.curScope}
 	a.declScope().Insert(rs)
 }
@@ -2754,12 +3101,74 @@ func (a *Analyzer) checkFriendIn(d *ast.FuncDecl, class *Scope) {
 	// a field, a member's implicit object -- takes the friend for one.
 	lexical := NewScope(class, BlockScope, nil)
 	saved := a.enterInstantiation(lexical)
+	// The friend's own body is checked as written here; the class it is
+	// in goes on being instantiated afterwards, with the members after
+	// the friend left for their first use as the ones before it were.
+	wasInstantiating := a.instantiating
 	a.instantiating, a.curTemplateParams = false, saved.params
 	prevInto, prevDecl, prevDefining := a.friendInto, a.friendDecl, a.definingFriend
 	a.friendInto, a.friendDecl, a.definingFriend = into, d, true
 	a.checkFuncDecl(d)
+	if d.Defaulted.IsValid() && into != nil {
+		a.implicitFriendEquality(d, into)
+	}
 	a.friendInto, a.friendDecl, a.definingFriend = prevInto, prevDecl, prevDefining
 	a.leaveInstantiation(saved)
+	a.instantiating = wasInstantiating
+}
+
+// implicitFriendEquality settles a defaulted friend operator<=>'s `auto`
+// return type and declares the operator== it brings with it ([class.compare.default]/5): `friend auto
+// operator<=>(It, It) = default;` makes `a == b` and `a != b` work too, by a
+// defaulted friend operator== of the same parameters, unless the class
+// declares an operator== of its own.
+func (a *Analyzer) implicitFriendEquality(d *ast.FuncDecl, into *Scope) {
+	var spaceship *FuncSymbol
+	for _, sym := range into.LookupLocal("operator<=>") {
+		if fn, isFunc := sym.(*FuncSymbol); isFunc && fn.Decl == d && fn.Defaulted && fn.FuncType != nil {
+			spaceship = fn
+		}
+	}
+	if spaceship == nil || len(spaceship.FuncType.Params) != 2 {
+		return
+	}
+	rec := types.AsRecord(types.Unqualify(types.RemoveReference(spaceship.FuncType.Params[0].Type)))
+	if rec == nil {
+		return
+	}
+	if mentionsAuto(spaceship.FuncType.Ret) {
+		// `friend auto operator<=>(It, It) = default;` returns the
+		// weakest ordering of the class's subobjects, as a member would.
+		if t := a.defaultedOrdering(rec, spaceship.SymPos); t != nil {
+			spaceship.FuncType.Ret = t
+		}
+	}
+	for _, m := range rec.Methods {
+		if m.Name == "operator==" {
+			return
+		}
+	}
+	for _, sym := range into.LookupLocal("operator==") {
+		fn, isFunc := sym.(*FuncSymbol)
+		if !isFunc || fn.FuncType == nil || len(fn.FuncType.Params) != 2 {
+			continue
+		}
+		if types.AsRecord(types.Unqualify(types.RemoveReference(fn.FuncType.Params[0].Type))) == rec {
+			return
+		}
+	}
+	ft := &types.Func{
+		Ret:    types.Typ(types.Bool),
+		Params: append([]types.Param(nil), spaceship.FuncType.Params...),
+	}
+	fn := &FuncSymbol{
+		SymName: "operator==", FuncType: ft, SymPos: spaceship.SymPos, SymScope: into,
+		Inline: true, Defaulted: true, Friend: true, Constexpr: spaceship.Constexpr,
+	}
+	if surviving, err := into.InsertFunc(fn); err == nil {
+		fn = surviving
+	}
+	a.noteDeclared(fn)
 }
 
 // convertingConstructor resolves a non-explicit constructor for copy-initialization.

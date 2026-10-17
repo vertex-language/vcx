@@ -148,33 +148,39 @@ func (a *Analyzer) deduceDefaultedComparisons(rec *types.Record, at ast.Tok) {
 		if fn == nil || fn.FuncType == nil || !mentionsAuto(fn.FuncType.Ret) {
 			continue
 		}
-		category := strongOrdering
-		consider := func(t types.Type) bool {
-			c, known := a.categoryOf(t, at)
-			if !known {
-				a.errorAt(at, fmt.Sprintf("cannot default operator<=> for %s: a %q has no three-way comparison", rec.Name, t))
-				return false
-			}
-			if c > category {
-				category = c
-			}
-			return true
-		}
-		for _, b := range rec.Bases {
-			if !consider(b.Type) {
-				return
-			}
-		}
-		for _, f := range rec.Fields {
-			if !consider(elementType(f.Type)) {
-				return
-			}
-		}
-		if t := a.orderingType(category, at); t != nil {
+		if t := a.defaultedOrdering(rec, at); t != nil {
 			fn.FuncType.Ret = t
 			m.Func.Ret = t
 		}
 	}
+}
+
+// defaultedOrdering is the comparison category type a defaulted
+// `auto operator<=>` of rec returns: the weakest of its subobjects'.
+func (a *Analyzer) defaultedOrdering(rec *types.Record, at ast.Tok) types.Type {
+	category := strongOrdering
+	consider := func(t types.Type) bool {
+		c, known := a.categoryOf(t, at)
+		if !known {
+			a.errorAt(at, fmt.Sprintf("cannot default operator<=> for %s: a %q has no three-way comparison", rec.Name, t))
+			return false
+		}
+		if c > category {
+			category = c
+		}
+		return true
+	}
+	for _, b := range rec.Bases {
+		if !consider(b.Type) {
+			return nil
+		}
+	}
+	for _, f := range rec.Fields {
+		if !consider(elementType(f.Type)) {
+			return nil
+		}
+	}
+	return a.orderingType(category, at)
 }
 
 // implicitEquality declares an implicit defaulted operator== if a class

@@ -73,7 +73,11 @@ type Scope struct {
 
 	// AliasInstantiate instantiates an alias template.
 	AliasInstantiate func(alias *TypeSymbol, args []types.TemplateArg, at ast.Tok) types.Type
-	EvalConst        func(e ast.Expr, scope *Scope) (int64, bool)
+
+	// AliasExpand is a transparent alias template's target under arguments
+	// that are still dependent, or nil (see expandDependentAlias).
+	AliasExpand func(alias *TypeSymbol, args []types.TemplateArg) types.Type
+	EvalConst   func(e ast.Expr, scope *Scope) (int64, bool)
 
 	// ExpandValues expands a non-type pack expansion into concrete values.
 	ExpandValues func(pe *ast.PackExpansion, scope *Scope) ([]int64, bool)

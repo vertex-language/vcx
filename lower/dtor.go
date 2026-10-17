@@ -260,6 +260,10 @@ func (u *unit) implicitDestructor(rec *types.Record) *sema.FuncSymbol {
 		fl.this, fl.hasThis = p, true
 	}
 	fl.destroyMembersAndBases(sym)
+	if len(fl.f.Blocks()) < 2 {
+		// The module has failed already, and its error is the one to report.
+		return sym
+	}
 	fl.entry.Br(fl.f.Blocks()[1].To())
 	if u.ctorReturnsThis(sym) {
 		fl.blk.Return(fl.this)

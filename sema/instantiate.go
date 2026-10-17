@@ -248,7 +248,7 @@ func (a *Analyzer) instantiateWithArgs(tmpl *FuncSymbol, args []types.TemplateAr
 		// declared from its signature now and defined when the definition
 		// arrives (see defineAwaiting); one that never does is reported
 		// when the analysis ends.
-		if tmpl.InClass != nil {
+		if tmpl.InClass != nil || a.externTemplates[tmpl.SymName] {
 			if ft, ok := a.instanceSignature(tmpl, args); ok {
 				inst := &FuncSymbol{SymName: tmpl.SymName, FuncType: ft, SymPos: tmpl.SymPos, SymScope: tmpl.SymScope, InClass: tmpl.InClass, Access: tmpl.Access, Static: tmpl.Static, Inline: true, TemplateArgs: args, TemplateOf: tmpl}
 				info.Instances[ikey] = inst
@@ -285,6 +285,14 @@ func (a *Analyzer) instantiateWithArgs(tmpl *FuncSymbol, args []types.TemplateAr
 		a.leaveInstantiation(saved)
 		a.errorAt(at, fmt.Sprintf("instantiating %s produced no function", tmpl.SymName))
 		return nil
+	}
+	if tmpl.InClass != nil && tmpl.SymName == tmpl.InClass.Name {
+		// A constructor is declared under its class's name, and left in
+		// the scope its body is checked in it would hide the
+		// injected-class-name: tuple's `__make_tuple_types<tuple, N>` in
+		// a mem-initializer named the constructor, the type stayed
+		// dependent, and __base_ was never initialized.
+		delete(instScope.Symbols, tmpl.SymName)
 	}
 	inst.TemplateArgs = args
 	inst.TemplateOf = tmpl
@@ -376,6 +384,14 @@ func (a *Analyzer) instantiateClass(tmpl *RecordSymbol, args []types.TemplateArg
 	saved := a.enterInstantiation(instScope)
 	wasInstantiating, wasPrimary, wasArgs := a.instantiating, a.primary, a.instArgs
 	a.instantiating, a.primary, a.instArgs = true, tmpl, args
+	// The specialization is made once, wherever it was first asked for,
+	// and its members are its own copy of the pattern: what they fold to
+	// is recorded even when a requires-expression asked, as a function
+	// definition's is (see checkFunctionBody). Otherwise libc++'s
+	// `static const bool value = noexcept(...)`, first made inside a
+	// concept check, had no value when lowering came to initialize it.
+	wasInRequires := a.inRequires
+	a.inRequires = 0
 	spec := ast.Clone(pattern)
 	if held := info.Incomplete[ikey]; held != nil {
 		a.reuseRecord = held.Record
@@ -385,6 +401,7 @@ func (a *Analyzer) instantiateClass(tmpl *RecordSymbol, args []types.TemplateArg
 	a.checkClassSpec(spec)
 	a.reuseRecord = nil
 	a.instantiating, a.primary, a.instArgs = wasInstantiating, wasPrimary, wasArgs
+	a.inRequires = wasInRequires
 	a.leaveInstantiation(saved)
 
 	var inst *RecordSymbol
@@ -406,10 +423,47 @@ func (a *Analyzer) instantiateClass(tmpl *RecordSymbol, args []types.TemplateArg
 	// The members its pattern defines out of line, now that there is a
 	// class with its arguments bound to give them to.
 	a.instances = append(a.instances, instanceMade{inst: inst, pattern: pattern, scope: paramScope})
+	// Its nested classes defined after it first: a member's body uses them.
+	if pattern == info.Spec {
+		for _, def := range a.nestedClassDefs[pattern] {
+			a.defineNestedIn(inst, def)
+		}
+	}
 	for _, def := range a.outOfLine[pattern] {
 		a.completeInstanceMember(inst, def, paramScope)
 	}
+	// And those of the classes nested in it, `__tree<...>::_DetachedTreeCache`,
+	// whose specializations were made from copies of their own patterns.
+	for _, nested := range nestedRecords(inst) {
+		for orig, defs := range a.outOfLine {
+			if nested.Spec != nil && orig.Pos() == nested.Spec.Pos() && orig != nested.Spec {
+				for _, def := range defs {
+					a.completeInstanceMember(nested, def, paramScope)
+				}
+			}
+		}
+	}
 	return inst
+}
+
+// nestedRecords is the classes declared in a class, at any depth.
+func nestedRecords(rs *RecordSymbol) []*RecordSymbol {
+	if rs == nil || rs.ClassScope == nil {
+		return nil
+	}
+	var out []*RecordSymbol
+	for name, syms := range rs.ClassScope.Symbols {
+		if name == rs.SymName {
+			continue // the injected-class-name
+		}
+		for _, s := range syms {
+			if n, isRec := s.(*RecordSymbol); isRec && n != rs && n.ClassScope != nil && n.Record != nil && n.Record.Outer == rs.Record {
+				out = append(out, n)
+				out = append(out, nestedRecords(n)...)
+			}
+		}
+	}
+	return out
 }
 
 // instantiateAlias instantiates an alias template specialization.
@@ -611,6 +665,10 @@ func (a *Analyzer) defaultTemplateArg(p *TemplateParamSymbol, before []*Template
 		if !isTypeId {
 			return types.TemplateArg{}, false
 		}
+		// A copy: checking the argument expands the packs in it in place --
+		// construct_at's `decltype(::new (...) _Tp(std::declval<_Args>()...))`
+		// -- and the default as written serves every later use.
+		id = ast.Clone(id)
 		specs := BuildDeclSpecs(id.Specs, paramScope, a.unit)
 		if specs.Type == nil || specs.Unresolved != "" {
 			return types.TemplateArg{}, false
@@ -628,7 +686,7 @@ func (a *Analyzer) defaultTemplateArg(p *TemplateParamSymbol, before []*Template
 	if !a.nonTypeParamSubstitutes(p, before, bound, scope) {
 		return types.TemplateArg{}, false
 	}
-	n, ok := a.globalScope.EvalConst(e, paramScope)
+	n, ok := a.globalScope.EvalConst(ast.Clone(e), paramScope)
 	if !ok {
 		return types.TemplateArg{}, false
 	}
@@ -782,11 +840,44 @@ func (a *Analyzer) usedByExistence(d *ast.FuncDecl, rec *types.Record) bool {
 	if d.Decl != nil && d.Decl.DeclName() != nil {
 		name = NameString(d.Decl.DeclName(), a.unit)
 	}
+	if (name == "" || name == rec.Name) && isDefaultCtorDecl(d) && hasReferenceMember(rec) {
+		// tuple<_Tp&...>'s __tuple_leaf<0, int&> declares a default
+		// constructor whose body value-initializes the reference and
+		// static_asserts that it is not one: a member that is ill-formed
+		// unless used, as it never is. Made on use like any other.
+		return false
+	}
 	if name == "" || name == rec.Name || name == "~"+rec.Name {
 		return true
 	}
 	for _, m := range rec.Methods {
 		if m.Name == name && m.Virtual {
+			return true
+		}
+	}
+	return false
+}
+
+// isDefaultCtorDecl reports whether a constructor declaration takes no
+// arguments: no parameters, or defaults for all of them.
+func isDefaultCtorDecl(d *ast.FuncDecl) bool {
+	fd := funcDeclaratorOf(d.Decl)
+	if fd == nil {
+		return false
+	}
+	for _, p := range fd.Params {
+		if p.Default == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// hasReferenceMember reports whether a class has a non-static data member
+// of reference type.
+func hasReferenceMember(rec *types.Record) bool {
+	for _, f := range rec.Fields {
+		if types.IsReference(f.Type) {
 			return true
 		}
 	}
@@ -857,7 +948,13 @@ func (a *Analyzer) ensureInstantiated(fn *FuncSymbol) {
 			a.curRecord = pi.tmpl.InClass
 			a.curAccess = pi.tmpl.Access
 		}
-		a.checkFuncDecl(pi.decl)
+		if pi.tmpl.InClass != nil && pi.tmpl.SymName == pi.tmpl.InClass.Name {
+			// A constructor is not in the scope to merge with (see
+			// instantiateWithArgs): its body is the instance's own.
+			a.checkFunctionBody(fn, pi.decl)
+		} else {
+			a.checkFuncDecl(pi.decl)
+		}
 		a.leaveInstantiation(saved)
 	}
 	if fn.Method != nil && fn.InClass != nil && fn.Body == nil {
@@ -909,6 +1006,7 @@ type pendingInstance struct {
 
 // matchPartial finds a matching partial specialization.
 func (a *Analyzer) matchPartial(info *ClassTemplateInfo, args []types.TemplateArg) (*PartialSpec, []types.TemplateArg, bool) {
+	var matches []partialMatch
 	for _, ps := range info.Partials {
 		bound, ok := matchPattern(ps.Params, ps.Args, args)
 		if os.Getenv("VCX_DEBUG_MATCH") != "" {
@@ -918,10 +1016,48 @@ func (a *Analyzer) matchPartial(info *ClassTemplateInfo, args []types.TemplateAr
 			}
 		}
 		if ok && a.spellingMatches(ps, bound, args) && a.partialConstraintsHold(ps, bound) {
-			return ps, bound, true
+			matches = append(matches, partialMatch{ps, bound})
 		}
 	}
-	return nil, nil, false
+	if len(matches) == 0 {
+		return nil, nil, false
+	}
+	best := mostSpecialized(matches)
+	return best.ps, best.bound, true
+}
+
+type partialMatch struct {
+	ps    *PartialSpec
+	bound []types.TemplateArg
+}
+
+// mostSpecialized is the match more specialized than every other
+// ([temp.class.order]): libc++'s __log2_imp has `<unsigned long long, _Xp,
+// _Rp>` and `<unsigned long long, _Xp, 0>`, and for a 0 the second is the
+// one, ending the recursion the first would go on with. Where no one match
+// is, the first written is kept.
+func mostSpecialized(matches []partialMatch) partialMatch {
+	if len(matches) == 1 {
+		return matches[0]
+	}
+	// c is at least as specialized as d when d's pattern takes c's
+	// arguments, c's own parameters standing as unique values.
+	atLeast := func(c, d *PartialSpec) bool {
+		return patternTakes(d.Args, c.Args)
+	}
+	for _, c := range matches {
+		best := true
+		for _, d := range matches {
+			if c.ps != d.ps && (!atLeast(c.ps, d.ps) || atLeast(d.ps, c.ps)) {
+				best = false
+				break
+			}
+		}
+		if best {
+			return c
+		}
+	}
+	return matches[0]
 }
 
 // spellingMatches validates non-deduced alias template specialization arguments
@@ -999,6 +1135,16 @@ func isAliasSpelling(t types.Type) bool {
 
 // matchPattern deduces partial specialization parameters from pattern arguments.
 func matchPattern(params []*TemplateParamSymbol, pattern, args []types.TemplateArg) ([]types.TemplateArg, bool) {
+	b, ok := patternBinding(pattern, args)
+	if !ok {
+		return nil, false
+	}
+	return boundArgs(params, b)
+}
+
+// patternBinding matches arguments against a pattern, binding the
+// pattern's parameters.
+func patternBinding(pattern, args []types.TemplateArg) (Binding, bool) {
 	b := Binding{}
 	args = flattenPacks(args)
 	// A pack at the end of the pattern takes remaining arguments.
@@ -1040,7 +1186,46 @@ func matchPattern(params []*TemplateParamSymbol, pattern, args []types.TemplateA
 			return nil, false
 		}
 	}
-	return boundArgs(params, b)
+	return b, true
+}
+
+// patternTakes reports whether a partial specialization's pattern takes
+// another's arguments, the other's parameters standing as unique values: a
+// parameter of the pattern takes anything, the same each time it appears;
+// a value only itself; a type deduces as it would against an argument.
+func patternTakes(pattern, args []types.TemplateArg) bool {
+	if n := len(pattern); n > 0 && isPackParam(pattern[n-1]) {
+		if len(args) < n-1 {
+			return false
+		}
+		pattern, args = pattern[:n-1], args[:n-1]
+	}
+	if len(pattern) != len(args) {
+		return false
+	}
+	seen := map[string]string{}
+	b := Binding{}
+	for i, pat := range pattern {
+		arg := args[i]
+		if tp, isParam := pat.Type.(*types.TemplateParam); pat.IsType && isParam && !tp.IsPack {
+			if prev, was := seen[tp.Name]; was && prev != arg.String() {
+				return false
+			}
+			seen[tp.Name] = arg.String()
+			continue
+		}
+		switch {
+		case !pat.IsType:
+			if arg.IsType || arg.Val != pat.Val {
+				return false
+			}
+		case !arg.IsType:
+			return false
+		case !matchType(pat.Type, arg.Type, b):
+			return false
+		}
+	}
+	return true
 }
 
 // partialConstraintsHold reports whether a partial specialization's
@@ -1439,8 +1624,124 @@ func (a *Analyzer) defineAwaiting(tmpl *FuncSymbol) {
 // the translation unit never gave.
 func (a *Analyzer) reportUndefined() {
 	for _, w := range a.awaiting {
-		if !w.done {
+		if !w.done && !a.externTemplates[w.tmpl.SymName] {
 			a.errorAt(w.at, fmt.Sprintf("%s<%s> is used but the template is declared and not defined", w.tmpl.SymName, argsKey(w.args)))
 		}
 	}
+}
+
+// expandDependentAlias is an alias template's target under arguments that
+// still name template parameters, when the alias is transparent: its target
+// is a template-id, or one of its parameters, that every parameter of the
+// alias appears in as an argument of its own. Such an alias stands for its
+// target and nothing more, and a function parameter written with it deduces
+// as the target does ([temp.alias]/2).
+//
+// An alias that drops a parameter or computes with one -- `void_t<T>`,
+// `__enable_if_t<C, int>` -- is not expanded: its substitution can fail
+// where the target's would not ([temp.alias]/3, CWG 1558), and that failure
+// has to wait for the arguments.
+func (a *Analyzer) expandDependentAlias(alias *TypeSymbol, args []types.TemplateArg) types.Type {
+	info := alias.Alias
+	if info == nil || info.Builtin != "" || len(info.Params) == 0 || !argsDependent(args) || !transparentAlias(info, a.unit) {
+		return nil
+	}
+	bound := make([]types.TemplateArg, len(info.Params))
+	for i, p := range info.Params {
+		if p.IsPack {
+			if i != len(info.Params)-1 {
+				return nil
+			}
+			var rest []types.TemplateArg
+			if i < len(args) {
+				rest = append(rest, args[i:]...)
+			}
+			bound[i] = types.TemplateArg{IsType: true, Type: &types.Pack{Elems: rest}}
+			return a.formTransparentAlias(info, bound)
+		}
+		if i >= len(args) {
+			return nil
+		}
+		arg := args[i]
+		if p.IsType && !arg.IsType {
+			return nil
+		}
+		if !p.IsType && arg.IsType {
+			// A value parameter's argument read as the template parameter
+			// it names: `iseq<N>` in `template <size_t N>`.
+			if _, isParam := arg.Type.(*types.TemplateParam); !isParam {
+				return nil
+			}
+		}
+		bound[i] = arg
+	}
+	if len(args) > len(info.Params) {
+		return nil
+	}
+	return a.formTransparentAlias(info, bound)
+}
+
+func (a *Analyzer) formTransparentAlias(info *AliasTemplate, bound []types.TemplateArg) types.Type {
+	t := a.formAlias(info, bound)
+	if t == nil || t == substitutionFailure {
+		return nil
+	}
+	return t
+}
+
+// transparentAlias reports whether an alias template's target is a
+// template-id or a bare parameter, naming each of the alias's parameters
+// directly as an argument.
+func transparentAlias(info *AliasTemplate, u ast.Unit) bool {
+	if info.Type == nil {
+		return false
+	}
+	name := bareTypeName(info.Type)
+	if name == nil {
+		return false
+	}
+	params := map[string]bool{}
+	for _, p := range info.Params {
+		if p.SymName == "" || p.IsTemplate {
+			return false
+		}
+		params[p.SymName] = true
+	}
+	if id, isIdent := name.(*ast.Ident); isIdent {
+		return len(params) == 1 && params[id.Text(u)]
+	}
+	tn, isTemplate := name.(*ast.TemplateName)
+	if !isTemplate {
+		if qn, isQualified := name.(*ast.QualifiedName); isQualified {
+			tn, isTemplate = qn.Name.(*ast.TemplateName)
+		}
+	}
+	if !isTemplate {
+		return false
+	}
+	used := map[string]bool{}
+	for _, arg := range tn.Args {
+		if n := argParamName(arg, u); params[n] {
+			used[n] = true
+		}
+	}
+	return len(used) == len(params)
+}
+
+// argParamName is the name a template argument consists of -- `T`, `I...`
+// -- or "".
+func argParamName(arg ast.Node, u ast.Unit) string {
+	switch x := arg.(type) {
+	case *ast.TypeId:
+		if n := bareTypeName(x); n != nil {
+			return argParamName(n, u)
+		}
+	case *ast.PackExpansion:
+		return argParamName(x.X, u)
+	case *ast.PackName:
+		return argParamName(x.Name, u)
+	case *ast.Ident:
+		return x.Text(u)
+	}
+	return ""
 }
