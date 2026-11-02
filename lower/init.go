@@ -31,6 +31,20 @@ func (u *unit) noteDynamicInit(v *sema.VarSymbol, g *ir.Global) {
 	rec := classOf(v.SymType)
 	_, isArr := types.Unqualify(v.SymType).(*types.Array)
 	switch {
+	case isReference(v.SymType):
+		// A reference to something with static storage duration is that
+		// thing's address, which is data: `T& r = global.member;`.
+		if v.Init == nil {
+			break
+		}
+		// A base subobject's offset is the binding's to work out, at run time.
+		from := types.Unqualify(types.RemoveReference(u.res.Info.Types[v.Init]))
+		same := from != nil && from.Equal(types.Unqualify(types.RemoveReference(v.SymType)))
+		if image, ok := u.addressOf(unparen(v.Init)); ok && same {
+			g.Init(image)
+		} else {
+			needsCode = true
+		}
 	case u.res.Info.Ctors[decl] != nil:
 		needsCode = true
 	case decl.Braced != nil && (rec != nil || isArr):
@@ -76,6 +90,13 @@ func (u *unit) noteDynamicInit(v *sema.VarSymbol, g *ir.Global) {
 // initGlobal runs one namespace-scope object's dynamic initializer.
 func (fl *fn) initGlobal(obj ir.Ptr, di dynamicInit) {
 	u := fl.u
+	if isReference(di.sym.SymType) {
+		if p, ok := fl.bindGlobalRef(di); ok {
+			fl.blk.Ptr.Store(p, obj)
+		}
+		fl.endFullExpr()
+		return
+	}
 	if ctor := u.res.Info.Ctors[di.decl]; ctor != nil {
 		fl.construct(obj, classOf(di.sym.SymType), ctor, di.decl)
 		return
@@ -103,6 +124,32 @@ func (fl *fn) initGlobal(obj ir.Ptr, di dynamicInit) {
 	if v := fl.expr(di.sym.Init); v != nil {
 		fl.store(obj, fl.convert(v, fl.typeOf(di.sym.Init), di.sym.SymType), di.sym.SymType)
 	}
+}
+
+// bindGlobalRef is the address a namespace-scope reference binds to. An lvalue
+// is where it is; a temporary lives as long as the reference does
+// ([class.temporary]), so it has static storage rather than the initializer
+// function's frame. Such a temporary's destructor is not run at exit.
+func (fl *fn) bindGlobalRef(di dynamicInit) (ir.Ptr, bool) {
+	u, init := fl.u, di.sym.Init
+	target := types.RemoveReference(di.sym.SymType)
+	if addr, from, ok := fl.lvalueQuiet(init); ok {
+		if off := u.baseAdjust(&types.Pointer{Elem: from}, &types.Pointer{Elem: target}); off != 0 {
+			addr = fl.blk.Ptr.Add(addr, fl.blk.I64.Const(off))
+		}
+		return addr, true
+	}
+	g := u.mod.Global(u.symbolName("__vcx_ref_temp_"+identOf(di.sym.SymName)), ir.RW, u.storageType(target)).Internal()
+	addr := fl.blk.Ptr.GetAddr(g)
+	if rec := classOf(target); rec != nil {
+		return addr, fl.exprInto(addr, init, rec)
+	}
+	v := fl.expr(init)
+	if v == nil {
+		return ir.Ptr{}, false
+	}
+	fl.store(addr, fl.convert(v, fl.typeOf(init), target), target)
+	return addr, true
 }
 
 // declOf is the declarator a namespace-scope variable was defined by.
