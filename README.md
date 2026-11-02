@@ -1,423 +1,113 @@
-# v++ (vcx)
-
 <p align="center">
-  <img src="https://img.shields.io/badge/language-C%2B%2B23-2563EB?style=flat-square&labelColor=0D1030" alt="C++23">
-  <img src="https://img.shields.io/badge/compiler-0.0.0--dev-4F46E5?style=flat-square&labelColor=0D1030" alt="0.0.0-dev">
-  <img src="https://img.shields.io/badge/go-1.23%2B-7C3AED?style=flat-square&labelColor=0D1030" alt="Go 1.23+">
-  <img src="https://img.shields.io/badge/license-MIT-9333EA?style=flat-square&labelColor=0D1030" alt="MIT License">
+  <img src="docs/assets/banner.png" alt="vcx — a general-purpose C++ compiler" width="100%">
 </p>
 
-**vcx** is the Vertex C++ compiler. It provides a from-scratch ISO C++23 front end written in Go, lowering directly to VIR (Vertex Intermediate Representation) and native relocatable object files (`.o` / `.obj`).
+`vcx` is a C++ compiler written in Go. One tool takes a program from source to a
+native executable, with its own preprocessor, parser, analyzer, code generator
+and linkers. It also builds the native code in every
+[Vertex](https://github.com/vertex-language/vertex-language) package. The command
+is `v++`.
 
-The CLI binary is `v++`; the Go module and repository is `github.com/vertex-language/vcx`.
+[Command line](docs/cli.md) ·
+[Targets](docs/targets.md) ·
+[Architecture](docs/architecture.md) ·
+[Vertex](https://github.com/vertex-language/vertex-language)
 
-```console
-$ v++ build -o app.o main.cpp
-$ v++ build --emit vir main.cpp
-$ v++ check src/
-$ v++ layout record.cpp
-$ v++ symbols main.cpp
-$ v++ ast main.cpp
-$ v++ tokens main.cpp
-$ v++ env
-```
+## Getting started
 
----
-
-## Highlights
-
-- **From-Scratch C++23 Front End**: Fully independent lexer, ISO phase 4 preprocessor, recursive-descent parser, semantic analyzer, and compile-time constant evaluator.
-- **Dual ABI Parity**: Complete implementation of both the **Itanium C++ ABI** (Linux, macOS, bare-metal ELF) and the **Microsoft C++ ABI** (Windows MSVC layout, virtual base pointers/tables, name mangling).
-- **Direct Lowering to VIR**: Monomorphized templates, virtual tables, cleanup scopes, and control flow lower directly into typed SSA VIR modules without intermediate external layers.
-- **Native Relocatable Object Output**: Emits ELF, Mach-O, and PE/COFF relocatable object files directly via native Go encoders.
-- **Self-Contained Pipeline**: Zero reliance on host `clang`, `gcc`, `as`, or LLVM -- and the link is vcx's own, through the vertex-language ELF, Mach-O and PE linkers.
-- **CUDA and HIP, without a toolkit**: a `.cu` or `.hip` is compiled twice -- the kernels to PTX or an HSA code object, the host to an object that embeds and registers them -- and `v++ run main.cu` runs on the GPU through the driver alone, with vcx's own runtime standing in for cudart. The source is nvcc's and hipcc's: `__global__`, `<<<>>>`, `__shared__`, `atomicAdd`, `__shfl_down_sync`, `cudaMemcpy`.
-- **Metal, without Xcode**: a `.metal` file compiles to the `.metallib` an app loads, `v++ kernels.metal -o kernels.metallib`, lowered through VIR to AIR by vcx and written by the vertex-language `air` package -- no `xcrun metal`. Its kernels run on the GPU with the same results as the libraries Apple's compiler builds.
-- **Rich Introspection CLI**: Built-in commands to inspect token streams, AST nodes, computed record memory layouts, and mangled symbol tables.
-- **Modular Go Library**: Every compilation stage is exposed as a composable, reusable Go API.
-
----
-
-## Quick Start
-
-### Installation
-
-Compile and install `v++` using the Go toolchain:
-
-```console
-$ go install github.com/vertex-language/vcx/cmd/v++@latest
-```
-
-Or build directly from source:
-
-```console
-$ git clone https://github.com/vertex-language/vcx.git
-$ cd vcx
-$ go build -o v++ ./cmd/v++
-```
-
-### Basic Commands
-
-```console
-# Type check a translation unit without code generation
-$ v++ check main.cpp
-
-# Compile and link an executable with vcx's own linker
-$ v++ build -o main main.cpp
-
-# Compile to a native relocatable object file
-$ v++ build -c -o main.o main.cpp
-
-# A CUDA program, built and run on the GPU with no toolkit installed
-$ v++ run vecadd.cu
-
-# The device pass alone: the PTX, or an AMD code object
-$ v++ build --emit ptx --offload-arch sm_75 kernels.cu
-$ v++ build --emit hsaco --offload-arch gfx942 kernels.hip
-
-# A Metal library, for an app to load with newLibraryWithURL:
-$ v++ kernels.metal -o kernels.metallib
-$ v++ --emit ll kernels.metal                     # its AIR, as text
-
-# Inspect the lowered Vertex Intermediate Representation (VIR)
-$ v++ build --emit vir main.cpp
-
-# Inspect computed class memory layout (offsets, sizes, vtables, vbtables)
-$ v++ layout main.cpp
-
-# Inspect the mangled symbol table
-$ v++ symbols main.cpp
-
-# Dump the syntax tree
-$ v++ ast main.cpp
-
-# Dump the tokenized stream
-$ v++ tokens main.cpp
-
-# View resolved environment, target info, and system include directories
-$ v++ env
-```
-
----
-
-## CLI Reference
-
-`v++` uses a verb-first command structure:
+`vcx` builds with Go from a set of sibling checkouts:
 
 ```
-v++ <command> [flags] [files...]
+mkdir vertex && cd vertex
+for repo in vcx ir asm air amd64 arm64 i386 amdgpu ptx elf macho pe; do
+    git clone https://github.com/vertex-language/$repo
+done
+cd vcx && go build -o ~/bin/v++ ./cmd/v++
 ```
 
-### Commands
-
-| Command | Description |
-| --- | --- |
-| `v++ build` | Compile inputs and link an executable. `-c` stops at objects (`.o` / `.obj`); `--emit vir` prints VIR text; `--emit ptx` / `--emit hsaco` the device image of a CUDA or HIP unit. |
-| `v++ run` | Build a source file to a temporary executable and run it; arguments after the file are the program's. |
-| `v++ check` | Run preprocessing, parsing, and semantic analysis; emit diagnostics without generating code. |
-| `v++ layout` | Print the exact memory layout of every class/struct (sizes, base offsets, field offsets, vtables, vbtables). |
-| `v++ symbols` | Print the object-file mangled symbol names for all definitions in the file. |
-| `v++ ast` | Parse source into an AST and dump the tree representation. |
-| `v++ tokens` | Run tokenization and print the token stream with source positions. |
-| `v++ env` | Print resolved target architecture, default language standard, and discovered system include paths. |
-
-### Common Flags
-
-- `-target <triple>`: Compilation target (e.g. `x86_64-windows`, `x86_64-linux`, `aarch64-macos`). Defaults to the host system.
-- `-std <version>`: C++ language standard: `c++20`, `c++23` (default), or `c++26`.
-- `-I <dir>`: Add an include search directory (repeatable, searched in order).
-- `-D <name>[=<val>]`: Define a preprocessor macro.
-- `-U <name>`: Undefine a preprocessor macro.
-- `-freestanding`: Compile for a freestanding environment (disables hosted standard library discovery).
-- `-o <path>`: Output artifact path (used with `v++ build`).
-- `-c`: Compile to objects without linking; `-l <lib>` and `-L <dir>` name libraries for the link.
-- `--emit vir|obj|ptx|hsaco|metallib|air|ll`: Target output representation (`obj` produces relocatable object files; `vir` dumps IR; `ptx` and `hsaco` the device image; for a `.metal` file, `air` its bitcode and `ll` its text).
-- `-x cuda|hip|metal`: The language, whatever the extension says; `.cu` and `.cuh` are CUDA, `.hip` is HIP and `.metal` is Metal on their own.
-- `--offload-arch <arch>`: The device kernels are compiled for: `sm_75`, `sm_90a`, `gfx942`, `apple8`, ... (default `sm_52` for CUDA and `apple7` for Metal; HIP has no default).
-- `-std=metal3.0|metal3.1|metal3.2|metal4.0`, `-mmacosx-version-min=<v>`, `-fno-fast-math`: A `.metal` file's MSL version (default 3.0), the oldest macOS its library loads on (default 13.0, which is AIR 2.5), and precise float math (fast is Metal's default), as `xcrun metal` spells them.
-- `--cuda-device-only`, `--cuda-host-only`: One pass of an offload unit rather than both.
-
-### AST & Parsing Flags
-
-- `-skip-bodies`: Skip parsing function bodies for faster structural passes.
-- `-comments`: Retain source comments on AST nodes.
-
----
-
-## Compiler Architecture
-
-Translation follows the standard ISO C++ phase model implemented across clean, isolated Go packages:
+Then compile a program:
 
 ```
-                     Source Text
-                          │
-                   [ token / scanner ]
-                    Phases 1, 2, 3
-                 (Tokens, Sites, UCNs)
-                          │
-                   [ preprocessor ]
-                       Phase 4
-            (Macros, Directives, #include)
-                          │
-                      [ literal ]
-                     Phases 5, 6
-             (Escape Sequences, Concat)
-                          │
-                     [ parser ]
-                       Phase 7
-                  (Syntax Tree AST)
-                          │
-                 [ sema / constexpr ]
-                     Phases 7, 8
-         (Lookup, Overloads, Templates, CFG)
-                          │
-                   [ lower / mangle ]
-                       Phase 8
-        (VIR Builder, ABI Layout, Mangling)
-                          │
-                     VIR Module
-                          │
-             [ Native Object Generation ]
-                       Phase 9
-                  (ELF / Mach-O / PE)
+v++ run main.cpp
+v++ build -o app main.cpp
+v++ build -c -o main.o main.cpp
 ```
 
-### Compilation Phases
+`vcx` reads the platform's system headers and links against its libraries.
+`v++ env` shows what it found.
 
-1. **Tokens & Lexing (`token`, `scanner`)**:
-   Character mapping, universal character names (UCNs), raw string literals, trigraph handling, and position indexing (`token.Site`, `token.File`). Diagnostics are arena-allocated values tied to exact source positions.
-2. **Preprocessing (`preprocessor`)**:
-   Complete ISO Phase 4 preprocessor. Macro definition, expansion, stringification (`#`), token concatenation (`##`), `__VA_OPT__`, conditional inclusion (`#if`, `#ifdef`), and include resolution backed by abstracted `io/fs` filesystem mounts. Embeds standard freestanding compiler headers (`include/gnu/`) and discovers host toolsets (`sysroot.go`).
-3. **Literal Decoding (`literal`)**:
-   ISO Phases 5 and 6 string literal decoding, escape sequence translation, and literal concatenation across character encodings (narrow, UTF-8, UTF-16, UTF-32, wide).
-4. **Parsing (`parser`, `ast`)**:
-   Recursive-descent C++23 parser producing an explicit AST. Resilient parsing guarantees an `ast.File` is produced even in the presence of syntax errors for robust diagnostics and IDE tooling.
-5. **Semantic Analysis (`sema`, `types`, `constexpr`)**:
-   Type checking, unqualified and qualified name lookup, argument-dependent lookup (ADL), two-phase template lookup, overload resolution, template argument deduction and instantiation, implicit conversions, and special member synthesis.
-   - `sema/cfg`: In-memory control-flow graphs for definite return checks, unreachable code analysis, and destructor sequencing.
-   - `constexpr`: Integrated virtual machine evaluator capable of executing loops, recursion, and object mutations at compile time for `static_assert` and template metaprogramming.
-6. **Lowering & ABI (`lower`, `mangle`, `types`)**:
-   Lowers the elaborated AST into Vertex Intermediate Representation (VIR). Handles class layout, vtable/vbtable construction, cleanup scope emission for unwinding, constructor/destructor sequencing, and symbol mangling under both the Itanium and Microsoft ABIs.
-7. **Code Generation (`codegen.go`)**:
-   Generates native relocatable object files (ELF, Mach-O, PE/COFF) via native Vertex architecture encoders.
+## Languages
 
----
+`vcx` compiles C++20, C++23 and C++26, with C++23 as the default. It also
+compiles Objective-C++ and [GPU languages](docs/gpu.md).
 
-## Targets and ABIs
+## Commands
 
-vcx is one C++ compiler. The MSVC and GNU families are peers, and a target chooses between them on three independent axes, the way clang's triple does: the **C++ ABI** (how classes, tables, structors and names are laid out), the **dialect** (which compiler vcx presents itself as to headers, and which vendor extensions those headers expect), and the **data model** (the sizes of the basic types).
+| | |
+| :--- | :--- |
+| `v++ run` | Build a program and run it |
+| `v++ build` | Compile and link, or stop earlier with `-c` or `--emit` |
+| `v++ check` | Preprocess, parse and analyze |
+| `v++ layout` | Print the memory layout of every class |
+| `v++ symbols` | Print the object-file name of every definition |
+| `v++ ast`, `v++ tokens` | Print the syntax tree or token stream |
+| `v++ env` | Print the target and include paths |
 
-| Target | Architecture | OS | Container | C++ ABI | Dialect |
-| --- | --- | --- | --- | --- | --- |
-| `x86_64-linux` | x86_64 | Linux | ELF | Itanium | GNU |
-| `aarch64-linux` | AArch64 | Linux | ELF | Itanium (ARM) | GNU |
-| `x86_64-windows` | x86_64 | Windows | PE/COFF | Microsoft | MSVC |
-| `x86_64-macos` | x86_64 | macOS | Mach-O | Itanium | GNU |
-| `aarch64-macos` | AArch64 | macOS | Mach-O | Itanium (Apple arm64) | GNU |
-| `x86_64-elf` | x86_64 | Bare-metal | ELF | Itanium | GNU |
-| `i386-elf` | i386 | Bare-metal | ELF | Itanium | GNU |
-| `nvptx64-cuda` | NVPTX | CUDA device | PTX | Itanium | GNU |
-| `amdgcn-hsa` | AMDGCN | HSA device | ELF code object | Itanium | GNU |
-| `air64-apple` | AIR | Apple GPU | `.metallib` | Itanium | GNU |
+## Targets
 
-The device targets are what the device pass of a CUDA, HIP or Metal unit is compiled for; they are not named with `-target`. The pass keeps the host's data model (a CUDA `long` is 32 bits on Windows, as nvcc has it) and headers, adds `__CUDA_ARCH__` or `__HIP_DEVICE_COMPILE__` and the device's builtins, and mangles with the Itanium ABI whatever the host uses, which is the name the host registers the kernel by. A `.metal` file has no host: its one pass is `air64-apple`'s, with MSL's LP64 data model and none of a CPU's macros or headers, and its kernels keep their names unmangled, as Metal looks them up.
+| | |
+| :--- | :--- |
+| `aarch64-macos`, `x86_64-macos` | Mach-O |
+| `x86_64-linux`, `aarch64-linux` | ELF |
+| `x86_64-windows` | PE/COFF |
+| `x86_64-elf`, `i386-elf` | ELF, bare metal |
 
-Target selection handles:
-- **Data models**: LP64 (Linux/macOS), LLP64 (Windows), ILP32 (i386), with Apple arm64's 64-bit `long double`.
-- **C++ ABI** (`types.CXXABI`): Microsoft layout, vftables and vbtables; Itanium layout with tail-padding reuse and vtable groups, and its ARM and Apple arm64 variants -- structors that return `this`, 16-byte array cookies, C++11 POD rules for tail padding.
-- **Name mangling**: Itanium (`_Z...`) or Microsoft (`?...`).
-- **Dialect**: cl's identity and toolset macros, or gcc's and clang's -- predefines generated from the data model, the `__has_feature`/`__has_builtin`/`__has_attribute` operators, GNU builtins and `__asm` labels, and vcx's own compiler headers where a platform expects the compiler to supply them. The parser accepts both families' extensions everywhere; what the dialect decides is who vcx says it is.
+The host is the default. Choose another with `-target`. A target's headers and
+libraries must be available to compile and link against it.
 
----
+## As a Go library
 
-## Go API
-
-`vcx` is organized so that every compiler phase can be used as a standalone Go library:
+Every stage of the compiler is a Go package, and the source can come from memory:
 
 ```go
-package main
+c := &vcx.Compiler{Target: "x86_64-linux", Std: vcx.Cxx23}
 
-import (
-	"fmt"
-	"log"
-
-	"github.com/vertex-language/vcx"
-)
-
-func main() {
-	// Simple one-line build
-	if err := vcx.Build("app.o", "main.cpp"); err != nil {
-		log.Fatalf("build failed: %v", err)
-	}
-
-	// Advanced configuration with Compiler driver
-	c := &vcx.Compiler{
-		Target:      "x86_64-windows",
-		Std:         vcx.Cxx23,
-		IncludeDirs: []string{"include"},
-	}
-
-	// Check for diagnostics
-	diags, err := c.Check(vcx.File("main.cpp"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, d := range diags {
-		fmt.Printf("%s: %s: %s\n", d.Site, d.Severity, d.Message)
-	}
-
-	// Lower directly to VIR
-	mod, diags, err := c.IR(vcx.File("main.cpp"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("Emitted VIR module: %s (%d functions)\n", mod.Name(), len(mod.Funcs()))
-}
-```
-
-### In-Memory Compilation
-
-Source inputs do not need to exist on disk. `vcx.Text` allows compiling code directly from memory:
-
-```go
-src := []byte(`
-struct Point {
-    int x;
-    int y;
-};
-`)
-
-c := &vcx.Compiler{}
+src := []byte("struct Point { int x; int y; };")
 records, _, err := c.Layout(vcx.Text("point.cpp", src))
 if err != nil {
 	log.Fatal(err)
 }
-
 for _, r := range records {
-	fmt.Printf("%s %s (size=%d, align=%d)\n", r.Kind, r.Name, r.Size, r.Align)
+	fmt.Println(r.Name, r.Size) // Point 8
 }
 ```
 
----
-
-## Repository Structure
-
-```
-vcx/
-├── cmd/v++/            Binary entry point for the v++ CLI tool
-├── internal/cli/       CLI command routing, flag handling, and formatting
-│
-├── token/              Phases 1–2: tokens, source sites, files, position tracking
-├── scanner/            Phase 3: tokenization, literals, comments
-├── preprocessor/       Phase 4: directives, macro expansions, include resolution
-├── literal/            Phases 5–6: string literal decoding, escape sequences, concatenation
-├── parser/             Phase 7: recursive descent C++ parser, error recovery
-├── ast/                AST node definitions and tree inspection utilities
-│
-├── sema/               Semantic analysis: lookup, overload resolution, templates
-│   └── cfg/            Control flow graph builder for flow diagnostics and cleanups
-├── types/              Type representations, size/alignment models, ABI layout
-├── constexpr/          Compile-time constant expression virtual machine
-├── lower/              Lowering from elaborated AST to Vertex Intermediate Representation
-├── mangle/             Symbol manglers for Itanium and Microsoft ABIs
-│
-├── offload/            The containers a device image travels in: NVIDIA's fat binary, the clang offload bundle
-├── runtime/            The runtimes an offload program links: cudart over the driver, HIP glue over libamdhip64
-│
-├── include/            Compiler-provided headers
-│   ├── gnu/            GNU-compatible stddef.h, stdint.h, limits.h, float.h, etc.
-│   ├── cuda/           The CUDA wrapper read before every .cu, and a minimal cuda_runtime.h
-│   ├── hip/            The same for HIP
-│   └── metal/          The wrapper read before every .metal, and vcx's own <metal_stdlib>
-│
-├── compiler.go         Central Compiler driver orchestrating pipeline rungs
-├── build.go            Build and Run: objects, the link, the temporary executable
-├── link.go             The link, through the vertex-language ELF, Mach-O and PE linkers
-├── device.go           Offload languages, architectures, predefines, the embedded headers
-├── input.go            Input abstraction (file on disk or in-memory text buffer)
-├── target.go           Target triples, ABI selection, and container mapping
-├── codegen.go          Native object generation (ELF, Mach-O, PE/COFF), PTX, HSA code objects and Metal libraries
-├── metal.go            A build of .metal files: one .metallib, or one per file with -c
-├── symbols.go          Mangled linker symbol table extraction
-├── sysroot.go          Host toolset discovery (MSVC, Windows SDK, GCC/Clang paths)
-├── predefines.go       MSVC-dialect builtin macro definitions
-├── predefines_gnu.go   GNU/Clang-dialect builtin macro definitions
-├── vendor.go           Compiler intrinsics, builtins, and vendor extensions
-│
-├── tests/              The ladders: 001–250 of C++, and 001–050 each of CUDA, HIP and Metal
-└── docs/               Grammar and architectural specifications
-```
-
----
-
-## Testing & Conformance
-
-`tests/` is a ladder, one small thing per file, numbered in the order the rungs climb: `001`–`250` of C++ at the root, and `001`–`050` for each offload language in `tests/cuda`, `tests/hip` and `tests/metal`. Nothing in it writes down an expected value. Every file is built by vcx and by the language's own compiler, and the two results are compared: stdout and the exit status, or for Metal every buffer after the dispatch. The other compiler is the oracle, and a disagreement with it is a bug in vcx by definition. [`tests/README.md`](tests/README.md) has the rungs and the rules.
-
-```console
-$ go test ./...                      # everything, the unit tests included
-$ go test -run TestCorpus .          # C++ against clang++ (or cl on Windows)
-$ go test -run 'TestCorpus/113' .    # one rung
-$ go test -run TestCUDA .            # against nvcc, where there is an NVIDIA GPU
-$ go test -run TestHIP .             # against hipcc, where there is an AMD GPU
-$ go test -run TestMetal .           # against xcrun metal, on the Mac's GPU
-```
-
-Where there is no GPU or no oracle, the CUDA and HIP programs are still compiled through both passes and must compile.
-
----
-
-## CUDA and HIP
-
-A `.cu` or `.hip` file -- or any file with `-x cuda` or `-x hip` -- is an offload unit, and vcx is the whole toolchain for it: no CUDA toolkit, no ROCm, no nvcc or hipcc. The design is clang's, with the two-pass compilation kept and the rest made vcx's own:
-
-- **Two passes.** The device pass lowers every `__global__` kernel and `__device__` function to VIR and on to PTX (`ir/lower/ptx`) or an HSA code object (`ir/lower/amdgpu`). The host pass lowers the host's functions, makes each kernel a launch stub of the kernel's host name, embeds the image as an NVIDIA fat binary (or a clang offload bundle for HIP), and emits a constructor that registers it with the runtime, each stub by its kernel's device name, and each `__device__` and `__constant__` object by its shadow.
-- **The language.** `__global__`, `__device__`, `__host__`, `__shared__` (at namespace and block scope), `__constant__`, `__managed__`; `f<<<grid, block, shmem, stream>>>(args)` with `dim3` or integer extents; `threadIdx`, `blockIdx`, `blockDim`, `gridDim`, `warpSize` read from the hardware; `__syncthreads`, the fences, the shuffles and votes, the atomics at block, device and system scope, the bit intrinsics, the vector types and `make_float4`, `constexpr` and `__host__ __device__` functions, kernel templates, structs by value into kernels. The device builtins are declared by clang's names -- `__nvvm_*`, `__builtin_amdgcn_*`, `__hip_atomic_*` -- so the vendors' own headers read unchanged once a toolkit is present.
-- **The headers.** `include/cuda` and `include/hip` ship the wrapper every unit reads before its first line (`__vcx_cuda_runtime_wrapper.h`, the way clang force-includes its own), and minimal `cuda_runtime.h` / `hip/hip_runtime.h` for the host API when no toolkit's is installed.
-- **The runtime.** `runtime/cuda/vcx_cudart.cpp` implements the cudart a compiled unit calls -- `__cudaRegisterFatBinary`, `cudaMalloc`, `cudaMemcpy`, `cudaMemcpyToSymbol`, `cudaLaunchKernel`, streams and events -- over the driver in `nvcuda.dll` or `libcuda.so`, which every NVIDIA driver ships. It is compiled by vcx at link time and linked in. With a CUDA toolkit installed (`CUDA_PATH`, or the default directories) the program links NVIDIA's own `cudart_static` instead, through a small glue object; `-cudart vcx|static|shared|none` chooses. The fat binary is byte for byte what `fatbinary.exe` writes, `cuobjdump` reads it, and NVIDIA's cudart loads it. HIP's `runtime/hip/vcx_hiprt.cpp` forwards to `libamdhip64`, which is ROCm's runtime and driver in one.
-- **nvcc as the oracle.** Where nvcc and an NVIDIA GPU are present, every program of `tests/cuda` is built by nvcc and by vcx, both are run, and their output must agree; `tests/hip` is held to hipcc the same way on an AMD GPU.
-- **Also there.** `extern __shared__` dynamic shared memory; the transcendental math in a header-only device library (`expf`, `sinf`, `powf` and their kin, a few ulp, in float and double) beside the single-instruction functions and the `__expf` approximations; `__syncthreads_count`/`_and`/`_or`; `__launch_bounds__`; `printf` from a kernel; structs by value into kernels; several `--offload-arch` values in one fat binary, the runtime loading the newest the device runs; separate compilation (`v++ -c a.cu`, `v++ -c b.cpp`, `v++ a.obj b.obj -o prog`); and the driver spelling of the command line, so that `CXX=v++` works in a build written for nvcc or clang++.
-- **What is not there yet.** `__managed__`, `__half`, textures, dynamic parallelism, `-rdc`, `printf` on AMD (ROCm's hostcall), and the toolkit's headers: vcx's own `cuda_runtime.h` stands in even when a toolkit is installed, since the toolkit's pulls in `<functional>`, which vcx does not compile yet (`typeid`, a member template called with explicit arguments) -- `<cmath>`, `<utility>`, `<vector>`, `<new>` do -- the front-end conformance work ahead. A HIP program compiles through both passes and its code object disassembles with `llvm-objdump`; it has not been run, since no AMD GPU has been near this code.
-
----
-
-## Metal
-
-A `.metal` file -- or any file with `-x metal` -- is Metal Shading Language, and vcx compiles it the way it compiles a CUDA unit's device pass: MSL is C++ in another dialect, so the front end is vcx's, the kernels lower to VIR, and `ir/lower/air` lowers VIR to AIR, which the vertex-language `air` package writes as the `.metallib` Metal loads. Neither Xcode nor the Metal toolchain is needed to build one.
-
-- **One pass.** A `.metal` file is all device code: every function is a device function, `kernel` marks the entry points, and there is no host pass, launch stub or runtime -- the app loads the library with Metal's own API. Several `.metal` files make one library, as `xcrun metallib` does; `-c` makes one per file.
-- **The language.** The address spaces -- `device`, `constant`, `threadgroup`, `thread` -- read as MSL means them: on the object in `threadgroup float t[64]`, and on what a pointer points at in `device float* p`. Kernel parameters are bound by `[[buffer(n)]]` (the next free index where none is written, as xcrun gives one) and filled by the built-in arguments, `[[thread_position_in_grid]]` and the rest, as `uint`, `ushort` or their 2- and 3-vectors. `constant` data at program scope, threadgroup arrays in a kernel, device functions, structs in buffers and by reference. A floating literal is a `float`, and `double` is refused, as the hardware has none.
-- **The bindings reach AIR as Metal's own.** A buffer's index and address space, and each built-in argument, travel through VIR as attachments on the kernel, and the backend binds AIR's own built-in argument for each: in the last threadgroup of a grid the groups do not divide, `[[threads_per_threadgroup]]` is that group's smaller size, which no arithmetic on work-item ids could say.
-- **`<metal_stdlib>` is vcx's.** Apple's is written against its own compiler's builtins, so `include/metal` has vcx's: `threadgroup_barrier`, the float functions (the exact ones, and fast `exp2`, `log2`, `sin`, `cos`, `pow` and their kin), the integer functions, the SIMD-group shuffles, votes, reductions and scans, and the relaxed atomics on `atomic_int`, `atomic_uint` and `atomic_float` in device and threadgroup memory.
-- **xcrun as the oracle.** `tests/metal` kernels are built by vcx and by `xcrun metal`, and both libraries run on the GPU with Metal's validation layers on; every buffer must agree bit for bit, or within a stated ulp bound for fast transcendentals.
-- **What is not there yet.** MSL's vector types as vectors -- `float4`, swizzles, vector arithmetic; `uint2` and `uint3` are structs for now, enough for the built-in arguments -- and `half`, `bfloat`, matrices, textures and samplers, `[[threadgroup(n)]]` arguments, vertex and fragment functions, `precise::` transcendentals, and the MSL 3.2 fences. Apple's own headers are not read.
-
----
-
 ## Status
 
-`v++` has a functional front end and lowering pipeline:
+`vcx` is in active development. Classes, templates, concepts, `constexpr` and
+exceptions compile and run. So do `<vector>`, `<string>`, `<optional>`,
+`<memory>`, `<algorithm>` and `<functional>` from the system's standard library
+on macOS. `<map>` and `<iostream>` do not compile yet.
 
-- **Lexer & Preprocessor**: Fully compliant ISO phase 1–4 handling, including macro varargs (`__VA_OPT__`), token concatenation, and system include resolution.
-- **Literal Decoding**: ISO phase 5–6 decoding and concatenation for narrow, UTF-8, UTF-16, UTF-32, and wide strings.
-- **Parser & AST**: Parses C++23 constructs including templates, concepts, `requires` clauses, lambdas, structured bindings, and attributes.
-- **Semantics**: Complete scope tracking, unqualified/qualified lookup, ADL, overload resolution, template argument deduction, and type conversion graphs.
-- **Constexpr Evaluation**: Full compile-time VM running loops, conditionals, structs, arrays, and recursion.
-- **ABI Engine**: Computes exact class layouts, bitfields, inheritance hierarchies, virtual bases, and virtual tables for both Itanium and Microsoft ABIs.
-- **Lowering & Code Generation**: Lowers functions, locals, expressions, control flow, dynamic initialization, copy constructors, and polymorphic virtual dispatch to VIR and native object files.
-- **System Header Support**: Directly compiles and links against host library headers such as `<type_traits>`, `<utility>`, and `<new>`.
-- **Linking and Running**: `v++ build` links with the vertex-language linkers and the platform's own libraries; `v++ run` runs the result. Variadic functions work through cl's `__va_start`, so the ucrt's inline `printf` compiles on Windows.
-- **GPU Offload**: CUDA and HIP units through both passes, run on an NVIDIA GPU with nothing but vcx. `.metal` files to `.metallib`s whose kernels match xcrun's on an Apple GPU.
+## Testing
 
----
+```
+go test ./...
+```
+
+[`tests/`](tests/README.md) is a ladder, one small program per file, in the order
+features build on each other. Every program is built by `vcx` and by a reference
+compiler, and the results are compared. A disagreement is a bug in `vcx`.
 
 ## Documentation
 
-- [C++ Grammar Specification](docs/cpp_grammar.md)
-- [VIR Specification](https://github.com/vertex-language/ir)
-
----
+- [Command line](docs/cli.md)
+- [Targets and ABIs](docs/targets.md)
+- [Architecture](docs/architecture.md)
+- [GPU languages](docs/gpu.md)
+- [C++ grammar](docs/cpp_grammar.md)
+- [Tests](tests/README.md)
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+[MIT](https://github.com/vertex-language/vsc/blob/main/LICENSE)
